@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+{{ macros.m_hr() }}
+<form id='setting'>
+{{ macros.setting_checkbox('ftv_use_extra_match', '추가 매칭 사용', value=arg['ftv_use_extra_match'], desc=['On : 추가적으로 다른 사이트를 이용하여 정보를 찾음. 현재는 배우명 한글화, 부가영상에 사용', 'Off : tmdb 사이트 정보만 유지. 배우 이름에 한글이 있는 경우에만 한글화']) }}
+<div id="ftv_use_extra_match_div" class="collapse">
+{{ macros.setting_radio_with_value('ftv_option_actor', '배우 처리방법', [['tmdb', 'tmdb 정보 우선. 매칭된 배우만 한글적용'], ['change_daum', '국내 사이트 정보로 전부 대체'], ['tmdb_match', 'tmdb 정보 우선. 매칭된 배우만 한글적용 후 앞으로 배치'], ['tmdb_match_append_daum', 'tmdb 정보 우선. 매칭된 배우만 한글적용 후 앞으로 배치. 남은 국내정보 추가']], value=arg['ftv_option_actor'], desc=None) }}
+
+{{ macros.setting_checkbox('ftv_use_extra_season', '시즌별 정보 사용', value=arg['ftv_use_extra_season'], desc=['On : 자동 매칭되는 경우 에피소드 제목/줄거리를 정보를 우선 적용', 'Off : tmdb 정보 유지. 영문일 경우 번역 옵션을 따름.']) }}
+{{ macros.setting_checkbox('ftv_use_extra_video', '작품별 부가영상 사용', value=arg['ftv_use_extra_video'], desc=['On : 부가영상이 있는 경우 등록']) }}
+</div>
+{{ macros.m_hr() }}
+{{ macros.setting_checkbox('ftv_use_meta_server', '메타서버 부가정보 사용', value=arg['ftv_use_meta_server'], desc=['On : 유저들이 입력한 메타정보 사용', 'Off : 추가 매칭 사용 옵션에 따라 자동적으로 매칭되는 경우만 한글화 ']) }}
+<div id="ftv_use_meta_server_div" class="collapse">
+{{ macros.setting_input_text('ftv_season_order', '에피소드 정보 우선순위', value=arg['ftv_season_order'], desc=['메타서버에 사이트 정보가 여러개 있는 경우 적용할 우선순위', 'wavve, tving, daum 등']) }}
+</div>
+{{ macros.m_hr() }}
+{{ macros.setting_radio_with_value('ftv_translate_option', '번역', [['none', '번역하지 않음'], ['text', '줄거리만'], ['all', '배우 이름,역할 포함 전부']], value=arg['ftv_translate_option'], desc=None) }}
+{{ macros.setting_checkbox('ftv_use_theme', '테마 음악 적용', value=arg['ftv_use_theme'], desc=['On : 테마 음악이 있는 경우 적용. 적용시 메타용량 증가']) }}
+
+{{ macros.m_hr() }}
+{{ macros.info_text_and_buttons('cache_info', '캐시 정보', [['reset_cache_btn', '캐시 리셋']], value=arg['cache_info'], desc=['너무 많은 요청을 막기 위해 한번 가져온 데이터는 메모리에 저장', 'tmdb 사이트나 메타 서버에 수정한 데이터를 반영하기 위해서는 캐시 리셋 필요']) }}
+</form>
+
+
+<script type="text/javascript">
+
+$(document).ready(function(){
+  use_collapse("ftv_use_extra_match");
+  use_collapse("ftv_use_meta_server");
+});
+
+$('#ftv_use_extra_match').change(function() {use_collapse('ftv_use_extra_match');});
+$('#ftv_use_meta_server').change(function() {use_collapse('ftv_use_meta_server');});
+
+$("body").on('click', '#reset_cache_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('reset_cache', null, null, null, function(ret) {
+    $("#cache_info").html(ret.data);;
+  });
+});
+
+</script>    
+{% endblock %}

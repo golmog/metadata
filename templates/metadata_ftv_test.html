@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+
+
+<form id='setting'>
+{{ macros.setting_input_text_and_buttons('ftv_total_test_search', '통합 테스트 - 검색', [['ftv_total_test_search_manual_btn', '수동'], ['ftv_total_test_search_auto_btn', '자동']], value=arg['ftv_total_test_search'], desc=['제목|년도. |년도는 옵션.']) }}
+{{ macros.setting_input_text_and_buttons('ftv_total_test_info', '통합 테스트 - 코드', [['ftv_total_test_info_btn', '테스트']], value=arg['ftv_total_test_info'], desc=None) }}
+{{ macros.m_hr() }}
+<!--
+{{ macros.setting_input_text_and_buttons('ftv_tvdb_test_search', 'TVDB 검색', [['ftv_tvdb_test_search_btn', '자체포맷'], ['ftv_tvdb_test_search_api_btn', 'API']], value=arg['ftv_tvdb_test_search'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('ftv_tvdb_test_info', 'TVDB 코드', [['ftv_tvdb_test_info_btn', '자체포맷'], ['ftv_tvdb_test_info_api_btn', 'API']], value=arg['ftv_tvdb_test_info'], desc=None) }}
+{{ macros.m_hr() }}
+-->
+{{ macros.setting_input_text_and_buttons('ftv_tmdb_test_search', 'TMDB 검색', [['ftv_tmdb_test_search_btn', '자체포맷'], ['ftv_tmdb_test_search_api_btn', 'API']], value=arg['ftv_tmdb_test_search'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('ftv_tmdb_test_info', 'TMDB 코드', [['ftv_tmdb_test_info_btn', '자체포맷'], ['ftv_tmdb_test_info_api_btn', 'API']], value=arg['ftv_tmdb_test_info'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('ftv_tmdb_test_info_season', 'TMDB 코드 - 시즌', [['ftv_tmdb_test_info_season_btn', '자체포맷'], ['ftv_tmdb_test_info_season_api_btn', 'API']], value=arg['ftv_tmdb_test_info_season'], desc=['포맷: 코드_시즌번호. 예) FT67116_3']) }}
+{{ macros.m_hr() }}
+
+{{ macros.setting_input_text_and_buttons('ftv_daum_test_search', '다음 검색', [['ftv_daum_test_search_btn', '자체포맷']], value=arg['ftv_daum_test_search'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('ftv_daum_test_info', '다음 코드', [['ftv_daum_test_info_btn', '자체포맷']], value=arg['ftv_daum_test_info'], desc=['포맷: 코드|제목. 예) KD83071|리썰 웨폰']) }}
+{{ macros.m_hr() }}
+
+{{ macros.setting_input_text_and_buttons('ftv_watcha_test_search', '왓챠피디아 검색', [['ftv_watcha_test_search_btn', '자체포맷'], ['ftv_watcha_test_search_api_btn', 'API']], value=arg['ftv_watcha_test_search'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('ftv_watcha_test_info', '왓챠피디아 코드', [['ftv_watcha_test_info_btn', '자체포맷'], ['ftv_watcha_test_info_api_btn', 'API']], value=arg['ftv_watcha_test_info'], desc=None) }}
+
+</form>
+
+
+<script type="text/javascript">
+$(document).ready(function(){
+});
+
+$("body").on('click', '#ftv_total_test_search_manual_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'search', $("#ftv_total_test_search").val(), 'manual');
+});
+
+$("body").on('click', '#ftv_total_test_search_auto_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'search', $("#ftv_total_test_search").val(), 'auto');
+});
+
+$("body").on('click', '#ftv_total_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'info', $("#ftv_total_test_info").val());
+});
+
+$("body").on('click', '#ftv_tvdb_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tvdb', 'search', $("#ftv_tvdb_test_search").val());
+});
+
+$("body").on('click', '#ftv_tvdb_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tvdb', 'search_api', $("#ftv_tvdb_test_search").val());
+});
+
+$("body").on('click', '#ftv_tvdb_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tvdb', 'info', $("#ftv_tvdb_test_info").val());
+});
+
+$("body").on('click', '#ftv_tvdb_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tvdb', 'info_api', $("#ftv_tvdb_test_info").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'search', $("#ftv_tmdb_test_search").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'search_api', $("#ftv_tmdb_test_search").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info', $("#ftv_tmdb_test_info").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info_api', $("#ftv_tmdb_test_info").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_info_season_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info_season', $("#ftv_tmdb_test_info_season").val());
+});
+
+$("body").on('click', '#ftv_tmdb_test_info_season_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info_season_api', $("#ftv_tmdb_test_info_season").val());
+});
+
+$("body").on('click', '#ftv_daum_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'search', $("#ftv_daum_test_search").val());
+});
+
+/*
+$("body").on('click', '#ftv_daum_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'search_api', $("#ftv_daum_test_search").val());
+});
+*/
+
+$("body").on('click', '#ftv_daum_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'info', $("#ftv_daum_test_info").val());
+});
+
+/*
+$("body").on('click', '#ftv_daum_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'info_api', $("#ftv_daum_test_info").val());
+});
+*/
+
+$("body").on('click', '#ftv_watcha_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'search', $("#ftv_watcha_test_search").val());
+});
+
+$("body").on('click', '#ftv_watcha_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'search_api', $("#ftv_watcha_test_search").val());
+});
+
+$("body").on('click', '#ftv_watcha_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'info', $("#ftv_watcha_test_info").val());
+});
+
+$("body").on('click', '#ftv_watcha_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'info_api', $("#ftv_watcha_test_info").val());
+});
+
+</script>    
+{% endblock %}

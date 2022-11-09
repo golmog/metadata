@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+
+<form id='setting'>
+{{ macros.setting_input_text('book_naver_title', '책 제목', value=arg['book_naver_titl']) }}
+{{ macros.setting_input_text('book_naver_auth', '저자명', value=arg['book_naver_auth']) }}
+{{ macros.setting_input_text('book_naver_cont', '목차', value=arg['book_naver_cont']) }}
+{{ macros.setting_input_text('book_naver_isbn', 'isbn', value=arg['book_naver_isbn']) }}
+{{ macros.setting_input_text('book_naver_publ', '출판사', value=arg['book_naver_publ']) }}
+{{ macros.setting_buttons([['search_api_btn', 'API 검색'], ['search_btn', '검색']]) }}
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('book_naver_code', '코드', [['info_naver_btn', 'Info']], value=arg['book_naver_code']) }}
+</form>
+
+
+<script type="text/javascript">
+
+$(document).ready(function(){
+});
+
+function search(mode) {
+  var s = $('#book_naver_title').val().trim() + '|' + $('#book_naver_auth').val().trim() + '|' +$('#book_naver_cont').val().trim() + '|' +$('#book_naver_isbn').val().trim() + '|' +$('#book_naver_publ').val().trim();
+  globalSendCommand('search_naver', s, mode);
+}
+
+$("body").on('click', '#search_api_btn', function(e){
+  e.preventDefault();
+  search('api');
+});
+
+$("body").on('click', '#search_btn', function(e){
+  e.preventDefault();
+  search('');
+});
+
+$("body").on('click', '#info_naver_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('info_naver', $('#book_naver_code').val().trim());
+});
+
+</script>    
+{% endblock %}

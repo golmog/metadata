@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+{{ macros.m_hr() }}
+<form id='setting'>
+{{ macros.setting_input_int('music_normal_artist_poster_count', 'ARTIST 포스터 수', value=arg['music_normal_artist_poster_count'], min='1', desc=None) }}
+{{ macros.setting_input_int('music_normal_artist_art_count', 'ARTIST 배경화면 수', value=arg['music_normal_artist_art_count'], min='1', desc=None) }}
+{{ macros.setting_checkbox('music_normal_use_lastfm', 'last.fm 사용', value=arg['music_normal_use_lastfm'], desc=None) }}
+<div id="music_normal_use_lastfm_div" class="collapse">
+{{ macros.setting_checkbox('music_normal_use_lastfm_artist_image', 'last.fm ARTIST Youtube 사용', value=arg['music_normal_use_lastfm_artist_image'], desc=['ARTIST 포스터, 배경화면에 last.fm 우선 사용']) }}
+{{ macros.setting_checkbox('music_normal_use_lastfm_artist_youtube', 'last.fm ARTIST Youtube 사용', value=arg['music_normal_use_lastfm_artist_youtube'], desc=['ARTIST에 Youtube 영상 추가']) }}
+</div>
+</form>
+
+<script type="text/javascript">
+$(document).ready(function(){
+  use_collapse("music_normal_use_lastfm");
+});
+
+$('#music_normal_use_lastfm').change(function() {use_collapse('music_normal_use_lastfm');});
+
+</script>    
+{% endblock %}

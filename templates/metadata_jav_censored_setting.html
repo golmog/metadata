@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  {{ macros.m_button_group([['global_setting_save_btn', '설정 저장']])}}
+  {{ macros.m_row_start('5') }}
+  {{ macros.m_row_end() }}
+
+  <nav>  
+    {{ macros.m_tab_head_start() }}
+      {{ macros.m_tab_head2('normal', '기본', true) }}
+      {{ macros.m_tab_head2('actor', '배우정보', false) }}
+    {{ macros.m_tab_head_end() }}
+  </nav>
+  <form id='setting' name='setting'>
+  <div class="tab-content" id="nav-tabContent">
+    {{ macros.m_tab_content_start('normal', true) }}
+      {{ macros.setting_checkbox('jav_censored_use_sjva', 'SJVA 서버 사용', value=arg['jav_censored_use_sjva'], desc=['데이터를 SJVA 서버에서 우선 검색하여 가져옵니다.', '데이터가 있을 경우 : 직접 사이트에 접속하지 않고 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없을 경우 : 설정에 따르며 결과를 서버에 저장합니다.', '저장조건 : 구글 번역 사용, 이미지 URL 처리 - 디스코드 URL']) }}
+      {{ macros.setting_input_text('jav_censored_order', '우선순위', value=arg['jav_censored_order'], desc=['메타데이터를 가져올 우선순위 설정', 'dmm, javbus']) }}
+      {{ macros.setting_input_text('jav_censored_title_format', '타이틀 포맷', value=arg['jav_censored_title_format'], desc=['title runtime premiered year actor tagline']) }}
+      {{ macros.setting_input_int('jav_censored_art_count', 'Art 수', value=arg['jav_censored_art_count'], min='0', desc=None) }}
+      {{ macros.setting_radio('jav_censored_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_tag_option']) }}
+      {{ macros.setting_checkbox('jav_censored_use_extras', '예고편 사용', value=arg['jav_censored_use_extras'], desc=None) }}
+    {{ macros.m_tab_content_end() }}
+    {{ macros.m_tab_content_start('actor', false) }}
+      {{ macros.setting_input_text('jav_censored_actor_order', '우선순위', value=arg['jav_censored_actor_order'], desc=['배우정보를 가져울 순위 설정', 'avdbs, hentaku']) }}
+      {{ macros.m_hr() }}
+      {{ macros.setting_checkbox('jav_censored_avdbs_use_proxy', 'Avdbs Proxy 사용', value=arg['jav_censored_avdbs_use_proxy'], desc=None) }}
+      <div id="jav_censored_avdbs_use_proxy_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_avdbs_proxy_url', 'Avdbs Proxy URL', value=arg['jav_censored_avdbs_proxy_url'], desc=None) }}
+      </div>
+      {{ macros.setting_input_text_and_buttons('jav_censored_actor_test_name', '테스트', [['jav_censored_actor_test_avdbs_btn', 'avdbs'], ['jav_censored_actor_test_hentaku_btn', 'hentaku']], value=arg['jav_censored_actor_test_name'], desc=None) }}
+    {{ macros.m_tab_content_end() }}
+    
+  </div><!--tab-content-->
+</form>
+</div><!--전체-->
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "{{arg['sub'] }}";
+var current_data = null;
+
+$(document).ready(function(){
+  use_collapse("jav_censored_avdbs_use_proxy");
+});
+
+$('#jav_censored_avdbs_use_proxy').change(function() {
+  use_collapse('jav_censored_avdbs_use_proxy');
+});
+
+
+$("body").on('click', '#jav_censored_actor_test_avdbs_btn', function(e){
+  e.preventDefault();
+  func_test('avdbs');
+});
+
+$("body").on('click', '#jav_censored_actor_test_hentaku_btn', function(e){
+  e.preventDefault();
+  func_test('hentaku');
+});
+
+
+function func_test(call) {
+  name = document.getElementById("jav_censored_actor_test_name").value
+  $.ajax({
+    url: '/' + package_name + '/ajax/' + sub + '/actor_test',
+    type: "POST", 
+    cache: false,
+    data: {name:name, call:call},
+    dataType: "json",
+    success: function (ret) {
+      m_modal(ret)
+    }
+  });
+}
+
+
+
+
+</script>    
+{% endblock %}

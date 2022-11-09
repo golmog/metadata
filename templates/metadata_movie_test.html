@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+
+<form id='setting' name='setting'>
+{{ macros.setting_input_text_and_buttons('movie_total_test_search', '통합 테스트 - 검색', [['movie_total_test_search_manual_btn', '수동'], ['movie_total_test_search_auto_btn', '자동']], value=arg['movie_total_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_total_test_info', '통합 테스트 - 코드', [['movie_total_test_info_btn', '테스트']], value=arg['movie_total_test_info'], desc=None) }}
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_naver_test_search', '네이버 검색', [['movie_naver_test_search_btn', '테스트'], ['movie_naver_test_search_api_btn', 'API']], value=arg['movie_naver_test_search'], desc=['제목 | 년도', '네이버 개발자센터 어플리케이션 설정에서 검색 API 사용 설정.']) }}
+{{ macros.setting_input_text_and_buttons('movie_naver_test_info', '네이버 코드', [['movie_naver_test_info_btn', '테스트']], value=arg['movie_naver_test_info'], desc=None) }}
+{{ macros.m_hr() }}
+
+{{ macros.setting_input_text_and_buttons('movie_daum_test_search', '다음 검색', [['movie_daum_test_search_btn', '테스트']], value=arg['movie_daum_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_daum_test_info', '다음 코드', [['movie_daum_test_info_btn', '테스트'], ['movie_daum_test_info_api_btn', 'API']], value=arg['movie_daum_test_info'], desc=['예) MN31778']) }}
+
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_tmdb_test_search', 'TMDB 검색', [['movie_tmdb_test_search_btn', '테스트'], ['movie_tmdb_test_search_api_btn', 'API']], value=arg['movie_tmdb_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_tmdb_test_info', 'TMDB 코드', [['movie_tmdb_test_info_btn', '테스트'], ['movie_tmdb_test_info_api_btn', 'API']], value=arg['movie_tmdb_test_info'], desc=['예) MT1924']) }}
+
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_watcha_test_search', '왓챠 검색', [['movie_watcha_test_search_btn', '테스트'], ['movie_watcha_test_search_api_btn', 'API']], value=arg['movie_watcha_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_watcha_test_info', '왓챠 코드', [['movie_watcha_test_info_btn', '테스트'], ['movie_watcha_test_info_api_btn', 'API']], value=arg['movie_watcha_test_info'], desc=['예) MXm5DGQDQ']) }}
+
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_wavve_test_search', '웨이브 검색', [['movie_wavve_test_search_btn', '자체포맷'], ['movie_wavve_test_search_api_btn', 'API']], value=arg['movie_wavve_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_wavve_test_info', '웨이브 코드', [['movie_wavve_test_info_btn', '자체포맷'], ['movie_wavve_test_info_api_btn', 'API']], value=arg['movie_wavve_test_info'], desc=['예) MWMV_CA01_DY0000011313']) }}
+
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_tving_test_search', '티빙 검색', [['movie_tving_test_search_btn', '자체포맷'], ['movie_tving_test_search_api_btn', 'API']], value=arg['movie_tving_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_tving_test_info', '티빙 코드', [['movie_tving_test_info_btn', '자체포맷'], ['movie_tving_test_info_api_btn', 'API']], value=arg['movie_tving_test_info'], desc=['예) MVM000300533']) }}
+
+<script type="text/javascript">
+
+$(document).ready(function(){
+});
+
+
+$("body").on('click', '#movie_total_test_search_manual_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'search', $("#movie_total_test_search").val(), 'manual');
+});
+
+$("body").on('click', '#movie_total_test_search_auto_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'search', $("#movie_total_test_search").val(), 'auto');
+});
+
+$("body").on('click', '#movie_total_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('total', 'info', $("#movie_total_test_info").val());
+});
+
+
+$("body").on('click', '#movie_naver_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('naver', 'search', $("#movie_naver_test_search").val());
+});
+
+$("body").on('click', '#movie_naver_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('naver', 'search_api', $("#movie_naver_test_search").val());
+});
+
+
+$("body").on('click', '#movie_naver_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('naver', 'info', $("#movie_naver_test_info").val());
+});
+
+
+$("body").on('click', '#movie_daum_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'search', $("#movie_daum_test_search").val());
+});
+
+$("body").on('click', '#movie_daum_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'info', $("#movie_daum_test_info").val());
+});
+
+$("body").on('click', '#movie_daum_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'info_api', $("#movie_daum_test_info").val());
+});
+
+$("body").on('click', '#movie_tmdb_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'search', $("#movie_tmdb_test_search").val());
+});
+
+$("body").on('click', '#movie_tmdb_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info', $("#movie_tmdb_test_info").val());
+});
+
+$("body").on('click', '#movie_tmdb_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'search_api', $("#movie_tmdb_test_search").val());
+});
+
+$("body").on('click', '#movie_tmdb_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tmdb', 'info_api', $("#movie_tmdb_test_info").val());
+});
+
+$("body").on('click', '#movie_watcha_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'search', $("#movie_watcha_test_search").val());
+});
+
+$("body").on('click', '#movie_watcha_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'info', $("#movie_watcha_test_info").val());
+});
+
+$("body").on('click', '#movie_watcha_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'search_api', $("#movie_watcha_test_search").val());
+});
+
+$("body").on('click', '#movie_watcha_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('watcha', 'info_api', $("#movie_watcha_test_info").val());
+});
+
+$("body").on('click', '#movie_wavve_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('wavve', 'search', $("#movie_wavve_test_search").val());
+});
+
+$("body").on('click', '#movie_wavve_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('wavve', 'info', $("#movie_wavve_test_info").val());
+});
+
+$("body").on('click', '#movie_wavve_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('wavve', 'search_api', $("#movie_wavve_test_search").val());
+});
+
+$("body").on('click', '#movie_wavve_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('wavve', 'info_api', $("#movie_wavve_test_info").val());
+});
+
+$("body").on('click', '#movie_tving_test_search_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tving', 'search', $("#movie_tving_test_search").val());
+});
+
+$("body").on('click', '#movie_tving_test_info_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tving', 'info', $("#movie_tving_test_info").val());
+});
+
+$("body").on('click', '#movie_tving_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tving', 'search_api', $("#movie_tving_test_search").val());
+});
+
+$("body").on('click', '#movie_tving_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('tving', 'info_api', $("#movie_tving_test_info").val());
+});
+
+</script>    
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  {{ macros.m_button_group([['global_setting_save_btn', '설정 저장']])}}
+  {{ macros.m_row_start('5') }}
+  {{ macros.m_row_end() }}
+
+  <nav>  
+    {{ macros.m_tab_head_start() }}
+      {{ macros.m_tab_head2('normal', '기본', true) }}
+    {{ macros.m_tab_head_end() }}
+  </nav>
+  <form id='setting' name='setting'>
+  <div class="tab-content" id="nav-tabContent">
+    {{ macros.m_tab_content_start('normal', true) }}
+      {{ macros.setting_checkbox('jav_uncensored_use_sjva', 'SJVA 서버 사용', value=arg['jav_uncensored_use_sjva'], desc=['데이터를 SJVA 서버에서 우선 검색하여 가져옵니다.', '데이터가 있을 경우 : 직접 사이트에 접속하지 않고 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없을 경우 : 설정에 따르며 결과를 서버에 저장합니다.', '저장조건 : 구글 번역 사용, 이미지 URL 처리 - 디스코드 URL']) }}
+      {{ macros.setting_radio('jav_uncensored_image_mode', '이미지 URL 처리 방법', ['원본 URL', 'SJVA Proxy URL', '디스코드 Proxy URL', '디스코드 URL'], value=arg['jav_uncensored_image_mode'], desc=['원본 : 원본 URL 리턴. (클라이언트가 외국인 경우)', 'SJVA Proxy URL : SJVA가 이미지를 받고 그 이미지를 리턴 (한국)', '디스코드 Proxy URL : 이미지를 디스코드에 업로드 후 디스코드 URL Redirect', '디스코드 URL : Proxy 작업을 미리한 고정 디스코드 URL']) }}
+      {{ macros.setting_input_text('jav_uncensored_title_format', '타이틀 포맷', value=arg['jav_uncensored_title_format'], desc=['title premiered year actor tagline']) }}
+      {{ macros.setting_checkbox('jav_uncensored_use_extras', '예고편 사용', value=arg['jav_uncensored_use_extras'], desc=None) }}
+    {{ macros.m_tab_content_end() }}
+    
+  </div><!--tab-content-->
+</form>
+</div><!--전체-->
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "{{arg['sub'] }}";
+var current_data = null;
+</script>    
+{% endblock %}

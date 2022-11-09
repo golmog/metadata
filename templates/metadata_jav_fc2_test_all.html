@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  <nav>  
+    {{ macros.m_tab_head_start() }}
+      {{ macros.m_tab_head2('normal', '일반', true) }}
+    {{ macros.m_tab_head_end() }}
+  </nav>
+
+  <form id='setting' name='setting'>
+    <div class="tab-content" id="nav-tabContent">
+      {{ macros.m_tab_content_start('normal', true) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_total_code', '통합 테스트', [['jav_fc2_total_test_btn', '테스트']], value=arg['jav_fc2_total_code'], desc=None) }}
+        {{ macros.m_hr() }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2com_code', 'FC2.com 테스트', [['jav_fc2_fc2com_test_btn', '테스트']], value=arg['jav_fc2_fc2com_code'], desc=None) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_bp4x_code', 'BP4X 테스트', [['jav_fc2_bp4x_test_btn', '테스트']], value=arg['jav_fc2_bp4x_code'], desc=None) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_msin_code', 'MSIN 테스트', [['jav_fc2_msin_test_btn', '테스트']], value=arg['jav_fc2_msin_code'], desc=None) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2cm_code', 'FC2CM 테스트', [['jav_fc2_fc2cm_test_btn', '테스트']], value=arg['jav_fc2_fc2cm_code'], desc=None) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2hub_code', 'FC2HUB 테스트', [['jav_fc2_fc2hub_test_btn', '테스트']], value=arg['jav_fc2_fc2hub_code'], desc=None) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_7mmtv_code', '7MMTV 테스트', [['jav_fc2_7mmtv_test_btn', '테스트']], value=arg['jav_fc2_7mmtv_code'], desc=None) }}
+
+      {{ macros.m_tab_content_end() }}
+    </div><!--tab-content-->
+  </form>
+</div><!--전체-->
+
+<script type="text/javascript">
+  var package_name = "{{arg['package_name'] }}";
+  var sub = "{{arg['sub'] }}";
+  var current_data = null;
+
+  $("body").on('click', '#jav_fc2_total_test_btn', function(e){
+    e.preventDefault();
+    func_test('total');
+  });
+
+  $("body").on('click', '#jav_fc2_fc2com_test_btn', function(e){
+    e.preventDefault();
+    func_test('fc2com');
+  });
+
+  $("body").on('click', '#jav_fc2_msin_test_btn', function(e){
+    e.preventDefault();
+    func_test('msin');
+  });
+
+  $("body").on('click', '#jav_fc2_bp4x_test_btn', function(e){
+    e.preventDefault();
+    func_test('bp4x');
+  });
+
+  $("body").on('click', '#jav_fc2_fc2cm_test_btn', function(e){
+    e.preventDefault();
+    func_test('fc2cm');
+  });
+
+  $("body").on('click', '#jav_fc2_fc2hub_test_btn', function(e){
+    e.preventDefault();
+    func_test('fc2hub');
+  });
+
+  $("body").on('click', '#jav_fc2_7mmtv_test_btn', function(e){
+    e.preventDefault();
+    func_test('7mmtv');
+  });
+
+  function func_test(call) {
+    code = document.getElementById("jav_fc2_" + call + "_code").value
+    $.ajax({
+      url: '/' + package_name + '/ajax/' + sub + '/test',
+      type: "POST", 
+      cache: false,
+      data: {code:code, call:call},
+      dataType: "json",
+      success: function (ret) {
+        m_modal(ret)
+      }
+    });
+  }
+
+</script>    
+{% endblock %}

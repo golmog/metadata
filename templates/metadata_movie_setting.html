@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+{{ macros.m_hr() }}
+<form id="setting">
+{{ macros.setting_input_text('movie_first_order', '우선순위', value=arg['movie_first_order'], desc=['1차 사이트 : daum, naver, tmdb']) }}
+{{ macros.m_hr() }}
+{{ macros.setting_radio_with_value('movie_use_sub_tmdb', 'Sub로 TMDB 사용', [['all', '모두 사용'], ['except_daum', 'Daum은 사용 안함'], ['none', '사용 안함']], value=arg['movie_use_sub_tmdb'], desc=['사용시 tmdb에서 검색되면 Art와 배우 이미지는 tmdb 정보로 변경', 'Daum 리뉴얼 이후 배우 이미지 해상도가 높기에 "Daum은 사용 안함" 옵션 권장']) }}
+{{ macros.setting_radio_with_value('movie_use_sub_tmdb_mode', 'TMDB 사용 범위', [['all', '모두 사용'], ['art', 'Art만'], ['actor','배우정보']], value=arg['movie_use_sub_tmdb_mode'], desc=None) }}
+{{ macros.m_hr() }}
+{{ macros.setting_checkbox('movie_use_watcha', 'Sub로 왓챠 사용', value=arg['movie_use_watcha'], desc=['리뷰, 컬렉션']) }}
+<div id="movie_use_watcha_div" class="collapse">
+{{ macros.setting_radio_with_value('movie_use_watcha_option', '사용 범위', [['all', '모두 사용'], ['review','리뷰만'], ['collection', '컬렉션만']], value=arg['movie_use_watcha_option']) }}
+{{ macros.setting_input_int('movie_use_watcha_collection_like_count', '컬렉션에 추가할 최소 좋아요 수', value=arg['movie_use_watcha_collection_like_count'], desc=None) }}
+</div>
+{{ macros.m_hr() }}
+{{ macros.setting_input_int('movie_rating_score', 'Plex 평점 아이콘 기준', value=arg['movie_rating_score'], min='1', max='100', desc=['Plex에서만 사용. 이 점수 미만 넘어진 팝콘 아이콘']) }}
+
+{{ macros.m_hr() }}
+
+{{ macros.setting_radio_with_value('movie_translate_option', '번역', [['none', '번역하지 않음'], ['text', '줄거리만'], ['all', '배우 이름,역할 포함 전부']], value=arg['movie_translate_option'], desc=None) }}
+</form>
+
+<script type="text/javascript">
+
+$(document).ready(function(){
+  use_collapse("movie_use_watcha");
+});
+
+$('#movie_use_watcha').change(function() {use_collapse('movie_use_watcha');});
+
+
+</script>    
+{% endblock %}

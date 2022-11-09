@@ -1,0 +1,7 @@
+title: "metadata"
+version: "1.0.0"
+package_name: "metadata"
+developer: "flaskfarm"
+description: "VIDEO 메타데이터 제공"
+home: "https://github.com/flaskfarm/metadata"
+more: "https://raw.githubusercontent.com/flaskfarm/metadata/main/README.md"

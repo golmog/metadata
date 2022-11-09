@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  {{ macros.m_button_group([['global_setting_save_btn', '설정 저장']])}}
+  {{ macros.m_row_start('5') }}
+  {{ macros.m_row_end() }}
+
+  <nav>  
+    {{ macros.m_tab_head_start() }}
+      {{ macros.m_tab_head2('site_fc2com', 'fc2.com 설정', true) }}
+      <!-- {{ macros.m_tab_head2('site_javdb', 'javdb 설정', false) }} -->
+      {{ macros.m_tab_head2('site_7mmtv', '7mmtv 설정', false) }}
+    {{ macros.m_tab_head_end() }}
+  </nav>
+
+  <form id='setting' name='setting'>
+    <div class="tab-content" id="nav-tabContent">
+      {{ macros.m_tab_content_start('site_fc2com', true) }}
+        {{ macros.setting_checkbox('jav_fc2_fc2com_use_proxy', 'Proxy 사용', value=arg['jav_fc2_fc2com_use_proxy'], desc=['On : sjva를 설치한 곳에서 adult.fc2.com 사이트 접속이 안 될 경우 사용']) }}
+        <div id="jav_fc2_fc2com_use_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_fc2_fc2com_proxy_url', 'Proxy URL', value=arg['jav_fc2_fc2com_proxy_url']) }}
+        </div>
+        {{ macros.m_hr() }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2com_code', '테스트', [['jav_fc2_fc2com_test_btn', '테스트']], value=arg['jav_fc2_fc2com_code'], desc=None) }}
+      {{ macros.m_tab_content_end() }}
+
+      <!-- {{ macros.m_tab_content_start('site_javdb', false) }}
+        {{ macros.setting_checkbox('jav_fc2_javdb_use_proxy', 'Proxy 사용', value=arg['jav_fc2_javdb_use_proxy'], desc=['On : sjva를 설치한 곳에서 javdb 사이트 접속이 안 될 경우 사용', '프록시보다는 url 변경 권장']) }}
+        <div id="jav_fc2_javdb_use_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_fc2_javdb_proxy_url', 'Proxy URL', value=arg['jav_fc2_javdb_proxy_url']) }}
+        </div>
+        {{ macros.setting_input_text('jav_fc2_javdb_url', 'JAVDB URL', value=arg['jav_fc2_javdb_url']) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_javdb_jdbsession', 'JAVDB jdbsession cookie', [['jav_fc2_javdb_cookie_test_btn', '테스트']],  value=arg['jav_fc2_javdb_jdbsession']) }}
+        {{ macros.setting_input_text('jav_fc2_javdb_delay', 'JAVDB 검색 간격', value=arg['jav_fc2_javdb_delay'], desc=['기본값: 15초']) }}
+        {{ macros.m_hr() }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_javdb_code', '테스트', [['jav_fc2_javdb_test_btn', '테스트']], value=arg['jav_fc2_javdb_code'], desc=None) }}
+      {{ macros.m_tab_content_end() }} -->
+
+      {{ macros.m_tab_content_start('site_7mmtv', false) }}
+        {{ macros.setting_checkbox('jav_fc2_7mmtv_use_proxy', 'Proxy 사용', value=arg['jav_fc2_7mmtv_use_proxy'], desc=['On : sjva를 설치한 곳에서 7mmtv 사이트 접속이 안 될 경우 사용']) }}
+        <div id="jav_fc2_7mmtv_use_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_fc2_7mmtv_proxy_url', 'Proxy URL', value=arg['jav_fc2_7mmtv_proxy_url']) }}
+        </div>
+        {{ macros.setting_input_text('jav_fc2_7mmtv_url', '7mmtv URL', value=arg['jav_fc2_7mmtv_url']) }}
+        {{ macros.m_hr() }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_7mmtv_code', '테스트', [['jav_fc2_7mmtv_test_btn', '테스트']], value=arg['jav_fc2_7mmtv_code'], desc=None) }}
+      {{ macros.m_tab_content_end() }}
+
+    </div><!--tab-content-->
+  </form>
+</div><!--전체-->
+
+<script type="text/javascript">
+  var package_name = "{{arg['package_name'] }}";
+  var sub = "{{arg['sub'] }}";
+  var current_data = null;
+
+  //fc2.com
+  $(document).ready(function(){
+    use_collapse("jav_fc2_fc2com_use_proxy");
+  });
+
+  $('#jav_fc2_fc2com_use_proxy').change(function() {use_collapse('jav_fc2_fc2com_use_proxy');});
+  
+  $("body").on('click', '#jav_fc2_fc2com_test_btn', function(e){
+    e.preventDefault();
+    func_test('fc2com');
+  });
+
+  /*
+  //javdb
+  $(document).ready(function(){
+    use_collapse("jav_fc2_javdb_use_proxy");
+  });
+  
+  $('#jav_fc2_javdb_use_proxy').change(function() {use_collapse('jav_fc2_javdb_use_proxy');});
+  
+  $("body").on('click', '#jav_fc2_javdb_test_btn', function(e){
+    e.preventDefault();
+    func_test('javdb');
+  });
+  
+  $("body").on('click', '#jav_fc2_javdb_cookie_test_btn', function(e){
+    e.preventDefault();
+    cookie_test();
+  });
+  */
+
+  //7mmtv
+  $(document).ready(function(){
+    use_collapse("jav_fc2_7mmtv_use_proxy");
+  });
+
+  $('#jav_fc2_7mmtv_use_proxy').change(function() {use_collapse('jav_fc2_7mmtv_use_proxy');});
+
+  $("body").on('click', '#jav_fc2_7mmtv_test_btn', function(e){
+    e.preventDefault();
+    func_test('7mmtv');
+  });
+
+  function func_test(call) {
+    code = document.getElementById("jav_fc2_" + call + "_code").value
+    $.ajax({
+      url: '/' + package_name + '/ajax/' + sub + '/test',
+      type: "POST", 
+      cache: false,
+      data: {code:code, call:call},
+      dataType: "json",
+      success: function (ret) {
+        m_modal(ret)
+      }
+    });
+  }
+/*
+  function cookie_test() {
+    $.ajax({
+      url: '/' + package_name + '/ajax/' + sub + '/test2',
+      type: "POST",
+      cache: false,
+      data: {javdb_cookie:document.getElementById("jav_fc2_javdb_jdbsession").value},
+      dataType: "json",
+      success: function (ret) {
+        if ( ret.result == 'success') {
+          $.notify('<strong>성공</strong>', {type: 'success'});
+        } else {
+          $.notify('<strong>실패</strong>', {type: 'warning'});
+        }
+      }
+    });
+  }
+*/
+</script>    
+{% endblock %}

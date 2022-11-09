@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  {{ macros.m_button_group([['global_setting_save_btn', '설정 저장']])}}
+  {{ macros.m_row_start('5') }}
+  {{ macros.m_row_end() }}
+
+  <nav>  
+    {{ macros.m_tab_head_start() }}
+      {{ macros.m_tab_head2('normal', '기본', true) }}
+    {{ macros.m_tab_head_end() }}
+  </nav>
+  <form id='setting' name='setting'>
+  <div class="tab-content" id="nav-tabContent">
+    {{ macros.m_tab_content_start('normal', true) }}
+      {{ macros.setting_input_text('jav_censored_ama_order', '우선순위', value=arg['jav_censored_ama_order'], desc=['메타데이터를 가져올 우선순위 설정', 'dmm, javbus']) }}
+      {{ macros.setting_input_text('jav_censored_ama_title_format', '타이틀 포맷', value=arg['jav_censored_ama_title_format'], desc=['title runtime premiered year actor tagline']) }}
+      {{ macros.setting_radio('jav_censored_ama_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_ama_tag_option']) }}
+      {{ macros.setting_checkbox('jav_censored_ama_use_extras', '예고편 사용', value=arg['jav_censored_ama_use_extras'], desc=None) }}
+    {{ macros.m_tab_content_end() }}
+    {{ macros.m_tab_content_end() }}
+  </div><!--tab-content-->
+</form>
+</div><!--전체-->
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "{{arg['sub'] }}";
+var current_data = null;
+
+$(document).ready(function(){
+  
+});
+
+
+</script>    
+{% endblock %}
