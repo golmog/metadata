@@ -1,26 +1,35 @@
 # -*- coding: utf-8 -*-
 #########################################################
 # python
-import os, sys, traceback, re, json, threading, time, shutil
+import json
+import os
+import re
+import shutil
+import sys
+import threading
+import time
+import traceback
 from datetime import datetime
+
+import lxml.html
 # third-party
 import requests
 # third-party
-from flask import request, render_template, jsonify, redirect, Response, send_file
-from sqlalchemy import or_, and_, func, not_, desc
-import lxml.html
-from lxml import etree as ET
-
-
+from flask import (Response, jsonify, redirect, render_template, request,
+                   send_file)
 # sjva 공용
-from framework import db, scheduler, path_data, socketio, SystemModelSetting, app, py_urllib
-from framework.util import Util
+from framework import (SystemModelSetting, app, db, path_data, py_urllib,
+                       scheduler, socketio)
 from framework.common.util import headers
+from framework.util import Util
+from lxml import etree as ET
 from plugin import LogicModuleBase, default_route_socketio
+from sqlalchemy import and_, desc, func, not_, or_
 from system import SystemLogicTrans
 from tool_base import d
 
 from .plugin import P
+
 logger = P.logger
 package_name = P.package_name
 ModelSetting = P.ModelSetting
@@ -54,7 +63,7 @@ class LogicLyric(LogicModuleBase):
             if sub == 'test':
                 return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
     """
@@ -108,14 +117,14 @@ class LogicLyric(LogicModuleBase):
                 ret['ret'] = 'fail'
                 ret['log'] = '가사가 없습니다.'
             logger.debug(f"get_lyric return is {ret['ret']}")
-        except Exception as exception:
-            logger.debug('Exception:%s', exception)
+        except Exception as e:
+            logger.debug(f"Exception:{str(e)}")
             logger.debug(traceback.format_exc())
             ret['ret'] = 'fail'
             if mode == 'lrc':
-                ret['log'] = f'[00:00:01]에러가 발생했습니다.\n[00:00:02]{exception}'
+                ret['log'] = f'[00:00:01]에러가 발생했습니다.\n[00:00:02]{e}'
             else:
-                ret['log'] = f'에러가 발생했습니다.\n{exception}'
+                ret['log'] = f'에러가 발생했습니다.\n{e}'
         return ret
 
     def change_to_lrc(self, data):

@@ -41,7 +41,7 @@ class ModuleBook(PluginModuleBase):
                 ret['modal'] = d(data)
             return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 

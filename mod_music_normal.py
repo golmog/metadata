@@ -1,6 +1,7 @@
 import urllib.parse
 
 import requests
+
 from support_site import SiteLastfm, SiteMelon, SiteUtil
 
 from .setup import *
@@ -53,7 +54,7 @@ class ModuleMusicNormal(PluginModuleBase):
 
             return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
         
@@ -210,14 +211,14 @@ class ModuleMusicNormal(PluginModuleBase):
                 ret['ret'] = 'fail'
                 ret['log'] = '가사가 없습니다.'
             logger.debug(f"get_lyric return is {ret['ret']}")
-        except Exception as exception:
-            logger.debug('Exception:%s', exception)
+        except Exception as e:
+            logger.debug(f"Exception:{str(e)}")
             logger.debug(traceback.format_exc())
             ret['ret'] = 'fail'
             if mode == 'lrc':
-                ret['log'] = f'[00:00:01]에러가 발생했습니다.\n[00:00:02]{exception}'
+                ret['log'] = f'[00:00:01]에러가 발생했습니다.\n[00:00:02]{e}'
             else:
-                ret['log'] = f'에러가 발생했습니다.\n{exception}'
+                ret['log'] = f'에러가 발생했습니다.\n{e}'
         return ret
 
     def change_to_lrc(self, data):

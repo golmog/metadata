@@ -16,10 +16,10 @@ from flask import jsonify, redirect, render_template, request
 # sjva
 from framework import (SystemModelSetting, app, db, path_data, scheduler,
                        socketio)
-from support_site import MetadataServerUtil
+from plugin import LogicModuleBase
 from tool_base import ToolBaseNotify, ToolUtil
 
-from plugin import LogicModuleBase
+from support_site import MetadataServerUtil
 
 #########################################################
 from .plugin import P
@@ -64,8 +64,8 @@ class LogicJavFc2(LogicModuleBase):
         arg['sub'] = self.name
         try:
             return render_template(f"{package_name}_{module_name}_{sub}.html", arg=arg)
-        except Exception as exception:
-            logger.error('Exception:%s', exception)
+        except Exception as e:
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
             return render_template('sample.html', title=f"{package_name} - {module_name} - {sub}")
 
@@ -110,7 +110,7 @@ class LogicJavFc2(LogicModuleBase):
 
 
         except Exception as e:
-            logger.error('Exception:%s', e)
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 
@@ -131,7 +131,7 @@ class LogicJavFc2(LogicModuleBase):
                 return jsonify(data)
         
         except Exception as e: 
-            logger.error('Exception:%s', e)
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
 
 

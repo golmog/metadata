@@ -91,7 +91,7 @@ class ModuleKtv(PluginModuleBase):
                             break
             return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
         
@@ -183,13 +183,13 @@ class ModuleKtv(PluginModuleBase):
                                     actor['name'] = tmps[2]
                                     break
                 except Exception as e: 
-                    P.logger.error('Exception:%s', e)
+                    P.logger.error(f"Exception:{str(e)}")
                     P.logger.error(traceback.format_exc())
 
                 return show
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
     
@@ -203,5 +203,5 @@ class ModuleKtv(PluginModuleBase):
                     return data['data']
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())

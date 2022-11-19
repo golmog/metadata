@@ -11,11 +11,10 @@ from flask import Blueprint, jsonify, redirect, request, send_file
 from framework import SystemModelSetting, app, check_api, path_data, py_urllib
 from framework.logger import get_logger
 from framework.util import Util
+from plugin import Logic, default_route, get_model_setting
 # 패키지
 #########################################################
 from support.base import d
-
-from plugin import Logic, default_route, get_model_setting
 
 
 class P(object):
@@ -104,7 +103,7 @@ def initialize():
         P.logic = Logic(P)
         default_route(P)
     except Exception as e: 
-        P.logger.error('Exception:%s', e)
+        P.logger.error(f"Exception:{str(e)}")
         P.logger.error(traceback.format_exc())
 
 logger = P.logger
@@ -248,7 +247,7 @@ def baseapi(sub):
         """
 
     except Exception as e:
-        logger.debug('Exception:%s', e)
+        logger.debug(f"Exception:{str(e)}")
         logger.debug(traceback.format_exc())
 
 
@@ -320,7 +319,7 @@ def basenormal(sub):
             logger.warning(f"ret : {ret}")
             return redirect(ret)             
     except Exception as e:
-        logger.debug('Exception:%s', e)
+        logger.debug(f"Exception:{str(e)}")
         logger.debug(traceback.format_exc())
 
 

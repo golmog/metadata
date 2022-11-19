@@ -23,13 +23,13 @@ from framework import (SystemModelSetting, app, db, path_data, py_urllib,
 from framework.common.util import headers
 from framework.util import Util
 from lxml import etree as ET
+from plugin import LogicModuleBase, default_route_socketio
 from sqlalchemy import and_, desc, func, not_, or_
+from system import SystemLogicTrans
+
 # 패키지
 from support_site import (SiteDaumTv, SiteTmdbFtv, SiteTmdbTv, SiteTvdbTv,
                           SiteUtil, SiteWatchaTv)
-from system import SystemLogicTrans
-
-from plugin import LogicModuleBase, default_route_socketio
 
 from .plugin import P
 
@@ -109,7 +109,7 @@ class LogicFtv(LogicModuleBase):
                         ret = SiteClass.info_api(keyword)
                 return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
         
@@ -291,7 +291,7 @@ class LogicFtv(LogicModuleBase):
                         watcha_info = data['data']
                         tvdb_info['plot'] = watcha_info['plot']
                 except Exception as e: 
-                    P.logger.error('Exception:%s', e)
+                    P.logger.error(f"Exception:{str(e)}")
                     P.logger.error(traceback.format_exc())
 
 
@@ -301,7 +301,7 @@ class LogicFtv(LogicModuleBase):
             
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
     
@@ -316,5 +316,5 @@ class LogicFtv(LogicModuleBase):
                     return data['data']
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())

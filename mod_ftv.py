@@ -163,7 +163,7 @@ class ModuleFtv(PluginModuleBase):
                     self.process_trans('season', data)
                     return data
         except Exception as e: 
-            logger.error('Exception:%s', e)
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
 
 

@@ -23,11 +23,11 @@ from framework import (SystemModelSetting, app, db, path_data, py_urllib,
 from framework.common.util import headers
 from framework.util import Util
 from lxml import etree as ET
+from plugin import LogicModuleBase, default_route_socketio
 from sqlalchemy import and_, desc, func, not_, or_
+
 # 패키지
 from support_site import SiteDaumTv, SiteTmdbTv, SiteTvingTv, SiteWavveTv
-
-from plugin import LogicModuleBase, default_route_socketio
 
 from .plugin import P
 
@@ -102,7 +102,7 @@ class LogicOttShow(LogicModuleBase):
                     show = tmp['data']
             return show
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
     def stream(self, code):
@@ -117,5 +117,5 @@ class LogicOttShow(LogicModuleBase):
                 data = Wavve.streaming('vod', code[2:], '1080p', return_url=True)
                 return {'ret':'success', 'site':'wavve', 'url':data}
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())

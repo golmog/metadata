@@ -22,9 +22,8 @@ from framework import (SystemModelSetting, app, db, path_data, scheduler,
 from framework.common.util import headers
 from framework.util import Util
 from lxml import etree as ET
-from sqlalchemy import and_, desc, func, not_, or_
-
 from plugin import LogicModuleBase, default_route_socketio
+from sqlalchemy import and_, desc, func, not_, or_
 
 # 패키지
 from .plugin import P
@@ -76,7 +75,7 @@ class LogicJavCensoredAma(LogicModuleBase):
                             ret['info'] = self.info(ret['search']['data'][0]['code'])
                 return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 

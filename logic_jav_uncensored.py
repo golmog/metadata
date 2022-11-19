@@ -15,12 +15,12 @@ from flask import jsonify, redirect, render_template, request
 # sjva
 from framework import (SystemModelSetting, app, db, path_data, scheduler,
                        socketio)
+from plugin import LogicModuleBase
+from tool_base import ToolBaseNotify, ToolUtil
+
 from support_site import (Site1PondoTv, Site10Musume, SiteCarib, SiteHeyzo,
                           SiteUtil)
 from support_site.server_util import MetadataServerUtil
-from tool_base import ToolBaseNotify, ToolUtil
-
-from plugin import LogicModuleBase
 
 #########################################################
 from .plugin import P
@@ -64,8 +64,8 @@ class LogicJavUncensored(LogicModuleBase):
         arg['sub'] = self.name
         try:
             return render_template(f"{package_name}_{module_name}_{sub}.html", arg=arg)
-        except Exception as exception:
-            logger.error('Exception:%s', exception)
+        except Exception as e:
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
             return render_template('sample.html', title=f"{package_name} - {module_name} - {sub}")
 
@@ -88,7 +88,7 @@ class LogicJavUncensored(LogicModuleBase):
                 return jsonify(ret)
 
         except Exception as e:
-            logger.error('Exception:%s', e)
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 
@@ -109,7 +109,7 @@ class LogicJavUncensored(LogicModuleBase):
                 return jsonify(data)
         
         except Exception as e: 
-            logger.error('Exception:%s', e)
+            logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
 
 
@@ -125,8 +125,7 @@ class LogicJavUncensored(LogicModuleBase):
         # 각 site_ 에서는 품번만 추출해냄, 여기에서 제작사 판별 필요
         
         if '1pon' in keyword.lower():
-            from support_site import \
-                Site1PondoTv as SiteClass
+            from support_site import Site1PondoTv as SiteClass
 
             data = SiteClass.search(
                 keyword, 
@@ -138,8 +137,7 @@ class LogicJavUncensored(LogicModuleBase):
                 ret += data['data']
 
         elif '10mu' in keyword.lower():
-            from support_site import \
-                Site10Musume as SiteClass
+            from support_site import Site10Musume as SiteClass
 
             data = SiteClass.search(
                 keyword, 
@@ -151,8 +149,7 @@ class LogicJavUncensored(LogicModuleBase):
                 ret += data['data']
 
         elif 'heyzo' in keyword.lower():
-            from support_site import \
-                SiteHeyzo as SiteClass
+            from support_site import SiteHeyzo as SiteClass
 
             data = SiteClass.search(
                 keyword, 
@@ -164,8 +161,7 @@ class LogicJavUncensored(LogicModuleBase):
                 ret += data['data']
 
         elif 'carib' in keyword.lower():
-            from support_site import \
-                SiteCarib as SiteClass
+            from support_site import SiteCarib as SiteClass
 
             data = SiteClass.search(
                 keyword, 
@@ -180,17 +176,13 @@ class LogicJavUncensored(LogicModuleBase):
         else:
             for idx, site in enumerate(site_list):
                 if site == '1pondo':
-                    from support_site import \
-                        Site1PondoTv as SiteClass
+                    from support_site import Site1PondoTv as SiteClass
                 elif site == '10musume':
-                    from support_site import \
-                        Site10Musume as SiteClass
+                    from support_site import Site10Musume as SiteClass
                 elif site == 'heyzo':
-                    from support_site import \
-                        SiteHeyzo as SiteClass
+                    from support_site import SiteHeyzo as SiteClass
                 elif site == 'carib':
-                    from support_site import \
-                        SiteCarib as SiteClass
+                    from support_site import SiteCarib as SiteClass
 
                 data = SiteClass.search(
                 keyword, 

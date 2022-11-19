@@ -23,9 +23,8 @@ from framework import (SystemModelSetting, app, db, path_data, scheduler,
 from framework.common.util import headers
 from framework.util import Util
 from lxml import etree as ET
-from sqlalchemy import and_, desc, func, not_, or_
-
 from plugin import LogicModuleBase, default_route_socketio
+from sqlalchemy import and_, desc, func, not_, or_
 
 # 패키지
 from .plugin import P
@@ -91,7 +90,7 @@ class LogicJavCensored(LogicModuleBase):
         try:
             return render_template('{package_name}_{module_name}_{sub}.html'.format(package_name=P.package_name, module_name=self.name, sub=sub), arg=arg)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return render_template('sample.html', title='%s - %s' % (P.package_name, sub))
 
@@ -124,7 +123,7 @@ class LogicJavCensored(LogicModuleBase):
                 return jsonify(entity_actor)
             
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 

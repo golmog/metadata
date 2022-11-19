@@ -23,11 +23,11 @@ from framework import (SystemModelSetting, app, db, path_data, py_urllib,
 from framework.common.util import headers
 from framework.util import Util
 from lxml import etree as ET
+from plugin import LogicModuleBase, default_route_socketio
 from sqlalchemy import and_, desc, func, not_, or_
+
 # 패키지
 from support_site import SiteUtil, SiteVibe
-
-from plugin import LogicModuleBase, default_route_socketio
 
 from .plugin import P
 
@@ -93,7 +93,7 @@ class LogicMusic(LogicModuleBase):
                             ret['json'] = self.album_info(keyword, json_mode)
                 return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
         
@@ -183,7 +183,7 @@ class LogicMusic(LogicModuleBase):
             return show
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
     
@@ -197,5 +197,5 @@ class LogicMusic(LogicModuleBase):
                     return data['data']
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())

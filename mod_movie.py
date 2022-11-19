@@ -74,7 +74,7 @@ class ModuleMovie(PluginModuleBase):
                     ret['json'] = SiteClass.info_api(keyword)
             return jsonify(ret)
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'warning', 'msg':str(e)})
 
@@ -253,7 +253,7 @@ class ModuleMovie(PluginModuleBase):
                         if info['plot'] == '':
                             info['plot'] = tmdb_info['plot']
                 except Exception as e: 
-                    logger.error('Exception:%s', e)
+                    logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('tmdb search fail..')
            
@@ -271,7 +271,7 @@ class ModuleMovie(PluginModuleBase):
                         if 'wavve_stream' in wavve_info['extra_info']:
                             info['extra_info']['wavve_stream'] = wavve_info['extra_info']['wavve_stream']
                 except Exception as e: 
-                    logger.error('Exception:%s', e)
+                    logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('wavve search fail..')
 
@@ -292,7 +292,7 @@ class ModuleMovie(PluginModuleBase):
                             info['extra_info']['tving_stream'] = tving_info['extra_info']['tving_stream']
                         
                 except Exception as e: 
-                    logger.error('Exception:%s', e)
+                    logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('tving search fail..')
             
@@ -344,7 +344,7 @@ class ModuleMovie(PluginModuleBase):
                         if movie_use_watcha_option in ['all', 'collection']: 
                             info['tag'] += watcha_info['tag']
                 except Exception as e: 
-                    logger.error('Exception:%s', e)
+                    logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
             self.process_trans(info)
@@ -352,7 +352,7 @@ class ModuleMovie(PluginModuleBase):
 
 
         except Exception as e: 
-            P.logger.error('Exception:%s', e)
+            P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
     
