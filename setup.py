@@ -2,7 +2,7 @@ setting = {
     'filepath' : __file__,
     'use_db': True,
     'use_default_setting': True,
-    'home_module': None,
+    'home_module': 'movie',
     'menu': {
         'uri': __package__,
         'name': '메타데이터',
