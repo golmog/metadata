@@ -348,6 +348,19 @@ class ModuleMovie(PluginModuleBase):
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
             self.process_trans(info)
+            max_poster = 0
+            max_art = 0
+            info['main_poster'] = None
+            info['main_art'] = None
+            for _ in info['art']:
+                if _['aspect'] == 'poster':
+                    if max_poster < _['score']:
+                        info['main_poster'] = _['value']
+                        max_poster = _['score']
+                if _['aspect'] == 'landscape':
+                    if max_art < _['score']:
+                        info['main_art'] = _['value']
+                        max_art = _['score']
             return info                    
 
 
