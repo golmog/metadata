@@ -113,7 +113,7 @@ class ModuleMovie(PluginModuleBase):
             
     #########################################################
 
-    def search(self, keyword, year, manual=False):
+    def search(self, keyword, year, manual=False, site_list=None):
         try: 
             if isinstance(year, str):
                 year = int(str)
@@ -132,7 +132,8 @@ class ModuleMovie(PluginModuleBase):
                 return [item]
     
         ret = []
-        site_list = P.ModelSetting.get_list('movie_first_order', ',')
+        if site_list == None or site_list == []:
+            site_list = P.ModelSetting.get_list('movie_first_order', ',')
     
         # 한글 영문 분리
         split_index = -1
