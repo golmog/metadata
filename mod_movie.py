@@ -113,7 +113,7 @@ class ModuleMovie(PluginModuleBase):
             
     #########################################################
 
-    def search(self, keyword, year, manual=False, site_list=None):
+    def search(self, keyword, year, manual=False, site_list=None, site_all=False):
         try: 
             if isinstance(year, str):
                 year = int(str)
@@ -176,7 +176,7 @@ class ModuleMovie(PluginModuleBase):
                     if manual:
                         continue
                     else:
-                        if len(site_data['data']) and site_data['data'][0]['score'] > 85:
+                        if site_all == False and (len(site_data['data']) and site_data['data'][0]['score'] > 85):
                             break
             ret = sorted(ret, key=lambda k: k['score'], reverse=True)  
             if len(ret) > 0 and ret[0]['score'] > 85:
