@@ -263,9 +263,11 @@ class ModuleMovie(PluginModuleBase):
                     wavve_info = None
                     wavve_search = SiteWavveMovie.search(info['title'], year=info['year'])
                     if wavve_search['ret'] == 'success' and len(wavve_search['data']) > 0:
-                        tmp = SiteWavveMovie.info(wavve_search['data'][0]['code'])['data']
-                        if SiteUtil.compare(info['title'], tmp['title']) and abs(info['year'] - tmp['year']) <= 1:
-                            wavve_info = tmp
+                        tmp = SiteWavveMovie.info(wavve_search['data'][0]['code'])
+                        if tmp != None:
+                            tmp = tmp['data']
+                            if SiteUtil.compare(info['title'], tmp['title']) and abs(info['year'] - tmp['year']) <= 1:
+                                wavve_info = tmp
                     if wavve_info is not None:
                         info['code_list'] += wavve_info['code_list']
                         info['art'] += wavve_info['art']
