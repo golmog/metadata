@@ -168,7 +168,7 @@ class ModuleFtv(PluginModuleBase):
 
 
     def process_trans(self, data_type, data):
-        mode = P.ModelSetting.get('movie_translate_option')
+        mode = P.ModelSetting.get('ftv_translate_option')
         if mode == 'none':
             return
 
