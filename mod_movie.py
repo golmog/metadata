@@ -191,7 +191,9 @@ class ModuleMovie(PluginModuleBase):
     def info(self, code):
         try:
             info = None
-            SiteClass = self.module_map2[code[1]]
+            SiteClass = self.module_map2.get(code[1]) or self.module_map2.get(code[0])
+            if not SiteClass:
+                raise KeyError(f'KeyError: {code}')
             tmp = SiteClass.info(code)
             if tmp['ret'] == 'success':
                 info = tmp['data']

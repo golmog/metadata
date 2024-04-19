@@ -29,7 +29,7 @@ class ModuleKtv(PluginModuleBase):
 
     def __init__(self, P):
         super(ModuleKtv, self).__init__(P, name='ktv', first_menu='setting')
-    
+
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             call = command
@@ -90,11 +90,11 @@ class ModuleKtv(PluginModuleBase):
                         if episode_data['has_more'] == 'N':
                             break
             return jsonify(ret)
-        except Exception as e: 
+        except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
-        
+
 
 
     def process_api(self, sub, req):
@@ -159,11 +159,11 @@ class ModuleKtv(PluginModuleBase):
                         if 'themes' in extra:
                             show['extra_info']['themes'] = extra['themes']
 
-            elif code[1] == 'V': 
+            elif code[1] == 'V':
                 tmp = SiteTvingTv.info(code)
                 if tmp['ret'] == 'success':
                     show = tmp['data']
-            elif code[1] == 'W': 
+            elif code[1] == 'W':
                 tmp = SiteWavveTv.info(code)
                 if tmp['ret'] == 'success':
                     show = tmp['data']
@@ -182,18 +182,19 @@ class ModuleKtv(PluginModuleBase):
                                 if actor['name'] == tmps[1]:
                                     actor['name'] = tmps[2]
                                     break
-                except Exception as e: 
+                except Exception as e:
                     P.logger.error(f"Exception:{str(e)}")
                     P.logger.error(traceback.format_exc())
 
                 return show
 
-        except Exception as e: 
+        except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
+            P.logger.error(f"{code=}, {title=}")
 
-    
-    
+
+
     def episode_info(self, code):
         try:
             if code[1] == 'D':
@@ -202,6 +203,6 @@ class ModuleKtv(PluginModuleBase):
                 if data['ret'] == 'success':
                     return data['data']
 
-        except Exception as e: 
+        except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
