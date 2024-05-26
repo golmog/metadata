@@ -33,7 +33,7 @@ class ModuleMovie(PluginModuleBase):
     }
 
     module_map = {'naver':SiteNaverMovie, 'daum':SiteDaumMovie, 'tmdb':SiteTmdbMovie, 'watcha':SiteWatchaMovie, 'wavve':SiteWavveMovie, 'tving':SiteTvingMovie}
-    module_map2 = {'N':SiteNaverMovie, 'D':SiteDaumMovie, 'T':SiteTmdbMovie, 'C':SiteWatchaMovie, 'W':SiteWavveMovie, 'V':SiteTvingMovie}
+    module_map2 = {'N':SiteNaverMovie, 'D':SiteDaumMovie, 'T':SiteTmdbMovie, 'X':SiteWatchaMovie, 'W':SiteWavveMovie, 'V':SiteTvingMovie}
 
     def __init__(self, P):
         super(ModuleMovie, self).__init__(P, name='movie', first_menu='setting')
@@ -54,8 +54,8 @@ class ModuleMovie(PluginModuleBase):
                 keyword = tmps[0].strip()
                 try: year = int(tmps[1].strip())
                 except: year = None
-            
-            
+
+
             if call == 'total':
                 if mode == 'search':
                     manual = (param == 'manual')
@@ -73,7 +73,7 @@ class ModuleMovie(PluginModuleBase):
                 elif mode == 'info_api':
                     ret['json'] = SiteClass.info_api(keyword)
             return jsonify(ret)
-        except Exception as e: 
+        except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'warning', 'msg':str(e)})
@@ -87,7 +87,7 @@ class ModuleMovie(PluginModuleBase):
 
             logger.debug(req.args.get('year'))
             logger.debug(year)
-            
+
             if call == 'plex' or call == 'kodi':
                 return jsonify(self.search(req.args.get('keyword'), year, manual=manual))
         elif sub == 'info':
@@ -110,11 +110,11 @@ class ModuleMovie(PluginModuleBase):
                     return redirect(ret['hls'])
             else:
                 return jsonify(ret)
-            
+
     #########################################################
 
     def search(self, keyword, year, manual=False, site_list=None, site_all=False):
-        try: 
+        try:
             if isinstance(year, str):
                 year = int(str)
         except: pass
@@ -130,11 +130,11 @@ class ModuleMovie(PluginModuleBase):
                 item['desc'] = data['plot']
                 item['site'] = data['site']
                 return [item]
-    
+
         ret = []
         if site_list == None or site_list == []:
             site_list = P.ModelSetting.get_list('movie_first_order', ',')
-    
+
         # 한글 영문 분리
         split_index = -1
         is_include_kor = False
@@ -178,7 +178,7 @@ class ModuleMovie(PluginModuleBase):
                     else:
                         if site_all == False and (len(site_data['data']) and site_data['data'][0]['score'] > 85):
                             break
-            ret = sorted(ret, key=lambda k: k['score'], reverse=True)  
+            ret = sorted(ret, key=lambda k: k['score'], reverse=True)
             if len(ret) > 0 and ret[0]['score'] > 85:
                 break
         ret = sorted(ret, key=lambda k: k['score'], reverse=True)
@@ -191,7 +191,9 @@ class ModuleMovie(PluginModuleBase):
     def info(self, code):
         try:
             info = None
-            SiteClass = self.module_map2[code[1]]
+            SiteClass = self.module_map2.get(code[1]) or self.module_map2.get(code[0])
+            if not SiteClass:
+                raise KeyError(f'KeyError: {code}')
             tmp = SiteClass.info(code)
             if tmp['ret'] == 'success':
                 info = tmp['data']
@@ -236,7 +238,7 @@ class ModuleMovie(PluginModuleBase):
                             break
 
                     if tmdb_info is not None:
-                        logger.debug('tmdb :%s %s', tmdb_info['title'], tmdb_info['year'])  
+                        logger.debug('tmdb :%s %s', tmdb_info['title'], tmdb_info['year'])
                         #logger.debug(json.dumps(tmdb_info, indent=4))
                         logger.debug('tmdb_info : %s', tmdb_info['title'])
                         movie_use_sub_tmdb_mode = P.ModelSetting.get('movie_use_sub_tmdb_mode')
@@ -253,11 +255,11 @@ class ModuleMovie(PluginModuleBase):
                         info['code_list'] += tmdb_info['code_list']
                         if info['plot'] == '':
                             info['plot'] = tmdb_info['plot']
-                except Exception as e: 
+                except Exception as e:
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('tmdb search fail..')
-           
+
             if True:
                 try:
                     wavve_info = None
@@ -273,7 +275,7 @@ class ModuleMovie(PluginModuleBase):
                         info['art'] += wavve_info['art']
                         if 'wavve_stream' in wavve_info['extra_info']:
                             info['extra_info']['wavve_stream'] = wavve_info['extra_info']['wavve_stream']
-                except Exception as e: 
+                except Exception as e:
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('wavve search fail..')
@@ -293,30 +295,30 @@ class ModuleMovie(PluginModuleBase):
                         info['art'] += tving_info['art']
                         if 'tving_stream' in tving_info['extra_info']:
                             info['extra_info']['tving_stream'] = tving_info['extra_info']['tving_stream']
-                        
-                except Exception as e: 
+
+                except Exception as e:
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('tving search fail..')
-            
+
             if P.ModelSetting.get_bool('movie_use_watcha'):
                 try:
                     movie_use_watcha_option = P.ModelSetting.get('movie_use_watcha_option')
                     watcha_info = None
                     watcha_search = SiteWatchaMovie.search(info['title'], year=info['year'])
-                    
+
                     if watcha_search['ret'] == 'success' and len(watcha_search['data'])>0:
                         if watcha_search['data'][0]['score'] > 85:
                             watcha_data = SiteWatchaMovie.info(watcha_search['data'][0]['code'], like_count=P.ModelSetting.get_int('movie_use_watcha_collection_like_count'))
                             if watcha_data['ret'] == 'success':
                                 watcha_info = watcha_data['data']
-                    
+
                     if watcha_info is not None:
                         if movie_use_watcha_option in ['all', 'review']:
                             info['review'] = watcha_info['review']
                             info['code_list'] += watcha_info['code_list']
                             info['code_list'].append(['google_search', u'영화 ' + info['title']])
-                            
+
                             for idx, review in enumerate(info['review']):
                                 if idx >= len(info['code_list']):
                                     break
@@ -344,9 +346,9 @@ class ModuleMovie(PluginModuleBase):
                                 elif info['code_list'][idx][0] == 'google_search':
                                     review['source'] = '구글 검색'
                                     review['link'] = 'https://www.google.com/search?q=%s' % info['code_list'][idx][1]
-                        if movie_use_watcha_option in ['all', 'collection']: 
+                        if movie_use_watcha_option in ['all', 'collection']:
                             info['tag'] += watcha_info['tag']
-                except Exception as e: 
+                except Exception as e:
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
@@ -364,20 +366,20 @@ class ModuleMovie(PluginModuleBase):
                     if max_art < _['score']:
                         info['main_art'] = _['value']
                         max_art = _['score']
-            return info                    
+            return info
 
 
-        except Exception as e: 
+        except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
 
-    
+
     def process_trans(self, data):
         # [['none', '번역하지 않음'], ['text', '제목,줄거리만'], ['all', '배우 이름,역할 포함 전부']]
         mode = P.ModelSetting.get('movie_translate_option')
         if mode == 'none':
             return
-          
+
         if SiteUtil.is_include_hangul(data['plot']) == False:
             data['plot'] = SiteUtil.trans(data['plot'], source='en')
         if mode == 'all':
