@@ -185,14 +185,13 @@ class ModuleKtv(PluginModuleBase):
                 except Exception as e:
                     P.logger.error(f"Exception:{str(e)}")
                     P.logger.error(traceback.format_exc())
-
+        
                 return show
 
         except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             P.logger.error(f"{code=}, {title=}")
-
 
 
     def episode_info(self, code):
