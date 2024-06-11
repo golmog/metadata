@@ -1,6 +1,6 @@
 from support_site import (MetadataServerUtil, SiteDaumTv, SiteTmdbTv,
-                          SiteTvingTv, SiteUtil, SiteWavveTv, SupportTving,
-                          SupportWavve)
+                          SiteTvingTv, SiteUtil, SiteWatchaKTv, SiteWavveTv,
+                          SupportTving, SupportWavve)
 
 from .setup import *
 
@@ -23,9 +23,11 @@ class ModuleKtv(PluginModuleBase):
         'ktv_tving_test_search' : '',
         'ktv_tving_test_info' : '',
         'ktv_total_test_info' : '',
+        'ktv_watcha_test_seatch' : '',
+        'ktv_watcha_test_info' : '',
     }
 
-    module_map = {'daum':SiteDaumTv, 'tving':SiteTvingTv, 'wavve':SiteWavveTv, 'tmdb':SiteTmdbTv}
+    module_map = {'daum':SiteDaumTv, 'tving':SiteTvingTv, 'wavve':SiteWavveTv, 'tmdb':SiteTmdbTv, 'watcha':SiteWatchaKTv}
 
     def __init__(self, P):
         super(ModuleKtv, self).__init__(P, name='ktv', first_menu='setting')
@@ -47,6 +49,8 @@ class ModuleKtv(PluginModuleBase):
                         ret['json']['info'] = self.info(ret['json']['search']['tving'][0]['code'], '')
                     elif 'wavve' in ret['json']['search']:
                         ret['json']['info'] = self.info(ret['json']['search']['wavve'][0]['code'], '')
+                    elif 'watcha' in ret['json']['search']:
+                        ret['json']['info'] = self.info(ret['json']['search']['watcha'][0]['code'], '')
                 elif mode == 'info':
                     code = keyword
                     title = ''
@@ -65,6 +69,8 @@ class ModuleKtv(PluginModuleBase):
             elif call == 'wavve':
                 if mode == 'search':
                     ret['json'] = SupportWavve.search_tv(keyword)
+                    #if ret['json'] == None:
+
                 elif mode == 'info':
                     ret['json']['program'] = SupportWavve.vod_programs_programid(keyword)
                     ret['json']['episodes'] = []
@@ -89,6 +95,15 @@ class ModuleKtv(PluginModuleBase):
                         page += 1
                         if episode_data['has_more'] == 'N':
                             break
+            elif call == 'watcha':
+                if mode == 'search':
+                    ret['json'] = SiteWatchaKTv.search(keyword)
+                elif mode == 'search_api':
+                    ret['json'] = SiteWatchaKTv.search_api(keyword)
+                elif mode == 'info_api':
+                    ret['json'] = SiteWatchaKTv.info_api(keyword)
+                elif mode == 'info':
+                    ret['json'] = SiteWatchaKTv.info(keyword)
             return jsonify(ret)
         except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
@@ -116,7 +131,7 @@ class ModuleKtv(PluginModuleBase):
 
     def search(self, keyword, manual=False):
         ret = {}
-        site_list = ['daum', 'tving', 'wavve']
+        site_list = ['daum', 'tving', 'wavve', 'watcha']
         for idx, site in enumerate(site_list):
             site_data = self.module_map[site].search(keyword)
             if site_data['ret'] == 'success':
@@ -134,10 +149,8 @@ class ModuleKtv(PluginModuleBase):
                 tmp = SiteDaumTv.info(code, title)
                 if tmp['ret'] == 'success':
                     show = tmp['data']
-
                 if 'kakao_id' in show['extra_info'] and show['extra_info']['kakao_id'] is not None and P.ModelSetting.get_bool('ktv_use_kakaotv'):
                     show['extras'] = SiteDaumTv.get_kakao_video(show['extra_info']['kakao_id'])
-
                 if P.ModelSetting.get_bool('ktv_use_tmdb'):
                     tmdb_id = SiteTmdbTv.search_tv(show['title'], show['premiered'])
                     show['extra_info']['tmdb_id'] = tmdb_id
@@ -153,11 +166,14 @@ class ModuleKtv(PluginModuleBase):
 
                 SiteWavveTv.apply_tv_by_search(show)
                 #extra
+                # 2024.06.08 일단 주석처리
+                """
                 if P.ModelSetting.get_bool('ktv_use_theme'):
                     extra = MetadataServerUtil.get_meta_extra(code)
                     if extra is not None:
                         if 'themes' in extra:
                             show['extra_info']['themes'] = extra['themes']
+                """
 
             elif code[1] == 'V':
                 tmp = SiteTvingTv.info(code)
@@ -165,6 +181,10 @@ class ModuleKtv(PluginModuleBase):
                     show = tmp['data']
             elif code[1] == 'W':
                 tmp = SiteWavveTv.info(code)
+                if tmp['ret'] == 'success':
+                    show = tmp['data']
+            elif code[1] == 'X':
+                tmp = SiteWatchaKTv.info(code)
                 if tmp['ret'] == 'success':
                     show = tmp['data']
 
