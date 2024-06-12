@@ -148,7 +148,7 @@ class LogicMusic(LogicModuleBase):
 
                 if ModelSetting.get_bool('ktv_use_tmdb'):
                     from support_site import SiteTmdbTv
-                    tmdb_id = SiteTmdbTv.search_tv(show['title'], show['premiered'])
+                    tmdb_id = SiteTmdbTv.search(show['title'], show['premiered'])
                     show['extra_info']['tmdb_id'] = tmdb_id
                     if tmdb_id is not None:
                         show['tmdb'] = {}

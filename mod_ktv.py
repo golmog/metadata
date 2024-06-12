@@ -152,7 +152,7 @@ class ModuleKtv(PluginModuleBase):
                 if 'kakao_id' in show['extra_info'] and show['extra_info']['kakao_id'] is not None and P.ModelSetting.get_bool('ktv_use_kakaotv'):
                     show['extras'] = SiteDaumTv.get_kakao_video(show['extra_info']['kakao_id'])
                 if P.ModelSetting.get_bool('ktv_use_tmdb'):
-                    tmdb_id = SiteTmdbTv.search_tv(show['title'], show['premiered'])
+                    tmdb_id = SiteTmdbTv.search(show['title'], show['premiered'])
                     show['extra_info']['tmdb_id'] = tmdb_id
                     if tmdb_id is not None:
                         show['tmdb'] = {}
