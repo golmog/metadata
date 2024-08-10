@@ -387,12 +387,12 @@ class ModuleMovie(PluginModuleBase):
                 #logger.debug(actor['name'])
                 if SiteUtil.is_include_hangul(actor['name']) == False:
                     actor['name'] = SiteUtil.trans(actor['name'], source='en')
-                    logger.info(f"{actor['name']}")
+                    #logger.info(f"{actor['name']}")
                 if actor['role'].strip() == '': continue
-                logger.debug(f"{actor['role']}")                    
+                #logger.debug(f"{actor['role']}")                    
                 if actor['role'].strip() != '' and SiteUtil.is_include_hangul(actor['role']) == False:
                     actor['role'] = SiteUtil.trans(actor['role'], source='en')
-                    logger.info(f"{actor['role']}")
+                    #logger.info(f"{actor['role']}")
         return data
 
 
