@@ -10,6 +10,9 @@ Plex, KODI, Jellyfin 등과 연동하여 메타데이터를 제공하는 플러�
 
 
 ## Changelog
+- 1.1.4 (2024.08.21)   
+  영화 daum, naver 제거.   
+
 - 1.1.2 (2024.07.11)   
   KTV Daum 소개 사용.   
 

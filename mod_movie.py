@@ -7,8 +7,8 @@ from .setup import *
 
 class ModuleMovie(PluginModuleBase):
     db_default = {
-        'movie_first_order' : 'daum, naver, tmdb',
-        'movie_use_sub_tmdb' : 'except_daum', # [['all,'모두 사용'], ['except_daum', 'Daum은 사용 안함'], ['none', '사용 안함']]
+        'movie_first_order' : 'tmdb',
+        'movie_use_sub_tmdb' : 'all', # [['all,'모두 사용'], ['except_daum', 'Daum은 사용 안함'], ['none', '사용 안함']]
         'movie_use_sub_tmdb_mode' : 'all', #[['all', '모두 사용'], ['art, 'Art만'], ['actor','배우정보']]
         'movie_use_watcha' : 'True',
         'movie_use_watcha_option' : 'all', # [['all', '모두 사용'], ['review','리뷰만'], ['collection', '컬렉션만']]
@@ -37,7 +37,9 @@ class ModuleMovie(PluginModuleBase):
 
     def __init__(self, P):
         super(ModuleMovie, self).__init__(P, name='movie', first_menu='setting')
-
+        P.ModelSetting.set('movie_use_sub_tmdb', 'all')
+        P.ModelSetting.set('movie_use_sub_tmdb_mode', 'all')
+        P.ModelSetting.set('movie_first_order', 'tmdb')
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
