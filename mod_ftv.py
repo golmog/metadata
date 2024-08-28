@@ -178,9 +178,22 @@ class ModuleFtv(PluginModuleBase):
                 data['plot'] = SiteUtil.trans(data['plot'], source='en')
             if mode == 'all':
                 for actor in data['actor']:
-                    if 'is_kor_name' in actor and actor['is_kor_name'] == False:
-                        actor['name'] = SiteUtil.trans(actor['name_original'], source='en')
+                    #if 'is_kor_name' in actor and actor['is_kor_name'] == False:
+                    #    actor['name'] = SiteUtil.trans(actor['name_original'], source='en')
+                    #    actor['role'] = SiteUtil.trans(actor['role'], source='en')
+                    if SiteUtil.is_include_hangul(actor['name']) == False:
+                        actor['name'] = SiteUtil.trans(actor['name'], source='en')
+                    if SiteUtil.is_include_hangul(actor['role']) == False:
                         actor['role'] = SiteUtil.trans(actor['role'], source='en')
+                lists = [data['director'], data['producer'], data['writer']]
+                for _list in lists:
+                    new = []
+                    for name in _list:
+                        if SiteUtil.is_include_hangul(name) == False:
+                            new.append(SiteUtil.trans(name, source='en'))
+                        else:
+                            new.append(name)
+                    _list = new
 
         if data_type == 'season':
             for key, tmdb_epi in data['episodes'].items():
