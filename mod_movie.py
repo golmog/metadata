@@ -262,6 +262,7 @@ class ModuleMovie(PluginModuleBase):
                     logger.error(traceback.format_exc())
                     logger.error('tmdb search fail..')
 
+            """
             if True:
                 try:
                     wavve_info = None
@@ -302,7 +303,7 @@ class ModuleMovie(PluginModuleBase):
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('tving search fail..')
-
+            """
             if P.ModelSetting.get_bool('movie_use_watcha'):
                 try:
                     movie_use_watcha_option = P.ModelSetting.get('movie_use_watcha_option')
@@ -324,19 +325,19 @@ class ModuleMovie(PluginModuleBase):
                             for idx, review in enumerate(info['review']):
                                 if idx >= len(info['code_list']):
                                     break
-                                if info['code_list'][idx][0] == 'naver_id':
-                                    review['source'] = '네이버'
-                                    review['link'] = 'https://movie.naver.com/movie/bi/mi/basic.nhn?code=%s' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'daum_id':
-                                    review['source'] = '다음'
-                                    review['link'] = 'https://movie.daum.net/moviedb/main?movieId=%s' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'wavve_id':
-                                    review['source'] = '웨이브'
-                                    review['link'] = 'https://www.wavve.com/player/movie?movieid=%s' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'tving_id':
-                                    review['source'] = '티빙'
-                                    review['link'] = 'https://www.tving.com/movie/player/%s' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'tmdb_id':
+                                #if info['code_list'][idx][0] == 'naver_id':
+                                #    review['source'] = '네이버'
+                                #    review['link'] = 'https://movie.naver.com/movie/bi/mi/basic.nhn?code=%s' % info['code_list'][idx][1]
+                                #elif info['code_list'][idx][0] == 'daum_id':
+                                #    review['source'] = '다음'
+                                #    review['link'] = 'https://movie.daum.net/moviedb/main?movieId=%s' % info['code_list'][idx][1]
+                                #elif info['code_list'][idx][0] == 'wavve_id':
+                                #    review['source'] = '웨이브'
+                                #    review['link'] = 'https://www.wavve.com/player/movie?movieid=%s' % info['code_list'][idx][1]
+                                #elif info['code_list'][idx][0] == 'tving_id':
+                                #    review['source'] = '티빙'
+                                #    review['link'] = 'https://www.tving.com/movie/player/%s' % info['code_list'][idx][1]
+                                if info['code_list'][idx][0] == 'tmdb_id':
                                     review['source'] = 'TMDB'
                                     review['link'] = 'https://www.themoviedb.org/movie/%s?language=ko' % info['code_list'][idx][1]
                                 elif info['code_list'][idx][0] == 'imdb_id':

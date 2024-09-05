@@ -40,16 +40,20 @@ class ModuleRoute(PluginModuleBase):
                         try: os.system("pip install yt-dlp")
                         except: pass
                     ydl_opts = {
-                        "quiet": True,
+                        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]',  # mp4 비디오와 m4a 오디오 형식 선택
+                        'quiet': True,  # 불필요한 출력 억제
+                        'skip_download': True,  # 실제로 파일을 다운로드하지 않음
+                        "username": "oauth2",
+                        "password": ""
                     }
-                    ydl = yt_dlp.YoutubeDL(ydl_opts)
-                    target_url = f"https://www.youtube.com/watch?v={request.args.get('param')}"
-                    result = ydl.extract_info(target_url, download=False)
-                    if 'formats' in result:
-                        for item in reversed(result['formats']):
-                            if item['ext'] == 'mp4' and item['acodec'].startswith('mp4a') and item['vcodec'].startswith('avc1'):
-                                ret = item['url']
-                                break
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        target_url = f"https://www.youtube.com/watch?v={request.args.get('param')}"
+                        result = ydl.extract_info(target_url)
+                        if 'formats' in result:
+                            for item in reversed(result['formats']):
+                                if item['ext'] == 'mp4' and item['vcodec'].startswith('avc1'):# and item['acodec'].startswith('mp4a') :
+                                    ret = item['url']
+                                    break
                 elif mode == 'kakao':
                     url = 'https://tv.kakao.com/katz/v2/ft/cliplink/{}/readyNplay?player=monet_html5&profile=HIGH&service=kakao_tv&section=channel&fields=seekUrl,abrVideoLocationList&startPosition=0&tid=&dteType=PC&continuousPlay=false&contentType=&{}'.format(param, int(time.time()))
                     data = requests.get(url).json()
