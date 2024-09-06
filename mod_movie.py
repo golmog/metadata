@@ -39,7 +39,7 @@ class ModuleMovie(PluginModuleBase):
         super(ModuleMovie, self).__init__(P, name='movie', first_menu='setting')
         P.ModelSetting.set('movie_use_sub_tmdb', 'all')
         P.ModelSetting.set('movie_use_sub_tmdb_mode', 'all')
-        P.ModelSetting.set('movie_first_order', 'tmdb')
+        P.ModelSetting.set('movie_first_order', 'tmdb, watcha')
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
@@ -203,7 +203,8 @@ class ModuleMovie(PluginModuleBase):
             if info['title'] == '':
                 logger.error('title empty.. change meta site....')
                 return
-            movie_use_sub_tmdb = P.ModelSetting.get('movie_use_sub_tmdb')
+            #movie_use_sub_tmdb = P.ModelSetting.get('movie_use_sub_tmdb')
+            movie_use_sub_tmdb = 'all'
             if code[1] != 'T' and (movie_use_sub_tmdb == 'all' or (movie_use_sub_tmdb == 'except_daum' and code[1] != 'D')):
                 try:
                     tmdb_info = None
