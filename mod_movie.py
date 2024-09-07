@@ -95,6 +95,7 @@ class ModuleMovie(PluginModuleBase):
         elif sub == 'info':
             call = req.args.get('call')
             data = self.info(req.args.get('code'))
+            logger.debug(f"info 요청 : {data['title']}")
             if call == 'kodi':
                 data = SiteUtil.info_to_kodi(data)
             elif call == 'plex':
@@ -159,11 +160,12 @@ class ModuleMovie(PluginModuleBase):
         else:
             kor = None
             eng = None
-
+        tmdb_score = 100
         for key in [keyword, kor, eng]:
             logger.debug('search key : [%s] [%s]', key, year)
             if key is None:
                 continue
+            
             for idx, site in enumerate(site_list):
                 if year is None:
                     year = 1900
@@ -175,6 +177,11 @@ class ModuleMovie(PluginModuleBase):
                     for item in site_data['data']:
                         item['score'] -= idx
                     ret += site_data['data']
+                    if site == 'tmdb':
+                        tmdb_score = item['score']
+                    else:
+                        item['score'] = min(tmdb_score-1, item['score'])
+
                     if manual:
                         continue
                     else:
@@ -370,6 +377,8 @@ class ModuleMovie(PluginModuleBase):
                     if max_art < _['score']:
                         info['main_art'] = _['value']
                         max_art = _['score']
+            if info['mpaa'] == None or info['mpaa'] == '':
+                info['mpaa'] = '-'
             return info
 
 
@@ -388,7 +397,7 @@ class ModuleMovie(PluginModuleBase):
             data['plot'] = SiteUtil.trans(data['plot'], source='en')
         if mode == 'all':
             for actor in data['actor']:
-                #logger.debug(actor['name'])
+                #logger.debug(actor['name'])e
                 if SiteUtil.is_include_hangul(actor['name']) == False:
                     actor['name'] = SiteUtil.trans(actor['name'], source='en')
                     #logger.info(f"{actor['name']}")
