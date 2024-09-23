@@ -201,9 +201,16 @@ class ModuleMovie(PluginModuleBase):
         try:
             info = None
             SiteClass = self.module_map2.get(code[1]) or self.module_map2.get(code[0])
+            watcha_info = None
             if not SiteClass:
                 raise KeyError(f'KeyError: {code}')
-            tmp = SiteClass.info(code)
+            if code[1] == 'X': # 와챠
+                tmp = SiteClass.info(code, like_count=P.ModelSetting.get_int('movie_use_watcha_collection_like_count'))
+                watcha_info = tmp['data']
+            else:
+                tmp = SiteClass.info(code)
+
+
             if tmp['ret'] == 'success':
                 info = tmp['data']
 
@@ -315,14 +322,14 @@ class ModuleMovie(PluginModuleBase):
             if P.ModelSetting.get_bool('movie_use_watcha'):
                 try:
                     movie_use_watcha_option = P.ModelSetting.get('movie_use_watcha_option')
-                    watcha_info = None
-                    watcha_search = SiteWatchaMovie.search(info['title'], year=info['year'])
+                    if watcha_info == None:
+                        watcha_search = SiteWatchaMovie.search(info['title'], year=info['year'])
 
-                    if watcha_search['ret'] == 'success' and len(watcha_search['data'])>0:
-                        if watcha_search['data'][0]['score'] > 85:
-                            watcha_data = SiteWatchaMovie.info(watcha_search['data'][0]['code'], like_count=P.ModelSetting.get_int('movie_use_watcha_collection_like_count'))
-                            if watcha_data['ret'] == 'success':
-                                watcha_info = watcha_data['data']
+                        if watcha_search['ret'] == 'success' and len(watcha_search['data'])>0:
+                            if watcha_search['data'][0]['score'] > 85:
+                                watcha_data = SiteWatchaMovie.info(watcha_search['data'][0]['code'], like_count=P.ModelSetting.get_int('movie_use_watcha_collection_like_count'))
+                                if watcha_data['ret'] == 'success':
+                                    watcha_info = watcha_data['data']
 
                     if watcha_info is not None:
                         if movie_use_watcha_option in ['all', 'review']:

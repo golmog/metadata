@@ -33,6 +33,7 @@ class ModuleFtv(PluginModuleBase):
     }
     memory_cache = {'my':{}, 'server':{}}
     module_map = {'daum':SiteDaumTv, 'tvdb':SiteTvdbTv, 'tmdb':SiteTmdbTv, 'watcha':SiteWatchaTv, 'tmdb':SiteTmdbFtv}
+    module_map2 = {'T':SiteTmdbFtv, 'U':SiteTvdbTv}
 
     def __init__(self, P):
         super(ModuleFtv, self).__init__(P, name='ftv', first_menu='setting')
@@ -140,18 +141,19 @@ class ModuleFtv(PluginModuleBase):
         try:
             tmp = code.split('_')
             if len(tmp) == 1:
-                if code[1] == 'T':
-                    tmdb_info = SiteTmdbFtv.info(code)
-                    if tmdb_info['ret'] != 'success':
-                        return
-                    data = tmdb_info['data']
-                    if P.ModelSetting.get_bool('ftv_use_extra_match'):
-                        self.info_extra_match(data)
-                    
-                    data['use_theme'] = P.ModelSetting.get_bool('ftv_use_theme')
-                    self.process_trans('show', data)
-                    self.set_cache('my', code, data)
-                    return data
+                SiteClass = self.module_map2[code[1]]
+                info = SiteClass.info(code)
+                #info = SiteTmdbFtv.info(code)
+                if info['ret'] != 'success':
+                    return
+                data = info['data']
+                if P.ModelSetting.get_bool('ftv_use_extra_match'):
+                    self.info_extra_match(data)
+                
+                data['use_theme'] = P.ModelSetting.get_bool('ftv_use_theme')
+                self.process_trans('show', data)
+                self.set_cache('my', code, data)
+                return data
             elif len(tmp) == 2:
                 if code[1] == 'T':
                     tmdb_info = SiteTmdbFtv.info_season(code)
