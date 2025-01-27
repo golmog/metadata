@@ -21,6 +21,10 @@
 {{ macros.setting_input_text_and_buttons('movie_tving_test_search', '티빙 검색', [['movie_tving_test_search_btn', '자체포맷'], ['movie_tving_test_search_api_btn', 'API']], value=arg['movie_tving_test_search'], desc=['제목 | 년도']) }}
 {{ macros.setting_input_text_and_buttons('movie_tving_test_info', '티빙 코드', [['movie_tving_test_info_btn', '자체포맷'], ['movie_tving_test_info_api_btn', 'API']], value=arg['movie_tving_test_info'], desc=['예) MVM000300533']) }}
 
+{{ macros.m_hr() }}
+{{ macros.setting_input_text_and_buttons('movie_daum_test_search', 'Daum 검색', [['movie_daum_test_search_btn', '자체포맷']], value=arg['movie_daum_test_search'], desc=['제목 | 년도']) }}
+{{ macros.setting_input_text_and_buttons('movie_daum_test_info', 'Daum 코드', [['movie_daum_test_info_btn', '자체포맷']], value=arg['movie_daum_test_info'], desc=['예) MD13552#%ED%82%A4%EB%93%9C']) }}
+
 <script type="text/javascript">
 
 $(document).ready(function(){
@@ -153,6 +157,16 @@ $("body").on('click', '#movie_tving_test_search_api_btn', function(e){
 $("body").on('click', '#movie_tving_test_info_api_btn', function(e){
   e.preventDefault();
   globalSendCommand('tving', 'info_api', $("#movie_tving_test_info").val());
+});
+
+$("body").on('click', '#movie_daum_test_search_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'search_api', $("#movie_daum_test_search").val());
+});
+
+$("body").on('click', '#movie_daum_test_info_api_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('daum', 'info_api', $("#movie_daum_test_info").val());
 });
 
 </script>    

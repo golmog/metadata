@@ -1,5 +1,5 @@
 title: "메타데이터"
-version: "1.1.6p1"
+version: "1.1.6p2"
 package_name: "metadata"
 developer: "flaskfarm"
 description: "VIDEO 메타데이터 제공"

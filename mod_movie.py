@@ -39,7 +39,7 @@ class ModuleMovie(PluginModuleBase):
         super(ModuleMovie, self).__init__(P, name='movie', first_menu='setting')
         P.ModelSetting.set('movie_use_sub_tmdb', 'all')
         P.ModelSetting.set('movie_use_sub_tmdb_mode', 'all')
-        P.ModelSetting.set('movie_first_order', 'tmdb, watcha')
+        P.ModelSetting.set('movie_first_order', 'tmdb, watcha, daum')
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
@@ -86,9 +86,6 @@ class ModuleMovie(PluginModuleBase):
             manual = bool(req.args.get('manual'))
             try: year = int(req.args.get('year'))
             except: year = 1900
-
-            logger.debug(req.args.get('year'))
-            logger.debug(year)
 
             if call == 'plex' or call == 'kodi':
                 return jsonify(self.search(req.args.get('keyword'), year, manual=manual))
@@ -213,6 +210,8 @@ class ModuleMovie(PluginModuleBase):
 
             if tmp['ret'] == 'success':
                 info = tmp['data']
+            else:
+                raise Exception(f'{code}: {tmp.get("data")}')
 
             if info['title'] == '':
                 logger.error('title empty.. change meta site....')

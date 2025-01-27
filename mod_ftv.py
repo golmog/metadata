@@ -425,6 +425,7 @@ class ModuleFtv(PluginModuleBase):
                 search_title = [tmp]
             else:
                 search_title = [u'%s 시즌 1' % tmp, u'%s 1기' % tmp]
+            search_title.insert(0, title)
         for title in search_title:
             daum_search = SiteDaumTv.search(title, year=series_year)
             if daum_search['ret'] == 'success':
