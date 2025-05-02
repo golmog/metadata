@@ -7,7 +7,7 @@ from .setup import *
 
 class ModuleMovie(PluginModuleBase):
     db_default = {
-        'movie_first_order' : 'tmdb',
+        'movie_first_order' : 'tmdb, watcha',
         'movie_use_sub_tmdb' : 'all', # [['all,'모두 사용'], ['except_daum', 'Daum은 사용 안함'], ['none', '사용 안함']]
         'movie_use_sub_tmdb_mode' : 'all', #[['all', '모두 사용'], ['art, 'Art만'], ['actor','배우정보']]
         'movie_use_watcha' : 'True',
@@ -39,7 +39,7 @@ class ModuleMovie(PluginModuleBase):
         super(ModuleMovie, self).__init__(P, name='movie', first_menu='setting')
         P.ModelSetting.set('movie_use_sub_tmdb', 'all')
         P.ModelSetting.set('movie_use_sub_tmdb_mode', 'all')
-        P.ModelSetting.set('movie_first_order', 'tmdb, watcha, daum')
+        #P.ModelSetting.set('movie_first_order', 'tmdb, watcha')
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
@@ -369,6 +369,11 @@ class ModuleMovie(PluginModuleBase):
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
+            for review in info.get('review') or ():
+                if not review.get('sorce'):
+                    review['source'] = 'Unknown'
+                if not review.get('link'):
+                    review['link'] = 'Unknown'
             self.process_trans(info)
             max_poster = 0
             max_art = 0
