@@ -337,43 +337,44 @@ class ModuleMovie(PluginModuleBase):
                             info['code_list'].append(['google_search', u'영화 ' + info['title']])
 
                             for idx, review in enumerate(info['review']):
-                                if idx >= len(info['code_list']):
-                                    break
-                                #if info['code_list'][idx][0] == 'naver_id':
-                                #    review['source'] = '네이버'
-                                #    review['link'] = 'https://movie.naver.com/movie/bi/mi/basic.nhn?code=%s' % info['code_list'][idx][1]
-                                #elif info['code_list'][idx][0] == 'daum_id':
-                                #    review['source'] = '다음'
-                                #    review['link'] = 'https://movie.daum.net/moviedb/main?movieId=%s' % info['code_list'][idx][1]
-                                #elif info['code_list'][idx][0] == 'wavve_id':
-                                #    review['source'] = '웨이브'
-                                #    review['link'] = 'https://www.wavve.com/player/movie?movieid=%s' % info['code_list'][idx][1]
-                                #elif info['code_list'][idx][0] == 'tving_id':
-                                #    review['source'] = '티빙'
-                                #    review['link'] = 'https://www.tving.com/movie/player/%s' % info['code_list'][idx][1]
-                                if info['code_list'][idx][0] == 'tmdb_id':
-                                    review['source'] = 'TMDB'
-                                    review['link'] = 'https://www.themoviedb.org/movie/%s?language=ko' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'imdb_id':
-                                    review['source'] = 'IMDB'
-                                    review['link'] = 'https://www.imdb.com/title/%s/' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'watcha_id':
-                                    review['source'] = '왓챠 피디아'
-                                    review['link'] = 'https://pedia.watcha.com/ko-KR/contents/%s' % info['code_list'][idx][1]
-                                elif info['code_list'][idx][0] == 'google_search':
-                                    review['source'] = '구글 검색'
-                                    review['link'] = 'https://www.google.com/search?q=%s' % info['code_list'][idx][1]
+                                if idx < len(info['code_list']):
+                                    #if info['code_list'][idx][0] == 'naver_id':
+                                    #    review['source'] = '네이버'
+                                    #    review['link'] = 'https://movie.naver.com/movie/bi/mi/basic.nhn?code=%s' % info['code_list'][idx][1]
+                                    #elif info['code_list'][idx][0] == 'daum_id':
+                                    #    review['source'] = '다음'
+                                    #    review['link'] = 'https://movie.daum.net/moviedb/main?movieId=%s' % info['code_list'][idx][1]
+                                    #elif info['code_list'][idx][0] == 'wavve_id':
+                                    #    review['source'] = '웨이브'
+                                    #    review['link'] = 'https://www.wavve.com/player/movie?movieid=%s' % info['code_list'][idx][1]
+                                    #elif info['code_list'][idx][0] == 'tving_id':
+                                    #    review['source'] = '티빙'
+                                    #    review['link'] = 'https://www.tving.com/movie/player/%s' % info['code_list'][idx][1]
+                                    if info['code_list'][idx][0] == 'tmdb_id':
+                                        review['source'] = 'TMDB'
+                                        review['link'] = 'https://www.themoviedb.org/movie/%s?language=ko' % info['code_list'][idx][1]
+                                    elif info['code_list'][idx][0] == 'imdb_id':
+                                        review['source'] = 'IMDB'
+                                        review['link'] = 'https://www.imdb.com/title/%s/' % info['code_list'][idx][1]
+                                    elif info['code_list'][idx][0] == 'watcha_id':
+                                        review['source'] = '왓챠 피디아'
+                                        review['link'] = 'https://pedia.watcha.com/ko-KR/contents/%s' % info['code_list'][idx][1]
+                                    elif info['code_list'][idx][0] == 'google_search':
+                                        review['source'] = '구글 검색'
+                                        review['link'] = 'https://www.google.com/search?q=%s' % info['code_list'][idx][1]
+                                else:
+                                    review['source'] = 'Watcha'
+                                    watch_code = None
+                                    if code_list := watcha_info.get('code_list'):
+                                        if len(code_list[0]) > 1:
+                                            watch_code = code_list[0][1]
+                                    review['link'] = f'https://pedia.watcha.com/ko-KR/contents/{watch_code}' if watch_code else ''
                         if movie_use_watcha_option in ['all', 'collection']:
                             info['tag'] += watcha_info['tag']
                 except Exception as e:
                     logger.error(f"Exception:{str(e)}")
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
-            for review in info.get('review') or ():
-                if not review.get('source'):
-                    review['source'] = 'Watcha'
-                if not review.get('link'):
-                    review['link'] = ''
             self.process_trans(info)
             max_poster = 0
             max_art = 0
