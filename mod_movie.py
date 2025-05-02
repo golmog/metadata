@@ -370,10 +370,10 @@ class ModuleMovie(PluginModuleBase):
                     logger.error(traceback.format_exc())
                     logger.error('watcha search fail..')
             for review in info.get('review') or ():
-                if not review.get('sorce'):
-                    review['source'] = 'Unknown'
+                if not review.get('source'):
+                    review['source'] = 'Watcha'
                 if not review.get('link'):
-                    review['link'] = 'Unknown'
+                    review['link'] = ''
             self.process_trans(info)
             max_poster = 0
             max_art = 0
