@@ -97,7 +97,7 @@ class P:
         "name": package_name,
         "category": "tool",
         "icon": "",
-        "developer": "by275. mod by saibi",
+        "developer": "by275: mod by saibi",
         "description": "Metadata",
         "home": "https://github.com/golmog/" + package_name,
         "more": "",
