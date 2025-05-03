@@ -93,18 +93,18 @@ class P:
     }
 
     plugin_info = {
-        "version": "0.2.0.0p",
+        "version": "0.2.0.1",
         "name": package_name,
         "category": "tool",
         "icon": "",
-        "developer": "by275",
+        "developer": "by275. mod by saibi",
         "description": "Metadata",
-        "home": "https://github.com/by275/" + package_name,
+        "home": "https://github.com/golmog/" + package_name,
         "more": "",
         "dependency": [
             {
                 "name": "lib_metadata",
-                "home": "https://github.com/by275/lib_metadata",
+                "home": "https://github.com/golmog/lib_metadata",
             }
         ],
     }

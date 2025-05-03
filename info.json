@@ -1,16 +1,16 @@
 {
-    "version": "0.2.0.0p",
+    "version": "0.2.0.1",
     "name": "metadata",
     "category": "tool",
     "icon": "",
-    "developer": "by275",
+    "developer": "by275. mod by saibi",
     "description": "Metadata",
-    "home": "https://github.com/by275/metadata",
+    "home": "https://github.com/golmog/metadata",
     "more": "",
     "dependency": [
         {
             "name": "lib_metadata",
-            "home": "https://github.com/by275/lib_metadata"
+            "home": "https://github.com/golmog/lib_metadata"
         }
     ]
 }
