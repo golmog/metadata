@@ -331,8 +331,12 @@ class LogicJavCensored(LogicModuleBase):
         ret["plex_art_count"] = len(ret.get("fanart", []))
 
         actors = ret.get("actor") or []
-        # 배우 이름 처리 (로그 및 타이틀 포맷팅 용)
         actor_names_for_log = []
+        if actors:
+            for item in actors:
+                self.process_actor(item)
+                actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
+
         for item in actors:
             self.process_actor(item)
 
@@ -394,15 +398,15 @@ class LogicJavCensored(LogicModuleBase):
         # --- 최종 데이터 로깅 (텍스트 형식) ---
         try:
             logger.debug(f"++++++++++ Final Metadata for Agent (code: {code}) ++++++++++")
-            # 주요 필드 순서대로 출력
-            log_order = [
-                'title', 'originaltitle', 'sorttitle', 'tagline', 'plot',
-                'premiered', 'year', 'runtime', 'country', 'studio',
-                'genre', 'tag', 'actor', 'director', 'ratings', 'extras',
-                'thumb', 'fanart', 'mpaa', 'plex_is_proxy_preview',
-                'plex_is_landscape_to_art', 'plex_art_count', 'site', 'code', 'score', 'ui_code' # 기타 정보
+            log_order = [ # 주요 필드 순서 정의
+                'title', 'tagline', 'plot',
+                'premiered', 'year', 'runtime', 'country', 'studio', 'director',
+                'genre', 'tag', 'actor', 'ratings', 'extras', 'thumb', 'fanart',
+                'mpaa', 'plex_is_proxy_preview', 'plex_is_landscape_to_art', 'plex_art_count',
+                'site', 'code', 'score', 'ui_code'
             ]
             logged_keys = set()
+
             for key in log_order:
                 if key in ret:
                     value = ret[key]
@@ -435,10 +439,8 @@ class LogicJavCensored(LogicModuleBase):
             if remaining_keys:
                 logger.debug("  --- (Other fields) ---")
                 for key in remaining_keys:
-                    # --- 추가: trailer, userrating 필드 값 직접 로깅 ---
                     if key in ['trailer', 'userrating']:
                         logger.debug(f"  {key}: {ret[key]}")
-                    # --- 추가 끝 ---
                     elif key not in logged_keys: # 이미 출력된 키 제외
                         logger.debug(f"  {key}: {ret[key]}")
 
