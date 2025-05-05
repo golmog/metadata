@@ -6,7 +6,7 @@
   {{ macros.m_row_start('5') }}
   {{ macros.m_row_end() }}
 
-  <nav>  
+  <nav>
     {{ macros.m_tab_head_start() }}
       {{ macros.m_tab_head2('normal', '기본', true) }}
       {{ macros.m_tab_head2('avdbs', 'Avdbs', false) }}
@@ -18,27 +18,44 @@
     {{ macros.m_tab_content_start('normal', true) }}
       {{ macros.setting_input_text('jav_censored_order', '메타 우선순위', value=arg['jav_censored_order'], desc=['메타데이터를 가져올 우선순위 설정', 'dmm, javbus, jav321, mgsdvd']) }}
       {{ macros.setting_input_text('jav_censored_actor_order', '배우 우선순위', value=arg['jav_censored_actor_order'], desc=['배우정보를 가져울 순위 설정', 'avdbs, hentaku']) }}
+      {{ macros.m_hr() }}
+      {{ macros.setting_radio('jav_censored_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy', '이미지 서버'], value=arg['jav_censored_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환', '이미지 서버: 지정된 이미지 서버 URL 사용 및 로컬 저장']) }}
+      {{ macros.setting_checkbox('jav_censored_use_image_server', '이미지 서버 사용', value=arg['jav_censored_use_image_server'], desc=['이미지 서버 URL을 직접 지정하고, 관련 이미지를 로컬 경로에 저장합니다. (lib_metadata 지원 필요)']) }}
+      <div id="jav_censored_use_image_server_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com') }}
+      {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로', value=arg['jav_censored_image_server_local_path'], placeholder='예: /data/sjva/metadata/image_cache') }}
+      </div>
+      {{ macros.m_hr() }}
       {{ macros.setting_button_with_info([['jav_censored_rcache_clear_btn', '초기화']], left='requests cache 초기화', desc='')}}
     {{ macros.m_tab_content_end() }}
+
     {{ macros.m_tab_content_start('avdbs', false) }}
       {{ macros.setting_input_text_and_buttons('jav_censored_avdbs_test_name', '테스트', [['jav_censored_avdbs_test_btn', '테스트']], value=arg['jav_censored_avdbs_test_name'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_avdbs_use_sjva', '메타 서버 사용', value=arg['jav_censored_avdbs_use_sjva'], desc=['meta.sjva.me에서 우선 검색하여 가져옵니다.', '데이터가 있으면 서버에서 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없으면 설정에 따르며 결과를 서버에 저장합니다.', '저장조건: 구글 번역 사용, 이미지 URL 처리 - 디스코드 Proxy']) }}
       {{ macros.setting_checkbox('jav_censored_avdbs_use_proxy', 'Proxy 사용', value=arg['jav_censored_avdbs_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
       <div id="jav_censored_avdbs_use_proxy_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_avdbs_proxy_url', 'Proxy URL', value=arg['jav_censored_avdbs_proxy_url']) }}
       </div>
-      {{ macros.setting_radio('jav_censored_avdbs_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy'], value=arg['jav_censored_avdbs_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환']) }}
+      {{ macros.m_hr() }}
+      {{ macros.setting_checkbox('jav_censored_avdbs_use_local_db', '로컬 DB 사용', value=arg['jav_censored_avdbs_use_local_db'], desc=['Avdbs 데이터를 로컬 SQLite DB에서 조회합니다. (lib_metadata 지원 필요)'] )}}
+      <div id="jav_censored_avdbs_use_local_db_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_avdbs_local_db_path', '로컬 DB 경로', value=arg['jav_censored_avdbs_local_db_path']) }}
+      </div>
+      {{ macros.setting_checkbox('jav_censored_avdbs_use_image_transform', '이미지 URL 변환', value=arg['jav_censored_avdbs_use_image_transform'], desc=['Avdbs에서 가져온 배우 이미지 URL을 변환합니다. (lib_metadata 지원 필요)']) }}
+      <div id="jav_censored_avdbs_use_image_transform_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_avdbs_image_transform_source', '원본 URL (시작 부분)', value=arg['jav_censored_avdbs_image_transform_source'], placeholder='예: https://r2dmm.top') }}
+      {{ macros.setting_input_text('jav_censored_avdbs_image_transform_target', '변환 URL (시작 부분)', value=arg['jav_censored_avdbs_image_transform_target'], placeholder='예: https://pics.dmm.co.jp') }}
+      </div>
+
     {{ macros.m_tab_content_end() }}
+
     {{ macros.m_tab_content_start('hentaku', false) }}
       {{ macros.setting_input_text_and_buttons('jav_censored_hentaku_test_name', '테스트', [['jav_censored_hentaku_test_btn', '테스트']], value=arg['jav_censored_hentaku_test_name'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_hentaku_use_sjva', '메타 서버 사용', value=arg['jav_censored_hentaku_use_sjva'], desc=['meta.sjva.me에서 우선 검색하여 가져옵니다.', '데이터가 있으면 서버에서 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없으면 설정에 따르며 결과를 서버에 저장합니다.', '저장조건: 구글 번역 사용, 이미지 URL 처리 - 디스코드 Proxy']) }}
       {{ macros.setting_checkbox('jav_censored_hentaku_use_proxy', 'Proxy 사용', value=arg['jav_censored_hentaku_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
       <div id="jav_censored_hentaku_use_proxy_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_hentaku_proxy_url', 'Proxy URL', value=arg['jav_censored_hentaku_proxy_url']) }}
       </div>
-      {{ macros.setting_radio('jav_censored_hentaku_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy'], value=arg['jav_censored_hentaku_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환']) }}
     {{ macros.m_tab_content_end() }}
-    
+
   </div><!--tab-content-->
 </form>
 </div><!--전체-->
@@ -51,15 +68,16 @@ var current_data = null;
 $(document).ready(function(){
   use_collapse("jav_censored_avdbs_use_proxy");
   use_collapse("jav_censored_hentaku_use_proxy");
+  use_collapse("jav_censored_use_image_server");
+  use_collapse("jav_censored_avdbs_use_local_db");
+  use_collapse("jav_censored_avdbs_use_image_transform");
 });
 
-$('#jav_censored_avdbs_use_proxy').change(function() {
-  use_collapse('jav_censored_avdbs_use_proxy');
-});
-
-$('#jav_censored_hentaku_use_proxy').change(function() {
-  use_collapse('jav_censored_hentaku_use_proxy');
-});
+$('#jav_censored_avdbs_use_proxy').change(function() {use_collapse('jav_censored_avdbs_use_proxy');});
+$('#jav_censored_hentaku_use_proxy').change(function() {use_collapse('jav_censored_hentaku_use_proxy');});
+$('#jav_censored_use_image_server').change(function() {use_collapse('jav_censored_use_image_server');});
+$('#jav_censored_avdbs_use_local_db').change(function() {use_collapse('jav_censored_avdbs_use_local_db');});
+$('#jav_censored_avdbs_use_image_transform').change(function() {use_collapse('jav_censored_avdbs_use_image_transform');});
 
 
 $("body").on('click', '#jav_censored_avdbs_test_btn', function(e){
@@ -73,14 +91,14 @@ $("body").on('click', '#jav_censored_hentaku_test_btn', function(e){
 });
 
 
-function func_test(call) {
+function func_test(call) { // 배우 테스트 함수명 func_test 유지
   name = document.getElementById(`jav_censored_${call}_test_name`).value
   if (!name || !name.trim()) {
     return
   }
   $.ajax({
     url: '/' + package_name + '/ajax/' + sub + '/actor_test',
-    type: "POST", 
+    type: "POST",
     cache: false,
     data: {name:name, call:call},
     dataType: "json",
@@ -94,9 +112,9 @@ $("body").on('click', '#jav_censored_rcache_clear_btn', function(e){
   e.preventDefault();
   $.ajax({
     url: '/' + package_name + '/ajax/' + sub + '/rcache_clear',
-    type: "POST", 
+    type: "POST",
     cache: false,
-    dataType: "json",    
+    dataType: "json",
     success: function(data) {
         if (data.ret == "success") {
             $.notify('<strong>초기화 성공</strong>', {
@@ -111,7 +129,5 @@ $("body").on('click', '#jav_censored_rcache_clear_btn', function(e){
   });
 });
 
-
-
-</script>    
+</script>
 {% endblock %}

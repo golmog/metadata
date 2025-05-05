@@ -93,7 +93,7 @@ class P:
     }
 
     plugin_info = {
-        "version": "0.2.0.1",
+        "version": "0.2.0.2",
         "name": package_name,
         "category": "tool",
         "icon": "",
