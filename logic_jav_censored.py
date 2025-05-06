@@ -45,10 +45,8 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_avdbs_proxy_url": "",
         "jav_censored_avdbs_test_name": "",
         "jav_censored_avdbs_use_local_db": "False",
-        "jav_censored_avdbs_local_db_path": "/app/data/db/avdbs.db",
-        "jav_censored_avdbs_use_image_transform": "False",
-        "jav_censored_avdbs_image_transform_source": "",
-        "jav_censored_avdbs_image_transform_target": "",
+        "jav_censored_avdbs_local_db_path": "/app/data/db/jav_actors.db",
+        "jav_actor_img_url_prefix": "",
 
         # hentaku
         "jav_censored_hentaku_use_sjva": "False",
@@ -147,23 +145,15 @@ class LogicJavCensored(LogicModuleBase):
                 ModelSetting.set(f"{db_prefix}_test_name", name)
 
                 entity_actor = {"originalname": name}
-
-                # --- get_actor_info 호출 위한 설정(sett) 구성 ---
-                # site_settings()로 기본 설정(proxy, image_mode 등) 가져오기
                 sett = self.__site_settings(call)
-                # Avdbs 특정 설정 추가
+
                 if call == 'avdbs':
                     sett['use_local_db'] = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
                     sett['local_db_path'] = ModelSetting.get('jav_censored_avdbs_local_db_path')
                     sett['use_image_transform'] = ModelSetting.get_bool('jav_censored_avdbs_use_image_transform')
                     sett['image_transform_source'] = ModelSetting.get('jav_censored_avdbs_image_transform_source')
                     sett['image_transform_target'] = ModelSetting.get('jav_censored_avdbs_image_transform_target')
-                    # DB 이미지 기본 URL 설정 추가 (만약 설정값이 있다면)
-                    # sett['db_image_base_url'] = ModelSetting.get('some_setting_for_base_url')
-                    # 현재는 db_image_base_url 설정이 없으므로 전달 안 함
-                # Hentaku 특정 설정 추가 (필요하다면)
-                # elif call == 'hentaku':
-                #    pass
+                    sett['db_image_base_url'] = ModelSetting.get('jav_actor_img_url_prefix')
 
                 # lib_metadata의 SiteClass 가져오기
                 SiteClass = self.site_map.get(call)
@@ -515,13 +505,9 @@ class LogicJavCensored(LogicModuleBase):
 
         sett = self.__site_settings(site)
         if is_avdbs:
-            use_local_db_value = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
-            logger.debug(f"##### Debug: ModelSetting.get_bool('jav_censored_avdbs_use_local_db') returned: {use_local_db_value} (Type: {type(use_local_db_value)})")
             sett['use_local_db'] = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
             sett['local_db_path'] = ModelSetting.get('jav_censored_avdbs_local_db_path')
-            sett['use_image_transform'] = ModelSetting.get_bool('jav_censored_avdbs_use_image_transform')
-            sett['image_transform_source'] = ModelSetting.get('jav_censored_avdbs_image_transform_source')
-            sett['image_transform_target'] = ModelSetting.get('jav_censored_avdbs_image_transform_target')
+            sett['db_image_base_url'] = ModelSetting.get('jav_actor_img_url_prefix')
 
         SiteClass.get_actor_info(entity_actor, **sett)
 
