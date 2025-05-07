@@ -224,28 +224,45 @@ class LogicJavCensored(LogicModuleBase):
 
 
     def search(self, keyword, manual=False):
-        logger.debug(f"jav censored search - keyword:[{keyword}] manual:[{manual}]")
+        logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         all_results = []
         site_list = ModelSetting.get_list(f"{self.name}_order", ",")
 
         # 1단계: 각 사이트 검색 및 기본 정보 수집
         for idx, site in enumerate(site_list):
-            if site not in self.site_map: continue
-            logger.debug(f"Searching on site: {site}")
-            data = self.search2(keyword, site, manual=manual)
-            if data:
-                for item in data:
+            if site not in self.site_map:
+                logger.warning(f"Site '{site}' not in site_map. Skipping.")
+                continue
+
+            logger.debug(f"--- Iteration {idx+1}: Searching on site: {site} ---")
+            data_from_search2 = self.search2(keyword, site, manual=manual) # search2 호출 결과
+
+            if data_from_search2:
+                logger.debug(f"  Got {len(data_from_search2)} result(s) from {site}")
+                for item in data_from_search2: # data_from_search2는 리스트여야 함
+                    if not isinstance(item, dict): # 혹시 모를 타입 체크
+                        logger.error(f"  Item from {site} is not a dict: {item}")
+                        continue
                     item['original_score'] = item.get("score", 0)
                     item['site_key'] = site
                     item['content_type'] = item.get('content_type')
-                    item['hq_poster_score_adj'] = 0 # HQ 포스터 점수 조정값 초기화
+                    item['hq_poster_passed'] = False
                     all_results.append(item)
+            else:
+                logger.debug(f"  No results from {site}")
 
-        if not all_results: return []
+            if manual:
+                logger.debug(f"  Manual search mode: After site '{site}', current all_results count: {len(all_results)}")
+
+        logger.debug(f"--- All sites searched. Total initial results: {len(all_results)} ---")
+
+        if not all_results:
+            logger.debug("======= jav censored search END - No results found. =======")
+            return []
 
         # 2단계: has_hq_poster 검증 및 hq_poster_score_adj 설정 (자동 매칭 시)
         if not manual and all_results:
-            # original_score로 정렬된 복사본을 만들어 HQ 체크 대상 선정
+            logger.debug("--- Starting HQ Poster check (manual=False) ---")
             all_results_sorted_for_hq = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
             if all_results_sorted_for_hq: # 빈 리스트가 아닐 경우에만 진행
                 top_original_score = all_results_sorted_for_hq[0].get("original_score", 0)
@@ -290,13 +307,16 @@ class LogicJavCensored(LogicModuleBase):
                         except Exception as e_info:
                             logger.error(f"후보 {code}: 상세 정보 조회 또는 포스터 확인 중 오류: {e_info}")
                             original_item['hq_poster_score_adj'] = -2 # 오류 시 더 큰 페널티
+            logger.debug("--- HQ Poster check END ---")
 
         # 3단계: 1차 조정된 점수 계산
+        logger.debug("--- Starting Adjusted Score calculation ---")
         for item in all_results:
             item['adjusted_score'] = item.get('original_score', 0) + item.get('hq_poster_score_adj', 0)
+        logger.debug("--- Adjusted Score calculation END ---")
 
         # 4단계: 사용자 정의 우선순위에 따른 정렬
-        logger.debug("사용자 정의 우선순위에 따라 최종 재정렬 수행...")
+        logger.debug("--- Starting Custom Priority Sort ---")
         priority_order_map = {
             ('mgsdvd', None): 0,
             ('dmm', 'videoa'): 1,
@@ -323,21 +343,27 @@ class LogicJavCensored(LogicModuleBase):
             # 정렬 기준: 1. 조정된 점수(내림차순) 2. 사용자정의 우선순위(오름차순)
             return (-current_adjusted_score, site_type_priority)
 
-        sorted_results = sorted(all_results, key=get_custom_sort_key)
+        sorted_results_step4 = sorted(all_results, key=get_custom_sort_key) # 변수명 변경
+        logger.debug("--- Custom Priority Sort END ---")
 
         # 5단계: 최종 순위 기반 점수 할당 (-1점씩 차감, 100점 이내)
-        # 정렬된 리스트의 첫 번째 아이템의 adjusted_score를 기준으로 시작 (최대 100점을 넘지 않도록)
-        if sorted_results:
-            start_score = min(100, sorted_results[0].get('adjusted_score', 0))
-            for i, item in enumerate(sorted_results):
-                # 순위에 따라 1점씩 차감, 단 0점 미만으로 내려가지 않도록
-                item['score'] = max(0, start_score - i)
+        logger.debug("--- Starting Final Score Assignment ---")
+        final_sorted_results = [] # 새 리스트에 최종 결과 저장
+        if sorted_results_step4:
+            start_score = min(100, sorted_results_step4[0].get('adjusted_score', 0))
+            for i, item_to_score in enumerate(sorted_results_step4):
+                new_item = item_to_score.copy() # 복사본에 최종 점수 할당
+                new_item['score'] = max(0, start_score - i)
+                final_sorted_results.append(new_item)
         
-        logger.debug("최종 정렬 및 점수 할당 후 상위 결과:")
-        for i, item_log in enumerate(sorted_results[:5]):
+        logger.debug("최종 정렬 및 점수 할당 후 상위 결과 (logic_jav_censored):")
+        for i, item_log in enumerate(final_sorted_results[:5]):
             logger.debug(f"  {i+1}. Final Score={item_log.get('score')}, AdjustedScore={item_log.get('adjusted_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, OrigScore={item_log.get('original_score')}, Code={item_log.get('code')}")
+        logger.debug("--- Final Score Assignment END ---")
+        # --- 5단계 완료 ---
 
-        return sorted_results # 최종 'score'가 할당된 리스트 반환
+        logger.debug(f"======= jav censored search END - Returning {len(final_sorted_results)} results. =======")
+        return final_sorted_results
 
 
     def info(self, code):
