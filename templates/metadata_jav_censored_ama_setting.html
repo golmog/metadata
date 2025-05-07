@@ -8,28 +8,38 @@
 
   <nav>  
     {{ macros.m_tab_head_start() }}
-      {{ macros.m_tab_head2('normal', '기본', true) }}
+      {{ macros.m_tab_head2('normal', '기본 설정', true) }} <!-- 탭 이름 명확화 -->
     {{ macros.m_tab_head_end() }}
   </nav>
   <form id='setting' name='setting'>
   <div class="tab-content" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
-      {{ macros.setting_input_text('jav_censored_ama_order', '우선순위', value=arg['jav_censored_ama_order'], desc=['메타데이터를 가져올 우선순위 설정', 'jav321, javbus, dmm, mgsama']) }}
+      {{ macros.setting_input_text('jav_censored_ama_order', '아마추어 사이트 우선순위', value=arg['jav_censored_ama_order'], desc=['메타데이터를 가져올 아마추어 사이트의 우선순위 설정', '예: jav321, mgsama, dmm, javbus']) }}
+      
+      {{ macros.m_hr() }} <!-- 구분선 추가 -->
+      <p class="form-text text-muted">
+        <strong>참고:</strong>
+        <ul>
+          <li>이미지 URL 처리 방법 (이미지 서버 사용 포함)은 <strong>'JAV 유모'</strong> 플러그인의 <strong>'기본'</strong> 탭 설정을 따릅니다.</li>
+          <li>배우 정보 처리 (로컬 DB 사용, 배우 이미지 URL Prefix 등)는 <strong>'JAV 유모'</strong> 플러그인의 <strong>'배우DB'</strong> 탭 설정을 따릅니다.</li>
+          <li>각 아마추어 사이트별 상세 설정(프록시, 타이틀 포맷 등)은 해당 사이트의 설정 메뉴에서 개별적으로 지정할 수 있습니다.</li>
+        </ul>
+      </p>
     {{ macros.m_tab_content_end() }}
-    {{ macros.m_tab_content_end() }}
+    <!-- {{ macros.m_tab_content_end() }} 이중으로 된 부분 제거 -->
   </div><!--tab-content-->
 </form>
 </div><!--전체-->
 
 <script type="text/javascript">
 var package_name = "{{arg['package_name'] }}";
-var sub = "{{arg['sub'] }}";
+var sub = "{{arg['sub'] }}"; // 이 값은 'jav_censored_ama_setting'이 될 것임
 var current_data = null;
 
 $(document).ready(function(){
-  
+  // 이 페이지에는 특별히 use_collapse로 관리할 요소가 없을 수 있음
 });
 
-
+// 이 페이지에는 AJAX 테스트 버튼 등이 없으므로 func_test 등은 불필요
 </script>    
 {% endblock %}

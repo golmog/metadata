@@ -15,16 +15,16 @@
   <div class="tab-content mb-4" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
       {{ macros.setting_input_text_and_buttons('jav_censored_ama_mgsama_test_code', '테스트', [['jav_censored_ama_mgsama_test_btn', '테스트']], value=arg['jav_censored_ama_mgsama_test_code'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_ama_mgsama_use_sjva', '메타 서버 사용', value=arg['jav_censored_ama_mgsama_use_sjva'], desc=['meta.sjva.me에서 우선 검색하여 가져옵니다.', '데이터가 있으면 서버에서 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없으면 설정에 따르며 결과를 서버에 저장합니다.', '저장조건: 구글 번역 사용, 이미지 URL 처리 - 디스코드 Proxy']) }}
-      {{ macros.setting_checkbox('jav_censored_ama_mgsama_use_proxy', 'Proxy 사용', value=arg['jav_censored_ama_mgsama_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
+      {{ macros.setting_checkbox('jav_censored_ama_mgsama_use_sjva', '메타 서버 사용 (SJVA)', value=arg['jav_censored_ama_mgsama_use_sjva'], desc=['meta.sjva.me에서 우선 검색 (주의: 이 기능은 현재 jav_censored 플러그인의 전역 설정을 따르지 않을 수 있음)']) }}
+      {{ macros.setting_checkbox('jav_censored_ama_mgsama_use_proxy', 'Proxy 사용', value=arg['jav_censored_ama_mgsama_use_proxy'], desc=['SJVA가 해당 사이트에 접속할 수 없을 때 사용']) }}
       <div id="jav_censored_ama_mgsama_use_proxy_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_ama_mgsama_proxy_url', 'Proxy URL', value=arg['jav_censored_ama_mgsama_proxy_url']) }}
       </div>
-      {{ macros.setting_radio('jav_censored_ama_mgsama_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy'], value=arg['jav_censored_ama_mgsama_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환']) }}
+      <p class="form-text text-muted"><strong>참고:</strong> 이미지 URL 처리(이미지 서버 포함) 및 배우 정보 처리는 이제 <strong>'JAV 유모'</strong> 플러그인의 <strong>'기본'</strong> 및 <strong>'배우DB'</strong> 탭 설정을 따릅니다.</p>
       {{ macros.m_hr() }}
       {{ macros.setting_input_textarea('jav_censored_ama_mgsama_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_ama_mgsama_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
       {{ macros.setting_input_textarea('jav_censored_ama_mgsama_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_ama_mgsama_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
-      {{ macros.setting_input_text('jav_censored_ama_mgsama_title_format', '타이틀 포맷', value=arg['jav_censored_ama_mgsama_title_format'], desc=['title runtime premiered year actor tagline']) }}
+      {{ macros.setting_input_text('jav_censored_ama_mgsama_title_format', '타이틀 포맷', value=arg['jav_censored_ama_mgsama_title_format'], desc=['title originaltitle plot sorttitle runtime country premiered year actor tagline']) }} <!-- title 포맷 옵션에 originaltitle, plot, sorttitle 등 추가 -->
       {{ macros.setting_input_int('jav_censored_ama_mgsama_art_count', '최대 아트 수 제한', value=arg['jav_censored_ama_mgsama_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
       {{ macros.setting_radio('jav_censored_ama_mgsama_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_ama_mgsama_tag_option']) }}
       {{ macros.setting_checkbox('jav_censored_ama_mgsama_use_extras', '예고편 사용', value=arg['jav_censored_ama_mgsama_use_extras'], desc=None) }}
@@ -35,7 +35,7 @@
 
 <script type="text/javascript">
 var package_name = "{{arg['package_name'] }}";
-var sub = "{{arg['sub'] }}";
+var sub = "{{arg['sub'] }}"; // 이 sub는 'jav_censored_ama_mgsama'
 var current_data = null;
 
 $(document).ready(function(){
@@ -46,19 +46,24 @@ $('#jav_censored_ama_mgsama_use_proxy').change(function() {use_collapse('jav_cen
 
 $("body").on('click', '#jav_censored_ama_mgsama_test_btn', function(e){
   e.preventDefault();
-  func_test('mgsama');
+  // func_test의 call 인자는 'mgsama'
+  var site_call = 'mgsama'; // 이 페이지는 mgsama 전용이므로 고정값 사용 가능
+  func_test(site_call);
 });
 
 function func_test(call) {
-  code = document.getElementById("jav_censored_ama_mgsama_test_code").value
+  // 테스트 코드 입력 필드 ID (이 페이지는 mgsama 전용)
+  var test_code_field_id = `jav_censored_ama_mgsama_test_code`;
+  var code = document.getElementById(test_code_field_id).value;
+
   if (!code || !code.trim()) {
-    return
+    return;
   }
   $.ajax({
-    url: '/' + package_name + '/ajax/' + sub + '/test',
+    url: '/' + package_name + '/ajax/' + 'jav_censored_ama' + '/test', // jav_censored_ama 의 test AJAX 호출
     type: "POST", 
     cache: false,
-    data: {code:code, call:call},
+    data: {code:code, call:call}, // call: 'mgsama'
     dataType: "json",
     success: function (ret) {
       m_modal(ret)
