@@ -213,9 +213,13 @@ class LogicJavCensored(LogicModuleBase):
         if SiteClass is None:
             return None
         sett = self.__site_settings(site)
-        data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett)
-        if data["ret"] == "success" and len(data["data"]) > 0:
-            return data["data"]
+        try:
+            data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett)
+            if data["ret"] == "success" and len(data["data"]) > 0:
+                return data["data"]
+            logger.debug(f"No results from {site} for '{keyword}'. Response: {data.get('ret')}")
+        except Exception as e_site_search:
+            logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
         return None
 
 
