@@ -129,17 +129,14 @@ class LogicJavCensored(LogicModuleBase):
                 ModelSetting.set(f"{db_prefix}_test_code", code)
 
                 # 메타데이터 검색 (search2 사용)
-                data = self.search2(code, call) # manual=False 가 기본값
+                data = self.search2(code, call, manual=True)
                 if data is None or not data: # 검색 결과 없는 경우 처리
                     return jsonify({"ret": "no_match", "log": f"no results for '{code}' by '{call}'"})
 
                 # 첫 번째 검색 결과의 코드로 상세 정보 조회 (info 사용)
-                # info 함수는 필요한 kwargs를 내부적으로 __info_settings 에서 가져옴
                 info_data = self.info(data[0]["code"])
 
-                # 결과를 modal에 맞게 가공 (기존 방식 유지 또는 필요시 수정)
-                # search 결과와 info 결과를 함께 반환
-                return jsonify({"search": data, "info": info_data if info_data else {}}) # info 실패 시 빈 dict 반환
+                return jsonify({"search": data, "info": info_data if info_data else {}})
 
             if sub == "actor_test":
                 name = req.form["name"]
@@ -153,27 +150,26 @@ class LogicJavCensored(LogicModuleBase):
                 if call == 'avdbs':
                     sett['use_local_db'] = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
                     sett['local_db_path'] = ModelSetting.get('jav_censored_avdbs_local_db_path')
-                    sett['use_image_transform'] = ModelSetting.get_bool('jav_censored_avdbs_use_image_transform')
-                    sett['image_transform_source'] = ModelSetting.get('jav_censored_avdbs_image_transform_source')
-                    sett['image_transform_target'] = ModelSetting.get('jav_censored_avdbs_image_transform_target')
                     sett['db_image_base_url'] = ModelSetting.get('jav_actor_img_url_prefix')
+                    sett['site_name_for_db_query'] = call
 
-                # lib_metadata의 SiteClass 가져오기
+                # Hentaku에 대한 특별한 설정이 있다면 여기에 추가
+                # elif call == 'hentaku':
+                #    pass
+
                 SiteClass = self.site_map.get(call)
                 if SiteClass:
                     logger.debug(f"Actor Test: Calling {SiteClass.__name__}.get_actor_info with sett: {sett}")
-                    # 수정된 sett를 **kwargs로 전달하여 get_actor_info 호출
                     SiteClass.get_actor_info(entity_actor, **sett)
                 else:
                     logger.error(f"Actor Test: Cannot find SiteClass for call='{call}'")
                     entity_actor['error'] = f"Site class for '{call}' not found."
-                # --- 설정 구성 및 호출 끝 ---
-
-                # 테스트 결과 반환
                 return jsonify(entity_actor)
+
             if sub == "rcache_clear":
-                # ... (기존 캐시 클리어 로직) ...
-                pass # 변경 없음
+                SiteUtil.session.cache.clear()
+                return jsonify({"ret": "success"})
+
             raise NotImplementedError(f"알려지지 않은 sub={sub}")
         except Exception as e:
             logger.exception("AJAX 요청 처리 중 예외:")
