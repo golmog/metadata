@@ -227,6 +227,7 @@ class LogicJavCensored(LogicModuleBase):
         logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         all_results = []
         site_list = ModelSetting.get_list(f"{self.name}_order", ",")
+        logger.debug(f"Site list for search: {site_list}")
 
         # 1단계: 각 사이트 검색 및 기본 정보 수집
         for idx, site in enumerate(site_list):
@@ -235,12 +236,12 @@ class LogicJavCensored(LogicModuleBase):
                 continue
 
             logger.debug(f"--- Iteration {idx+1}: Searching on site: {site} ---")
-            data_from_search2 = self.search2(keyword, site, manual=manual) # search2 호출 결과
+            data_from_search2 = self.search2(keyword, site, manual=manual)
 
             if data_from_search2:
                 logger.debug(f"  Got {len(data_from_search2)} result(s) from {site}")
-                for item in data_from_search2: # data_from_search2는 리스트여야 함
-                    if not isinstance(item, dict): # 혹시 모를 타입 체크
+                for item in data_from_search2:
+                    if not isinstance(item, dict):
                         logger.error(f"  Item from {site} is not a dict: {item}")
                         continue
                     item['original_score'] = item.get("score", 0)
@@ -251,8 +252,7 @@ class LogicJavCensored(LogicModuleBase):
             else:
                 logger.debug(f"  No results from {site}")
 
-            if manual:
-                logger.debug(f"  Manual search mode: After site '{site}', current all_results count: {len(all_results)}")
+            logger.debug(f"  After site '{site}', current all_results count: {len(all_results)}")
 
         logger.debug(f"--- All sites searched. Total initial results: {len(all_results)} ---")
 
