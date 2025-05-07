@@ -20,6 +20,9 @@ from plugin import LogicModuleBase
 # 패키지
 from .plugin import P
 
+# search 메소드 수정용
+import functools
+
 logger = P.logger
 package_name = P.package_name
 ModelSetting = P.ModelSetting
@@ -219,82 +222,123 @@ class LogicJavCensored(LogicModuleBase):
             return data["data"]
         return None
 
+
     def search(self, keyword, manual=False):
         logger.debug(f"jav censored search - keyword:[{keyword}] manual:[{manual}]")
         all_results = []
         site_list = ModelSetting.get_list(f"{self.name}_order", ",")
 
+        # 1단계: 각 사이트 검색 및 기본 정보 수집
         for idx, site in enumerate(site_list):
             if site not in self.site_map: continue
-
-            logger.debug(f"Searching on site: {site} (priority: {idx})")
+            logger.debug(f"Searching on site: {site}")
             data = self.search2(keyword, site, manual=manual)
             if data:
                 for item in data:
-                    item["score"] = item.get("score", 0) - idx
-                    item["site_key"] = site
-                all_results.extend(data)
+                    item['original_score'] = item.get("score", 0)
+                    item['site_key'] = site
+                    item['content_type'] = item.get('content_type')
+                    item['hq_poster_score_adj'] = 0 # HQ 포스터 점수 조정값 초기화
+                    all_results.append(item)
 
-            if manual:
-                continue
+        if not all_results: return []
 
-        if not all_results:
-            return []
-
-        all_results = sorted(all_results, key=lambda k: k.get("score", 0), reverse=True)
-
+        # 2단계: has_hq_poster 검증 및 hq_poster_score_adj 설정 (자동 매칭 시)
         if not manual and all_results:
-            top_score = all_results[0].get("score", 0)
-            score_threshold = 95
-            if top_score >= score_threshold:
-                top_candidates = [item for item in all_results if item.get("score", 0) == top_score]
+            # original_score로 정렬된 복사본을 만들어 HQ 체크 대상 선정
+            all_results_sorted_for_hq = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
+            if all_results_sorted_for_hq: # 빈 리스트가 아닐 경우에만 진행
+                top_original_score = all_results_sorted_for_hq[0].get("original_score", 0)
+                score_threshold = 95
+                
+                if top_original_score >= score_threshold:
+                    candidates_for_hq_check = [item for item in all_results_sorted_for_hq if item.get("original_score", 0) >= score_threshold]
+                    logger.info(f"자동 매칭: {len(candidates_for_hq_check)}개 후보에 대해 포스터 확인 시도 (기준 original_score: {score_threshold}).")
 
-                if len(top_candidates) > 1:
-                    logger.info(f"자동 매칭: 동일 최상위 점수({top_score}) 후보 {len(top_candidates)}개. 포스터 확인 시도...")
-                    best_candidate = None
+                    for candidate_ref in candidates_for_hq_check: # candidate_ref는 정렬된 리스트의 아이템 참조
+                        # all_results에서 실제 아이템 찾기 (code와 site_key로 유니크하게 식별)
+                        original_item = next((x for x in all_results if x.get('code') == candidate_ref.get('code') and x.get('site_key') == candidate_ref.get('site_key')), None)
+                        if not original_item: continue
 
-                    for candidate in top_candidates:
-                        code = candidate.get("code")
-                        site_key = candidate.get("site_key")
+                        code = original_item.get("code"); site_key = original_item.get("site_key")
                         if not code or not site_key: continue
-
-                        logger.debug(f"후보 {code} ({site_key}): 상세 정보 조회 및 포스터 확인 시도...")
                         try:
-                            info_data = self.info(code)
-
+                            info_data = self.info(code) # 상세 정보 조회
                             if info_data:
-                                ps_url = info_data.get('thumb')
-                                fanart_list = info_data.get('fanart', [])
-                                pl_url = fanart_list[0] if fanart_list else None
-
+                                ps_url = None; pl_url = None
+                                for thumb_item in info_data.get('thumb', []):
+                                    if thumb_item.get('aspect') == 'poster': ps_url = thumb_item.get('value')
+                                    if thumb_item.get('aspect') == 'landscape': pl_url = thumb_item.get('value')
+                                    if ps_url and pl_url: break
+                                
                                 if ps_url and pl_url:
                                     site_settings = self.__site_settings(site_key)
                                     proxy_url = site_settings.get("proxy_url")
                                     poster_pos = SiteUtil.has_hq_poster(ps_url, pl_url, proxy_url=proxy_url)
-
                                     if poster_pos:
-                                        logger.info(f"후보 {code}: 포스터 확인 성공 (위치: {poster_pos}). 이 항목 선택.")
-                                        best_candidate = candidate
-                                        break
+                                        logger.info(f"후보 {code}: 포스터 확인 성공. 점수 조정 없음.")
+                                        original_item['hq_poster_score_adj'] = 0 # 성공 시 0 (변동 없음)
                                     else:
-                                        logger.debug(f"후보 {code}: 포스터 확인 실패 (유사 영역 없음).")
+                                        logger.debug(f"후보 {code}: 포스터 확인 실패. -1점 페널티.")
+                                        original_item['hq_poster_score_adj'] = -1 # 실패 시 -1점
                                 else:
-                                    logger.debug(f"후보 {code}: 상세 정보에서 포스터 URL(ps/pl) 부족.")
+                                    logger.debug(f"후보 {code}: 상세 정보에서 이미지 URL 부족. -1점 페널티.")
+                                    original_item['hq_poster_score_adj'] = -1
                             else:
-                                logger.debug(f"후보 {code}: 상세 정보 조회 실패.")
-
+                                logger.debug(f"후보 {code}: 상세 정보 조회 실패. -1점 페널티.")
+                                original_item['hq_poster_score_adj'] = -1
                         except Exception as e_info:
                             logger.error(f"후보 {code}: 상세 정보 조회 또는 포스터 확인 중 오류: {e_info}")
-                            continue
+                            original_item['hq_poster_score_adj'] = -2 # 오류 시 더 큰 페널티
 
-                    if best_candidate:
-                        logger.debug(f"최종 선택 (포스터 확인됨): {best_candidate['code']}")
-                        all_results.remove(best_candidate)
-                        all_results.insert(0, best_candidate)
-                    else:
-                        logger.info("모든 후보 포스터 확인 실패 또는 해당 없음. 첫 번째 후보 유지.")
+        # 3단계: 1차 조정된 점수 계산
+        for item in all_results:
+            item['adjusted_score'] = item.get('original_score', 0) + item.get('hq_poster_score_adj', 0)
 
-        return all_results
+        # 4단계: 사용자 정의 우선순위에 따른 정렬
+        logger.debug("사용자 정의 우선순위에 따라 최종 재정렬 수행...")
+        priority_order_map = {
+            ('mgsdvd', None): 0,
+            ('dmm', 'videoa'): 1,
+            ('dmm', 'dvd'): 2,
+            ('dmm', 'bluray'): 3,
+            ('dmm', 'unknown'): 3,
+            ('javbus', None): 4,
+            ('jav321', None): 5
+        }
+
+        def get_custom_sort_key(item):
+            site_key = item.get('site_key')
+            content_type = item.get('content_type')
+            # 3단계에서 계산된 adjusted_score 사용
+            current_adjusted_score = item.get("adjusted_score", 0)
+            
+            site_type_priority = float('inf')
+            type_specific_key = (site_key, content_type)
+            site_only_key = (site_key, None)
+
+            if type_specific_key in priority_order_map: site_type_priority = priority_order_map[type_specific_key]
+            elif site_only_key in priority_order_map: site_type_priority = priority_order_map[site_only_key]
+            
+            # 정렬 기준: 1. 조정된 점수(내림차순) 2. 사용자정의 우선순위(오름차순)
+            return (-current_adjusted_score, site_type_priority)
+
+        sorted_results = sorted(all_results, key=get_custom_sort_key)
+
+        # 5단계: 최종 순위 기반 점수 할당 (-1점씩 차감, 100점 이내)
+        # 정렬된 리스트의 첫 번째 아이템의 adjusted_score를 기준으로 시작 (최대 100점을 넘지 않도록)
+        if sorted_results:
+            start_score = min(100, sorted_results[0].get('adjusted_score', 0))
+            for i, item in enumerate(sorted_results):
+                # 순위에 따라 1점씩 차감, 단 0점 미만으로 내려가지 않도록
+                item['score'] = max(0, start_score - i)
+        
+        logger.debug("최종 정렬 및 점수 할당 후 상위 결과:")
+        for i, item_log in enumerate(sorted_results[:5]):
+            logger.debug(f"  {i+1}. Final Score={item_log.get('score')}, AdjustedScore={item_log.get('adjusted_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, OrigScore={item_log.get('original_score')}, Code={item_log.get('code')}")
+
+        return sorted_results # 최종 'score'가 할당된 리스트 반환
+
 
     def info(self, code):
         if code[1] == "B":
