@@ -315,55 +315,62 @@ class LogicJavCensored(LogicModuleBase):
             item['adjusted_score'] = item.get('original_score', 0) + item.get('hq_poster_score_adj', 0)
         logger.debug("--- Adjusted Score calculation END ---")
 
-        # 4단계: 사용자 정의 우선순위에 따른 정렬
+        # 4단계: 사용자 정의 우선순위에 따른 정렬 (adjusted_score 우선, 동점 시 priority_order_map 우선)
         logger.debug("--- Starting Custom Priority Sort ---")
         priority_order_map = {
-            ('mgsdvd', None): 0,
-            ('dmm', 'videoa'): 1,
-            ('dmm', 'dvd'): 2,
-            ('dmm', 'bluray'): 3,
-            ('dmm', 'unknown'): 3,
-            ('javbus', None): 4,
+            ('mgsdvd', None): 0, ('dmm', 'videoa'): 1, ('dmm', 'dvd'): 2,
+            ('dmm', 'bluray'): 3, ('dmm', 'unknown'): 3, ('javbus', None): 4,
             ('jav321', None): 5
         }
-
         def get_custom_sort_key(item):
-            site_key = item.get('site_key')
-            content_type = item.get('content_type')
-            # 3단계에서 계산된 adjusted_score 사용
+            site_key = item.get('site_key'); content_type = item.get('content_type')
             current_adjusted_score = item.get("adjusted_score", 0)
-            
-            site_type_priority = float('inf')
-            type_specific_key = (site_key, content_type)
-            site_only_key = (site_key, None)
+            site_type_priority = priority_order_map.get((site_key, content_type),
+                                 priority_order_map.get((site_key, None), float('inf')))
+            return (-current_adjusted_score, site_type_priority) # 점수 내림차순, 우선순위 오름차순
 
-            if type_specific_key in priority_order_map: site_type_priority = priority_order_map[type_specific_key]
-            elif site_only_key in priority_order_map: site_type_priority = priority_order_map[site_only_key]
-            
-            # 정렬 기준: 1. 조정된 점수(내림차순) 2. 사용자정의 우선순위(오름차순)
-            return (-current_adjusted_score, site_type_priority)
-
-        sorted_results_step4 = sorted(all_results, key=get_custom_sort_key) # 변수명 변경
+        sorted_results_step4 = sorted(all_results, key=get_custom_sort_key)
         logger.debug("--- Custom Priority Sort END ---")
 
         # 5단계: 최종 순위 기반 점수 할당 (-1점씩 차감, 100점 이내)
-        logger.debug("--- Starting Final Score Assignment ---")
-        final_sorted_results = [] # 새 리스트에 최종 결과 저장
-        if sorted_results_step4:
-            start_score = min(100, sorted_results_step4[0].get('adjusted_score', 0))
-            for i, item_to_score in enumerate(sorted_results_step4):
-                new_item = item_to_score.copy() # 복사본에 최종 점수 할당
-                new_item['score'] = max(0, start_score - i)
-                final_sorted_results.append(new_item)
+        logger.debug("--- Starting Tie-Breaking and Final Score Assignment ---")
+        final_results_with_score = [] # 새 리스트 생성
         
-        logger.debug("최종 정렬 및 점수 할당 후 상위 결과 (logic_jav_censored):")
-        for i, item_log in enumerate(final_sorted_results[:5]):
-            logger.debug(f"  {i+1}. Final Score={item_log.get('score')}, AdjustedScore={item_log.get('adjusted_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, OrigScore={item_log.get('original_score')}, Code={item_log.get('code')}")
-        logger.debug("--- Final Score Assignment END ---")
+        if sorted_results_step4: # 결과가 있을 경우에만 처리
+            top_adjusted_score = sorted_results_step4[0].get('adjusted_score', 0) # 정렬 후 첫번째가 최고 점수
+            
+            # 최고 점수 동점자가 있는지 확인 (두 번째 아이템의 점수 비교)
+            has_tie_at_top = len(sorted_results_step4) > 1 and sorted_results_step4[1].get('adjusted_score', -1) == top_adjusted_score
+
+            if has_tie_at_top:
+                logger.debug(f"최고 점수({top_adjusted_score}) 동점자 발견. 우선순위에 따라 2위 이하 동점자 -1점 처리.")
+
+            for i, item_orig in enumerate(sorted_results_step4):
+                new_item = item_orig.copy() # 원본 수정을 피하기 위해 복사
+                current_adjusted_score = new_item.get('adjusted_score', 0)
+                final_score = current_adjusted_score # 기본값은 adjusted_score
+
+                # 동점자 페널티 적용 조건:
+                # 1. 현재 아이템이 첫 번째(i=0)가 아니어야 함.
+                # 2. 현재 아이템의 점수가 최고 점수와 같아야 함.
+                # 3. 최고 점수 동점자가 실제로 존재해야 함 (has_tie_at_top == True)
+                if i > 0 and current_adjusted_score == top_adjusted_score and has_tie_at_top:
+                    final_score -= 1 # 페널티 적용
+                    logger.debug(f"  - Penalizing tie item: Code={new_item.get('code')}, Site={new_item.get('site_key')}, New Score={final_score}")
+
+                new_item['score'] = max(0, final_score) # 최종 score 할당 (최소 0점)
+                final_results_with_score.append(new_item)
+        
+        logger.debug("--- Tie-Breaking and Final Score Assignment END ---")
         # --- 5단계 완료 ---
 
-        logger.debug(f"======= jav censored search END - Returning {len(final_sorted_results)} results. =======")
-        return final_sorted_results
+        logger.debug("최종 정렬 및 동점 처리 후 상위 결과 (logic_jav_censored):") # 로그 메시지 업데이트
+        for i, item_log in enumerate(final_results_with_score[:5]):
+            # 로그에 최종 'score'와 원래 'adjusted_score', 'original_score' 모두 표시하여 비교 용이하게
+            logger.debug(f"  {i+1}. Final Score={item_log.get('score')}, AdjustedScore={item_log.get('adjusted_score')}, OrigScore={item_log.get('original_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, Code={item_log.get('code')}")
+        
+        logger.debug(f"======= jav censored search END - Returning {len(final_results_with_score)} results. =======")
+        return final_results_with_score # 최종 결과 리스트 반환
 
 
     def info(self, code):
