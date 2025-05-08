@@ -35,6 +35,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_db_version": "1",
         "jav_censored_order": "dmm, mgsdvd, javbus",
         "jav_censored_actor_order": "avdbs, hentaku",
+        "jav_censored_result_priority_order": "mgsdvd, dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown, javbus, jav321",
 
         # 통합 이미지 설정
         "jav_censored_image_mode": "0", # 0:원본, 1:SJVA Proxy, 2:Discord Redirect, 3:Discord Proxy, 4:이미지 서버
@@ -316,18 +317,30 @@ class LogicJavCensored(LogicModuleBase):
         logger.debug("--- Adjusted Score calculation END ---")
 
         # 4단계: 사용자 정의 우선순위에 따른 정렬 (adjusted_score 우선, 동점 시 priority_order_map 우선)
-        logger.debug("--- Starting Custom Priority Sort ---")
-        priority_order_map = {
-            ('mgsdvd', None): 0, ('dmm', 'videoa'): 1, ('dmm', 'dvd'): 2,
-            ('dmm', 'bluray'): 3, ('dmm', 'unknown'): 3, ('javbus', None): 4,
-            ('jav321', None): 5
-        }
+        priority_string = ModelSetting.get('jav_censored_result_priority_order')
+        priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
+        dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
+        lowest_priority = len(priority_list)
+
+        logger.debug(f"Using priority list: {priority_list}")
+        logger.debug(f"Generated dynamic priority map: {dynamic_priority_map}")
+
         def get_custom_sort_key(item):
-            site_key = item.get('site_key'); content_type = item.get('content_type')
+            site_key = item.get('site_key')
+            content_type = item.get('content_type')
             current_adjusted_score = item.get("adjusted_score", 0)
-            site_type_priority = priority_order_map.get((site_key, content_type),
-                                 priority_order_map.get((site_key, None), float('inf')))
-            return (-current_adjusted_score, site_type_priority) # 점수 내림차순, 우선순위 오름차순
+            
+            calculated_priority = float('inf')
+
+            if site_key == 'dmm' and content_type:
+                type_specific_key = f"dmm_{content_type}" # 예: "dmm_videoa"
+                calculated_priority = dynamic_priority_map.get(type_specific_key, lowest_priority)
+            
+            if calculated_priority >= lowest_priority: # 위에서 못 찾았거나 목록에 없으면
+                calculated_priority = dynamic_priority_map.get(site_key, lowest_priority)
+
+            # 최종 정렬 키 반환 (점수 내림차순, 우선순위 오름차순)
+            return (-current_adjusted_score, calculated_priority) 
 
         sorted_results_step4 = sorted(all_results, key=get_custom_sort_key)
         logger.debug("--- Custom Priority Sort END ---")
