@@ -455,60 +455,6 @@ class LogicJavCensored(LogicModuleBase):
                         tmp.append(_)
                 ret["tag"] = tmp
 
-        # --- 최종 데이터 로깅 (텍스트 형식) ---
-        try:
-            logger.debug(f"++++++++++ Final Metadata for Agent (code: {code}) ++++++++++")
-            log_order = [ # 주요 필드 순서 정의
-                'title', 'tagline', 'plot',
-                'premiered', 'year', 'runtime', 'country', 'studio', 'director',
-                'genre', 'tag', 'actor', 'ratings', 'extras', 'thumb', 'fanart',
-                'mpaa', 'plex_is_proxy_preview', 'plex_is_landscape_to_art', 'plex_art_count',
-                'site', 'code', 'score', 'ui_code'
-            ]
-            logged_keys = set()
-
-            for key in log_order:
-                if key in ret:
-                    value = ret[key]
-                    logged_keys.add(key)
-                    log_value = str(value) # 기본 문자열 변환
-
-                    # <<< 리스트 타입 상세 출력 >>>
-                    if isinstance(value, list):
-                        if key == 'actor':
-                            # 배우는 이름 리스트 사용 (이미 생성됨)
-                            log_value = ', '.join(actor_names_for_log) if actor_names_for_log else '[]'
-                        elif value and isinstance(value[0], dict): # 딕셔너리 리스트 (thumb, ratings, extras)
-                            try: # 각 항목을 보기 좋게 문자열로 변환 시도
-                                item_strs = [json.dumps(item, ensure_ascii=False) for item in value]
-                                log_value = f"[{len(value)} items]:\n    - " + "\n    - ".join(item_strs)
-                            except Exception: # 변환 실패 시 간단히 개수만 표시
-                                log_value = f"[{len(value)} items]"
-                        elif value: # 일반 리스트 (genre, tag, fanart 등)
-                            log_value = ', '.join(map(str, value))
-                        else: # 빈 리스트
-                            log_value = '[]'
-                    # <<< 리스트 상세 출력 끝 >>>
-                    elif isinstance(value, str) and key == 'plot' and len(value) > 200: # 줄거리 길이 제한
-                        log_value = value[:200] + "..."
-
-                    logger.debug(f"  {key}: {log_value}")
-
-            # 나머지 필드 출력
-            remaining_keys = sorted(list(set(ret.keys()) - logged_keys))
-            if remaining_keys:
-                logger.debug("  --- (Other fields) ---")
-                for key in remaining_keys:
-                    if key in ['trailer', 'userrating']:
-                        logger.debug(f"  {key}: {ret[key]}")
-                    elif key not in logged_keys: # 이미 출력된 키 제외
-                        logger.debug(f"  {key}: {ret[key]}")
-
-            logger.debug(f"---------- End of Final Metadata for Agent (code: {code}) ----------")
-        except Exception as log_e:
-            logger.exception(f"Error logging final metadata for {code}: {log_e}")
-        # --- 로깅 끝 ---
-
         return ret
 
     def info2(self, code, site):
