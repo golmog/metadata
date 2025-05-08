@@ -465,32 +465,32 @@ class LogicJavCensored(LogicModuleBase):
         return ret
 
     def info2(self, code, site):
-        db_prefix = f"{self.db_prefix.get(site, self.name)}_{site}"
-        use_sjva = ModelSetting.get_bool(f"{db_prefix}_use_sjva")
-        if use_sjva:
-            ret = MetadataServerUtil.get_metadata(code)
-            if ret is not None:
-                logger.debug("서버로부터 메타 정보 가져옴: %s", code)
-                return ret
-
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
+            logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
         sett = self.__info_settings(site, code)
         sett['url_prefix_segment'] = 'jav/cen'
-        data = SiteClass.info(code, **sett)
 
-        if data["ret"] != "success":
+        logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...")
+        data = None
+        try:
+            data = SiteClass.info(code, **sett)
+        except Exception as e_info:
+            logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
 
-        ret = data["data"]
-        trans_ok = (
-            SystemModelSetting.get("trans_type") == "1" and SystemModelSetting.get("trans_google_api_key").strip() != ""
-        ) or SystemModelSetting.get("trans_type") in ["3", "4"]
-        if use_sjva and sett.get("image_mode") == "3" and trans_ok:
-            MetadataServerUtil.set_metadata_jav_censored(code, ret, ret.get("title", "").lower())
-        return ret
+        if data and data.get("ret") == "success" and data.get("data"):
+            ret = data["data"]
+            logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
+
+            return ret
+        else:
+            response_ret = data.get('ret') if data else 'No response'
+            has_data_field = bool(data.get('data')) if data and data.get('ret') == 'success' else False
+            logger.warning(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 실패. Response ret='{response_ret}', Has data field='{has_data_field}'")
+            return None
 
     def process_actor(self, entity_actor):
         actor_site_list = ModelSetting.get_list(f"{self.name}_actor_order", ",")
@@ -504,44 +504,38 @@ class LogicJavCensored(LogicModuleBase):
 
     def process_actor2(self, entity_actor, site, is_avdbs=False) -> bool:
         originalname = entity_actor.get("originalname")
-        if not originalname: return False
+        if not originalname: 
+            logger.warning("process_actor2: originalname이 없어 배우 정보를 처리할 수 없습니다.")
+            return False
 
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
+            logger.warning(f"process_actor2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return False
 
-        code = "A" + SiteClass.site_char + originalname
-        db_prefix = f"{self.db_prefix.get(site, self.name)}_{site}"
-        use_sjva = ModelSetting.get_bool(f"{db_prefix}_use_sjva")
-        if use_sjva:
-            data = MetadataServerUtil.get_metadata(code)
-            if data:
-                name = data.get("name", None)
-                thumb = data.get("thumb", "")
-                if name and name != data.get("originalname") and ".discordapp." in thumb:
-                    logger.info("서버로부터 가져온 배우 정보를 사용: %s %s", originalname, code)
-                    entity_actor["name"] = name
-                    entity_actor["name2"] = data.get("name2")
-                    entity_actor["thumb"] = thumb
-                    entity_actor["site"] = data.get("site")
-                    return True
-
+        logger.debug(f"process_actor2: '{originalname}' 정보를 사이트 '{site}'에서 조회 시작...")
         sett = self.__site_settings(site)
         if is_avdbs:
             sett['use_local_db'] = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
             sett['local_db_path'] = ModelSetting.get('jav_censored_avdbs_local_db_path')
             sett['db_image_base_url'] = ModelSetting.get('jav_actor_img_url_prefix')
 
-        SiteClass.get_actor_info(entity_actor, **sett)
+        get_info_success = False
+        try:
+            get_info_success = SiteClass.get_actor_info(entity_actor, **sett)
+        except Exception as e_getinfo:
+            logger.exception(f"process_actor2: 사이트 '{site}'에서 배우 '{originalname}' 정보 조회 중 오류 발생: {e_getinfo}")
+            get_info_success = False
 
-        name = entity_actor.get("name", None)
-        if not name:
+        if get_info_success:
+            updated_name = entity_actor.get("name", None)
+            updated_thumb = entity_actor.get("thumb", None)
+            logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 성공. Name: {updated_name}, Thumb: {bool(updated_thumb)}")
+            
+            return True
+        else:
+            logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
             return False
-
-        thumb = entity_actor.get("thumb", "")
-        if use_sjva and sett.get("image_mode") == "3" and name and ".discordapp." in thumb:
-            MetadataServerUtil.set_metadata(code, entity_actor, originalname)
-        return True
 
     def __site_settings(self, site: str):
         db_prefix = f"{self.db_prefix.get(site, self.name)}_{site}"
