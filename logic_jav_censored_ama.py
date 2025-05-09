@@ -232,7 +232,7 @@ class LogicJavCensoredAma(LogicModuleBase):
         sett['use_image_server'] = ModelSetting.get_bool("jav_censored_use_image_server")
         sett['image_server_url'] = ModelSetting.get("jav_censored_image_server_url")
         sett['image_server_local_path'] = ModelSetting.get("jav_censored_image_server_local_path")
-        sett['url_prefix_segment'] = 'jav/ama'
+        sett['url_prefix_segment'] = 'jav/cen'
 
         logger.debug(f"({self.name}) Calling {SiteClass.__name__}.info for code '{code}' with settings: {sett}")
         data = SiteClass.info(code, **sett)

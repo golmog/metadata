@@ -15,12 +15,10 @@
   <div class="tab-content mb-4" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
       {{ macros.setting_input_text_and_buttons('jav_censored_ama_jav321_test_code', '테스트', [['jav_censored_ama_jav321_test_btn', '테스트']], value=arg['jav_censored_ama_jav321_test_code'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_ama_jav321_use_sjva', '메타 서버 사용 (SJVA)', value=arg['jav_censored_ama_jav321_use_sjva'], desc=['meta.sjva.me에서 우선 검색 (주의: 이 기능은 현재 jav_censored 플러그인의 전역 설정을 따르지 않을 수 있음)']) }}
       {{ macros.setting_checkbox('jav_censored_ama_jav321_use_proxy', 'Proxy 사용', value=arg['jav_censored_ama_jav321_use_proxy'], desc=['SJVA가 해당 사이트에 접속할 수 없을 때 사용']) }}
       <div id="jav_censored_ama_jav321_use_proxy_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_ama_jav321_proxy_url', 'Proxy URL', value=arg['jav_censored_ama_jav321_proxy_url']) }}
       </div>
-      <p class="form-text text-muted"><strong>참고:</strong> 이미지 URL 처리(이미지 서버 포함) 및 배우 정보 처리는 이제 <strong>'JAV 유모'</strong> 플러그인의 <strong>'기본'</strong> 및 <strong>'배우DB'</strong> 탭 설정을 따릅니다.</p>
       {{ macros.m_hr() }}
       {{ macros.setting_input_textarea('jav_censored_ama_jav321_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_ama_jav321_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
       {{ macros.setting_input_textarea('jav_censored_ama_jav321_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_ama_jav321_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
