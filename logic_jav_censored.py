@@ -13,6 +13,7 @@ from lib_metadata import (
     SiteMgstageDvd,
     SiteUtil,
     UtilNfo,
+    SiteJavdb,
 )
 
 from plugin import LogicModuleBase
@@ -33,9 +34,9 @@ ModelSetting = P.ModelSetting
 class LogicJavCensored(LogicModuleBase):
     db_default = {
         "jav_censored_db_version": "1",
-        "jav_censored_order": "dmm, mgsdvd, javbus",
+        "jav_censored_order": "dmm, mgsdvd, javbus, javdb",
         "jav_censored_actor_order": "avdbs, hentaku",
-        "jav_censored_result_priority_order": "mgsdvd, dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown, javbus, jav321",
+        "jav_censored_result_priority_order": "mgsdvd, dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
         # 통합 이미지 설정
         "jav_censored_image_mode": "0", # 0:원본, 1:SJVA Proxy, 2:Discord Redirect, 3:Discord Proxy, 4:이미지 서버
@@ -93,6 +94,18 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javbus_tag_option": "2",
         "jav_censored_javbus_use_extras": "True",
         "jav_censored_javbus_test_code": "abw-354",
+
+        # javdb
+        "jav_censored_javdb_use_sjva": "False",
+        "jav_censored_javdb_use_proxy": "False",
+        "jav_censored_javdb_proxy_url": "",
+        "jav_censored_javdb_small_image_to_poster": "",
+        "jav_censored_javdb_crop_mode": "",
+        "jav_censored_javdb_title_format": "[{title}] {tagline}",
+        "jav_censored_javdb_art_count": "5",
+        "jav_censored_javdb_tag_option": "1",
+        "jav_censored_javdb_use_extras": "False",
+        "jav_censored_javdb_test_code": "JUFE-487",
     }
 
     site_map = {
@@ -102,6 +115,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav321": SiteJav321,
         "javbus": SiteJavbus,
         "mgsdvd": SiteMgstageDvd,
+        "javdb": SiteJavdb,
     }
 
     db_prefix = {
@@ -129,8 +143,10 @@ class LogicJavCensored(LogicModuleBase):
                 db_prefix = f"{self.db_prefix.get(call, self.name)}_{call}"
                 ModelSetting.set(f"{db_prefix}_test_code", code)
 
+                current_site_settings = self.__site_settings(call)
+
                 # 메타데이터 검색 (search2 사용)
-                data = self.search2(code, call, manual=True)
+                data = self.search2(code, call, manual=True, site_settings_override=current_site_settings)
                 if data is None or not data: # 검색 결과 없는 경우 처리
                     return jsonify({"ret": "no_match", "log": f"no results for '{code}' by '{call}'"})
 
@@ -209,11 +225,11 @@ class LogicJavCensored(LogicModuleBase):
 
     #########################################################
 
-    def search2(self, keyword, site, manual=False):
+    def search2(self, keyword, site, manual=False, site_settings_override=None):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             return None
-        sett = self.__site_settings(site)
+        sett = site_settings_override if site_settings_override is not None else self.__site_settings(site)
         try:
             data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett)
             if data["ret"] == "success" and len(data["data"]) > 0:
@@ -399,6 +415,8 @@ class LogicJavCensored(LogicModuleBase):
             site = "jav321"
         elif code[1] == "M":
             site = "mgsdvd"
+        elif code[1] == "J":
+            site = "javdb"
         else:
             logger.error("처리할 수 없는 코드: code=%s", code)
             return None
