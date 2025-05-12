@@ -249,167 +249,188 @@ class LogicJavCensored(LogicModuleBase):
     def search(self, keyword, manual=False):
         logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         all_results = []
-        site_list = ModelSetting.get_list(f"{self.name}_order", ",")
-        logger.debug(f"Site list for search: {site_list}")
+        site_list_from_setting = ModelSetting.get_list(f"{self.name}_order", ",")
+        logger.debug(f"Site list from setting: {site_list_from_setting}")
 
-        # 1단계: 각 사이트 검색 및 기본 정보 수집
-        for idx, site in enumerate(site_list):
-            if site not in self.site_map:
-                logger.warning(f"Site '{site}' not in site_map. Skipping.")
+        priority_sites_for_early_exit = {"dmm", "mgsdvd"} # 자동 검색 시 100점 매칭 시 조기 종료할 사이트
+        early_exit_triggered = False # 조기 종료 플래그
+
+        # 1단계: 각 사이트 검색
+        for site_key_in_order in site_list_from_setting:
+            if site_key_in_order not in self.site_map:
+                logger.warning(f"Site '{site_key_in_order}' not in site_map. Skipping.")
                 continue
 
-            logger.debug(f"--- Iteration {idx+1}: Searching on site: {site} ---")
-            data_from_search2 = self.search2(keyword, site, manual=manual)
+            logger.debug(f"--- Searching on site: {site_key_in_order} ---")
+            
+            # UI 테스트(manual=True) 시에는 해당 사이트의 현재 설정을 가져와 search2에 전달
+            # 자동 검색(manual=False) 시에는 search2 내부에서 __site_settings를 호출
+            current_site_settings_for_test = self.__site_settings(site_key_in_order) if manual else None
+            data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual, site_settings_override=current_site_settings_for_test)
 
             if data_from_search2:
-                logger.debug(f"  Got {len(data_from_search2)} result(s) from {site}")
-                for item in data_from_search2:
-                    if not isinstance(item, dict):
-                        logger.error(f"  Item from {site} is not a dict: {item}")
+                logger.debug(f"  Got {len(data_from_search2)} result(s) from {site_key_in_order}")
+                for item_result in data_from_search2:
+                    if not isinstance(item_result, dict):
+                        logger.error(f"  Item from {site_key_in_order} is not a dict: {item_result}")
                         continue
-                    item['original_score'] = item.get("score", 0)
-                    item['site_key'] = site
-                    item['content_type'] = item.get('content_type')
-                    item['hq_poster_passed'] = False
-                    all_results.append(item)
+                    
+                    # EntityAVSearch.as_dict()가 score, site_key, content_type 등을 반환한다고 가정
+                    # site_key가 없다면 현재 루프의 site_key_in_order 사용
+                    item_result['original_score'] = item_result.get("score", 0)
+                    item_result['site_key'] = item_result.get("site_key", site_key_in_order)
+                    # item_result['content_type']는 이미 item_result에 포함되어 있어야 함 (DMM의 경우)
+                    item_result['hq_poster_passed'] = False 
+
+                    all_results.append(item_result)
+
+                    if not manual and item_result['site_key'] in priority_sites_for_early_exit and item_result['original_score'] == 100:
+                        logger.info(f"Found 100-score match from priority site '{item_result['site_key']}' for '{keyword}'. Activating early exit.")
+                        early_exit_triggered = True
+                        break # 현재 사이트의 나머지 아이템 처리는 중단하고, 다음 단계로 (우선 사이트 종료)
             else:
-                logger.debug(f"  No results from {site}")
-
-            logger.debug(f"  After site '{site}', current all_results count: {len(all_results)}")
-
-        logger.debug(f"--- All sites searched. Total initial results: {len(all_results)} ---")
+                logger.debug(f"  No results from {site_key_in_order}")
+            
+            if early_exit_triggered: # 조기 종료 플래그가 켜졌으면 전체 사이트 검색 루프 종료
+                logger.debug("  Early exit triggered. Stopping further site searches.")
+                break 
+        
+        logger.debug(f"--- All site searches completed or exited early. Total initial results: {len(all_results)} ---")
 
         if not all_results:
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
-        # 2단계: has_hq_poster 검증 및 hq_poster_score_adj 설정 (자동 매칭 시)
+        # 2단계: HQ 포스터 검증 (manual=False 일 때)
         if not manual and all_results:
-            logger.debug("--- Starting HQ Poster check (manual=False) ---")
-            all_results_sorted_for_hq = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
-            if all_results_sorted_for_hq: # 빈 리스트가 아닐 경우에만 진행
-                top_original_score = all_results_sorted_for_hq[0].get("original_score", 0)
+            logger.debug("--- Starting HQ Poster check ---")
+            all_results_sorted_for_hq_check = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
+            
+            if all_results_sorted_for_hq_check: 
+                top_original_score = all_results_sorted_for_hq_check[0].get("original_score", 0)
                 score_threshold = 95
                 
                 if top_original_score >= score_threshold:
-                    candidates_for_hq_check = [item for item in all_results_sorted_for_hq if item.get("original_score", 0) >= score_threshold]
-                    logger.info(f"자동 매칭: {len(candidates_for_hq_check)}개 후보에 대해 포스터 확인 시도 (기준 original_score: {score_threshold}).")
+                    candidates_for_hq_check = [
+                        item for item in all_results_sorted_for_hq_check 
+                        if item.get("original_score", 0) >= score_threshold
+                    ]
+                    logger.info(f"HQ Check: {len(candidates_for_hq_check)} candidates (score >= {score_threshold}).")
 
-                    for candidate_ref in candidates_for_hq_check: # candidate_ref는 정렬된 리스트의 아이템 참조
-                        # all_results에서 실제 아이템 찾기 (code와 site_key로 유니크하게 식별)
-                        original_item = next((x for x in all_results if x.get('code') == candidate_ref.get('code') and x.get('site_key') == candidate_ref.get('site_key')), None)
-                        if not original_item: continue
+                    for candidate_item_ref in candidates_for_hq_check:
+                        item_in_all_results_to_update = next(
+                            (
+                                x for x in all_results 
+                                if x.get('code') == candidate_item_ref.get('code') and 
+                                   x.get('site_key') == candidate_item_ref.get('site_key')
+                            ), 
+                            None
+                        )
 
-                        code = original_item.get("code"); site_key = original_item.get("site_key")
-                        if not code or not site_key: continue
+                        if not item_in_all_results_to_update:
+                            logger.warning(f"HQ Check: Could not find original item in all_results for candidate code {candidate_item_ref.get('code')}. Skipping HQ check for this item.")
+                            continue
+                        
+                        code_for_hq_check = item_in_all_results_to_update.get("code")
+                        site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
+
+                        if not code_for_hq_check or not site_key_for_hq_check:
+                            logger.warning(f"HQ Check: Code or site_key missing for an item. Skipping HQ check.")
+                            continue
+
+                        # --- hq_poster_score_adj 초기화 및 기본 페널티 설정 ---
+                        item_in_all_results_to_update['hq_poster_score_adj'] = -1
+
                         try:
-                            info_data = self.info(code) # 상세 정보 조회
-                            if info_data:
-                                ps_url = None; pl_url = None
-                                for thumb_item in info_data.get('thumb', []):
-                                    if thumb_item.get('aspect') == 'poster': ps_url = thumb_item.get('value')
-                                    if thumb_item.get('aspect') == 'landscape': pl_url = thumb_item.get('value')
-                                    if ps_url and pl_url: break
+                            info_data_for_hq_check = self.info2(code_for_hq_check, site_key_for_hq_check) 
+
+                            if info_data_for_hq_check:
+                                ps_url_hq, pl_url_hq = None, None
+                                for thumb_item_hq in info_data_for_hq_check.get('thumb', []):
+                                    if thumb_item_hq.get('aspect') == 'poster': ps_url_hq = thumb_item_hq.get('value')
+                                    if thumb_item_hq.get('aspect') == 'landscape': pl_url_hq = thumb_item_hq.get('value')
+                                    if ps_url_hq and pl_url_hq: break
                                 
-                                if ps_url and pl_url:
-                                    site_settings = self.__site_settings(site_key)
-                                    proxy_url = site_settings.get("proxy_url")
-                                    poster_pos = SiteUtil.has_hq_poster(ps_url, pl_url, proxy_url=proxy_url)
-                                    if poster_pos:
-                                        logger.info(f"후보 {code}: 포스터 확인 성공. 점수 조정 없음.")
-                                        original_item['hq_poster_score_adj'] = 0 # 성공 시 0 (변동 없음)
+                                if ps_url_hq and pl_url_hq:
+                                    settings_for_hq_proxy = self.__site_settings(site_key_for_hq_check)
+                                    proxy_url_for_hq_util = settings_for_hq_proxy.get("proxy_url")
+                                    
+                                    poster_pos_result = SiteUtil.has_hq_poster(ps_url_hq, pl_url_hq, proxy_url=proxy_url_for_hq_util)
+                                    if poster_pos_result:
+                                        logger.info(f"HQ Check PASSED for {code_for_hq_check} on {site_key_for_hq_check}.")
+                                        item_in_all_results_to_update['hq_poster_score_adj'] = 0
                                     else:
-                                        logger.debug(f"후보 {code}: 포스터 확인 실패. -1점 페널티.")
-                                        original_item['hq_poster_score_adj'] = -1 # 실패 시 -1점
+                                        logger.debug(f"HQ Check FAILED (has_hq_poster returned None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
                                 else:
-                                    logger.debug(f"후보 {code}: 상세 정보에서 이미지 URL 부족. -1점 페널티.")
-                                    original_item['hq_poster_score_adj'] = -1
+                                    logger.debug(f"HQ Check SKIPPED (ps_url or pl_url missing) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
                             else:
-                                logger.debug(f"후보 {code}: 상세 정보 조회 실패. -1점 페널티.")
-                                original_item['hq_poster_score_adj'] = -1
-                        except Exception as e_info:
-                            logger.error(f"후보 {code}: 상세 정보 조회 또는 포스터 확인 중 오류: {e_info}")
-                            original_item['hq_poster_score_adj'] = -2 # 오류 시 더 큰 페널티
+                                logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
+                        except Exception as e_info_hq_check:
+                            logger.error(f"HQ Check Exception for {code_for_hq_check} on {site_key_for_hq_check}: {e_info_hq_check}")
+                            item_in_all_results_to_update['hq_poster_score_adj'] = -2 
             logger.debug("--- HQ Poster check END ---")
 
-        # 3단계: 1차 조정된 점수 계산
+        # 3단계: 조정된 점수 계산
         logger.debug("--- Starting Adjusted Score calculation ---")
-        for item in all_results:
-            item['adjusted_score'] = item.get('original_score', 0) + item.get('hq_poster_score_adj', 0)
+        for item_adj_score in all_results:
+            item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) + item_adj_score.get('hq_poster_score_adj', 0)
         logger.debug("--- Adjusted Score calculation END ---")
 
         # 4단계: 사용자 정의 우선순위에 따른 정렬
-        logger.debug("--- Starting Custom Priority Sort (based on user setting) ---")
+        logger.debug("--- Starting Custom Priority Sort ---")
         priority_string = ModelSetting.get('jav_censored_result_priority_order')
         priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
         dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
         lowest_priority = len(priority_list)
-        logger.debug(f"Using priority list: {priority_list}")
+        
+        def get_priority_value_for_sort(item_to_sort):
+            site_key_prio = item_to_sort.get('site_key')
+            content_type_prio = item_to_sort.get('content_type')
+            calculated_prio = lowest_priority
+            if site_key_prio == 'dmm' and content_type_prio:
+                type_specific_key = f"dmm_{content_type_prio}"
+                calculated_prio = dynamic_priority_map.get(type_specific_key, lowest_priority)
+            if calculated_prio >= lowest_priority: 
+                calculated_prio = dynamic_priority_map.get(site_key_prio, lowest_priority)
+            return calculated_prio
 
-        def get_priority_value(item): # 우선순위 값만 계산하는 헬퍼 함수
-            site_key = item.get('site_key'); content_type = item.get('content_type')
-            calculated_priority = lowest_priority # 기본값은 가장 낮은 순위
-            if site_key == 'dmm' and content_type:
-                type_specific_key = f"dmm_{content_type}"
-                calculated_priority = dynamic_priority_map.get(type_specific_key, lowest_priority)
-            if calculated_priority >= lowest_priority: # DMM 타입별 키 없거나 다른 사이트면 사이트 키로
-                calculated_priority = dynamic_priority_map.get(site_key, lowest_priority)
-            return calculated_priority
+        def get_custom_sort_key_for_final(item_for_final_sort):
+            adj_score = item_for_final_sort.get("adjusted_score", 0)
+            prio_val = get_priority_value_for_sort(item_for_final_sort)
+            return (-adj_score, prio_val)
 
-        def get_custom_sort_key(item):
-            current_adjusted_score = item.get("adjusted_score", 0)
-            priority = get_priority_value(item) # 헬퍼 함수 사용
-            return (-current_adjusted_score, priority) # 점수 내림차순, 우선순위 오름차순
-
-        sorted_results_step4 = sorted(all_results, key=get_custom_sort_key)
+        sorted_results_after_priority = sorted(all_results, key=get_custom_sort_key_for_final)
         logger.debug("--- Custom Priority Sort END ---")
 
-        # 5단계: 최고 점수 동점자 우선순위별 페널티 적용 및 최종 점수 할당
-        logger.debug("--- Starting Priority-Based Tie-Breaking and Final Score Assignment ---")
-        final_results_with_score = []
+        # 5단계: 최고 점수 동점자 페널티 및 최종 점수 할당
+        logger.debug("--- Starting Tie-Breaking and Final Score Assignment ---")
+        final_results_with_score_assigned = []
+        if sorted_results_after_priority:
+            top_adj_score_final = sorted_results_after_priority[0].get('adjusted_score', 0)
+            current_penalty_level = 0
+            last_priority_val_in_tie = -1
+            logger.debug(f"Top adjusted score for tie-breaking: {top_adj_score_final}")
+            for i, item_in_tie_break_loop in enumerate(sorted_results_after_priority):
+                final_item = item_in_tie_break_loop.copy()
+                current_adj_score_loop = final_item.get('adjusted_score', 0)
+                calculated_final_score = current_adj_score_loop
+                if current_adj_score_loop == top_adj_score_final:
+                    current_prio_val_loop = get_priority_value_for_sort(final_item)
+                    if current_prio_val_loop > last_priority_val_in_tie:
+                        if i > 0: current_penalty_level += 1
+                        last_priority_val_in_tie = current_prio_val_loop
+                    calculated_final_score = top_adj_score_final - current_penalty_level
+                final_item['score'] = max(0, calculated_final_score) # 최종 'score' 필드 업데이트
+                final_results_with_score_assigned.append(final_item)
+        logger.debug("--- Tie-Breaking and Final Score Assignment END ---")
+
+        if final_results_with_score_assigned:
+            logger.debug("Top results after final scoring:")
+            for i, item_log_final_list in enumerate(final_results_with_score_assigned[:5]):
+                logger.debug(f"  {i+1}. Final Score={item_log_final_list.get('score')}, AdjScore={item_log_final_list.get('adjusted_score')}, OrigScore={item_log_final_list.get('original_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioValue={get_priority_value_for_sort(item_log_final_list)}, Code={item_log_final_list.get('code')}")
         
-        if sorted_results_step4:
-            top_adjusted_score = sorted_results_step4[0].get('adjusted_score', 0)
-            penalty_level = 0 # 현재 페널티 레벨 (0부터 시작)
-            last_priority_in_tie = -1 # 이전 동점자의 우선순위 값 (-1로 초기화)
-
-            logger.debug(f"Top adjusted score identified: {top_adjusted_score}")
-
-            for i, item_orig in enumerate(sorted_results_step4):
-                new_item = item_orig.copy()
-                current_adjusted_score = new_item.get('adjusted_score', 0)
-                final_score = current_adjusted_score # 기본 점수는 조정된 점수
-
-                # 최고 점수 동점자 그룹 처리
-                if current_adjusted_score == top_adjusted_score:
-                    current_priority = get_priority_value(new_item) # 현재 아이템의 우선순위 값 계산
-                    
-                    # 우선순위 그룹 변경 감지 (첫번째 동점자거나 이전과 우선순위가 다르면)
-                    if current_priority > last_priority_in_tie:
-                        # 첫번째 동점자(i=0)는 penalty_level 0 유지,
-                        # 그 이후 우선순위 그룹 변경 시 penalty_level 증가
-                        if i > 0: # 첫번째 동점자가 아니면서 우선순위 그룹이 바뀌면 페널티 증가
-                            penalty_level += 1
-                        logger.debug(f"  - Priority group change detected for tie item {i+1} (Code={new_item.get('code')}, Prio={current_priority}). New penalty level: {penalty_level}")
-                        last_priority_in_tie = current_priority # 이전 우선순위 업데이트
-                    
-                    # 페널티 적용
-                    final_score = top_adjusted_score - penalty_level
-                    logger.debug(f"  - Applying penalty {penalty_level} to tie item {i+1}. Final score: {final_score}")
-
-                # Case 2: 최고 점수 동점자가 아닌 경우 - final_score는 current_adjusted_score 유지됨
-
-                new_item['score'] = max(0, final_score) # 최종 score 할당 (최소 0점)
-                final_results_with_score.append(new_item)
-        
-        logger.debug("--- Priority-Based Tie-Breaking and Final Score Assignment END ---")
-
-        logger.debug("최종 정렬 및 우선순위 기반 동점 처리 후 상위 결과:") # 로그 메시지 업데이트
-        for i, item_log in enumerate(final_results_with_score[:5]):
-            logger.debug(f"  {i+1}. Final Score={item_log.get('score')}, AdjustedScore={item_log.get('adjusted_score')}, OrigScore={item_log.get('original_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, PrioValue={get_priority_value(item_log)}, Code={item_log.get('code')}")
-        
-        logger.debug(f"======= jav censored search END - Returning {len(final_results_with_score)} results. =======")
-        return final_results_with_score
+        logger.debug(f"======= jav censored search END - Returning {len(final_results_with_score_assigned)} results. =======")
+        return final_results_with_score_assigned
 
 
     def info(self, code):
