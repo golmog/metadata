@@ -260,7 +260,7 @@ class LogicJavCensoredAma(LogicModuleBase):
             "use_image_server": ModelSetting.get_bool("jav_censored_use_image_server"),
             "image_server_url": ModelSetting.get("jav_censored_image_server_url"),
             "image_server_local_path": ModelSetting.get("jav_censored_image_server_local_path"),
-            "url_prefix_segment": "jav/ama" # Ama용 경로 세그먼트
+            "url_prefix_segment": "jav/cen" # Ama용 경로 세그먼트
         }
 
     def __info_settings(self, site: str, code: str):

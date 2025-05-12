@@ -17,6 +17,8 @@ from lib_metadata import (
 )
 
 from plugin import LogicModuleBase
+from urllib.parse import urlparse
+from lib_metadata.discord import DiscordUtil
 
 # 패키지
 from .plugin import P
@@ -34,7 +36,7 @@ ModelSetting = P.ModelSetting
 class LogicJavCensored(LogicModuleBase):
     db_default = {
         "jav_censored_db_version": "1",
-        "jav_censored_order": "dmm, mgsdvd, javbus, javdb",
+        "jav_censored_order": "mgsdvd, dmm, jav321, javdb, javbus",
         "jav_censored_actor_order": "avdbs, hentaku",
         "jav_censored_result_priority_order": "mgsdvd, dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
@@ -43,6 +45,10 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_use_image_server": "False",
         "jav_censored_image_server_url": "",
         "jav_censored_image_server_local_path": "/app/data/images",
+
+        # 디스코드 프록시 서버 관련 설정
+        "jav_censored_use_discord_proxy_server": "False",
+        "jav_censored_discord_proxy_server_url": "",
 
         # avdbs
         "jav_censored_avdbs_use_sjva": "False",
@@ -496,6 +502,74 @@ class LogicJavCensored(LogicModuleBase):
                     if label is None or _ != label:
                         tmp.append(_)
                 ret["tag"] = tmp
+
+        # === 디스코드 프록시 URL 치환 로직 ===
+        try:
+            current_image_mode = ModelSetting.get("jav_censored_image_mode")
+            use_custom_proxy_server = ModelSetting.get_bool("jav_censored_use_discord_proxy_server")
+            custom_proxy_url_base = ModelSetting.get("jav_censored_discord_proxy_server_url").strip().rstrip('/')
+
+            if (current_image_mode == '3' or current_image_mode == '5') and \
+                use_custom_proxy_server and custom_proxy_url_base:
+                
+                logger.debug(f"Applying custom Discord proxy server: {custom_proxy_url_base} for code {code}")
+                
+                data_to_modify = ret # entity.as_dict()의 결과가 담긴 dict
+                if data_to_modify is None: # 방어 코드
+                    logger.warning("data_to_modify is None before URL rewrite. Skipping rewrite.")
+                    return ret # 또는 다른 적절한 처리
+
+                # DiscordUtil.isurlattachment 함수를 가져오거나, 유사한 로직 사용
+                # from lib_metadata.discord import DiscordUtil # 상단에 임포트 필요
+
+                def rewrite_discord_url(url_string):
+                    if isinstance(url_string, str) and DiscordUtil.isurlattachment(url_string):
+                        try:
+                            # URL 파싱하여 경로 및 쿼리 유지
+                            parsed_url = urlparse(url_string)
+                            new_url = f"{custom_proxy_url_base}{parsed_url.path}"
+                            if parsed_url.query:
+                                new_url += f"?{parsed_url.query}"
+                            logger.debug(f"  Rewriting Discord URL: '{url_string}' -> '{new_url}'")
+                            return new_url
+                        except Exception as e_parse_rewrite:
+                            logger.error(f"  Error parsing/rewriting URL '{url_string}': {e_parse_rewrite}")
+                            return url_string
+                    return url_string
+
+                # entity.thumb 수정 (poster, landscape)
+                if data_to_modify.get('thumb') and isinstance(data_to_modify['thumb'], list):
+                    for thumb_item in data_to_modify['thumb']:
+                        if isinstance(thumb_item, dict) and 'value' in thumb_item:
+                            thumb_item['value'] = rewrite_discord_url(thumb_item['value'])
+                        # EntityThumb에 thumb 필드가 있다면 그것도 처리 (지금은 value만)
+
+                # entity.fanart 수정 (리스트 내 URL들)
+                if data_to_modify.get('fanart') and isinstance(data_to_modify['fanart'], list):
+                    data_to_modify['fanart'] = [rewrite_discord_url(fanart_url) for fanart_url in data_to_modify['fanart']]
+                
+                # entity.actor의 thumb 수정 (만약 배우 이미지도 디스코드 프록시를 사용한다면)
+                if data_to_modify.get('actor') and isinstance(data_to_modify['actor'], list):
+                    for actor_item in data_to_modify['actor']:
+                        if isinstance(actor_item, dict) and 'thumb' in actor_item:
+                            actor_item['thumb'] = rewrite_discord_url(actor_item['thumb'])
+                
+                # entity.extras의 thumb 수정 (트레일러 썸네일 등)
+                if data_to_modify.get('extras') and isinstance(data_to_modify['extras'], list):
+                    for extra_item in data_to_modify['extras']:
+                        if isinstance(extra_item, dict) and 'thumb' in extra_item:
+                            extra_item['thumb'] = rewrite_discord_url(extra_item['thumb'])
+
+            else:
+                if current_image_mode == '3' or current_image_mode == '5':
+                    if not use_custom_proxy_server:
+                        logger.debug(f"Custom Discord proxy server is NOT enabled for code {code}.")
+                    if not custom_proxy_url_base:
+                        logger.debug(f"Custom Discord proxy server URL is empty for code {code}.")
+
+        except Exception as e_rewrite:
+            logger.exception(f"Error during Discord URL rewrite for code {code}: {e_rewrite}")
+        # === URL 치환 로직 끝 ===
 
         return ret
 

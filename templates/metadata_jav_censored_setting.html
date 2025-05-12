@@ -16,7 +16,7 @@
   <form id='setting' name='setting'>
   <div class="tab-content mb-4" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
-      {{ macros.setting_input_text('jav_censored_order', '메타 우선순위', value=arg['jav_censored_order'], desc=['메타데이터를 가져올 우선순위 설정', 'dmm, javbus, jav321, mgsdvd']) }}
+      {{ macros.setting_input_text('jav_censored_order', '메타 우선순위', value=arg['jav_censored_order'], desc=['메타데이터를 가져올 우선순위 설정', 'mgsdvd, dmm, jav321', javdb, javbus]) }}
       {{ macros.setting_input_text(
           'jav_censored_result_priority_order', 
           '최종 결과 정렬 우선순위', 
@@ -25,7 +25,7 @@
               '검색 결과 목록의 최종 정렬 순서를 지정합니다. 쉼표(,)로 구분하여 순서대로 입력합니다.', 
               '목록의 앞쪽에 있을수록 우선순위가 높습니다. (동점일 경우 적용)',
               '사용 가능 키:', 
-              ' - 사이트: mgsdvd, javbus, jav321', 
+              ' - 사이트: mgsdvd, javbus, jav321, javdb, mgsama', 
               ' - DMM 타입별: dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown', 
               ' (예: mgsdvd, dmm_videoa, javbus, dmm_dvd)',
               '목록에 없는 항목은 가장 낮은 우선순위를 갖습니다.'
@@ -34,6 +34,10 @@
       {{ macros.setting_input_text('jav_censored_actor_order', '배우 우선순위', value=arg['jav_censored_actor_order'], desc=['배우정보를 가져울 순위 설정', 'avdbs, hentaku']) }}
       {{ macros.m_hr() }}
       {{ macros.setting_radio('jav_censored_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy', '이미지 서버'], value=arg['jav_censored_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환', '이미지 서버: 지정된 이미지 서버 URL 사용 및 로컬 저장']) }}
+      {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다. (디스코드 Proxy 모드일 때 적용)']) }}
+      <div id="jav_censored_use_discord_proxy_server_div" class="collapse">
+        {{ macros.setting_input_text('jav_censored_discord_proxy_server_url', '디스코드 Proxy 서버(FF) 주소', value=arg['jav_censored_discord_proxy_server_url'], placeholder='예: https://ff.my-domain.com (끝에 / 없이 입력)') }}
+      </div>
       {{ macros.setting_checkbox('jav_censored_use_image_server', '이미지 서버 사용', value=arg['jav_censored_use_image_server'], desc=['이미지 서버 URL을 직접 지정하고, 관련 이미지를 로컬 경로에 저장합니다. (lib_metadata 지원 필요)']) }}
       <div id="jav_censored_use_image_server_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com') }}
@@ -81,12 +85,14 @@ $(document).ready(function(){
   use_collapse("jav_censored_hentaku_use_proxy");
   use_collapse("jav_censored_use_image_server");
   use_collapse("jav_censored_avdbs_use_local_db");
+  use_collapse("jav_censored_use_discord_proxy_server");
 });
 
 $('#jav_censored_avdbs_use_proxy').change(function() {use_collapse('jav_censored_avdbs_use_proxy');});
 $('#jav_censored_hentaku_use_proxy').change(function() {use_collapse('jav_censored_hentaku_use_proxy');});
 $('#jav_censored_use_image_server').change(function() {use_collapse('jav_censored_use_image_server');});
 $('#jav_censored_avdbs_use_local_db').change(function() {use_collapse('jav_censored_avdbs_use_local_db');});
+$('#jav_censored_use_discord_proxy_server').change(function() {use_collapse('jav_censored_use_discord_proxy_server');});
 
 
 $("body").on('click', '#jav_censored_avdbs_test_btn', function(e){
