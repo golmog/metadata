@@ -4,7 +4,6 @@ from flask import jsonify, render_template
 # sjva 공용
 from framework import SystemModelSetting
 from lib_metadata import (
-    MetadataServerUtil,
     SiteAvdbs,
     SiteDmm,
     SiteHentaku,
@@ -89,6 +88,30 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_mgsdvd_use_extras": "True",
         "jav_censored_mgsdvd_test_code": "abf-010",
 
+        # jav321
+        "jav_censored_jav321_use_sjva": "False",
+        "jav_censored_jav321_use_proxy": "False",
+        "jav_censored_jav321_proxy_url": "",
+        "jav_censored_jav321_small_image_to_poster": "",
+        "jav_censored_jav321_crop_mode": "",
+        "jav_censored_jav321_title_format": "[{title}] {tagline}",
+        "jav_censored_jav321_art_count": "0",
+        "jav_censored_jav321_tag_option": "2",
+        "jav_censored_jav321_use_extras": "True",
+        "jav_censored_jav321_test_code": "abw-354",
+
+        # javdb
+        "jav_censored_javdb_use_sjva": "False",
+        "jav_censored_javdb_use_proxy": "False",
+        "jav_censored_javdb_proxy_url": "",
+        "jav_censored_javdb_small_image_to_poster": "",
+        "jav_censored_javdb_crop_mode": "",
+        "jav_censored_javdb_title_format": "[{title}] {tagline}",
+        "jav_censored_javdb_art_count": "2",
+        "jav_censored_javdb_tag_option": "1",
+        "jav_censored_javdb_use_extras": "False",
+        "jav_censored_javdb_test_code": "JUFE-487",
+
         # javbus
         "jav_censored_javbus_use_sjva": "False",
         "jav_censored_javbus_use_proxy": "False",
@@ -100,18 +123,6 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javbus_tag_option": "2",
         "jav_censored_javbus_use_extras": "True",
         "jav_censored_javbus_test_code": "abw-354",
-
-        # javdb
-        "jav_censored_javdb_use_sjva": "False",
-        "jav_censored_javdb_use_proxy": "False",
-        "jav_censored_javdb_proxy_url": "",
-        "jav_censored_javdb_small_image_to_poster": "",
-        "jav_censored_javdb_crop_mode": "",
-        "jav_censored_javdb_title_format": "[{title}] {tagline}",
-        "jav_censored_javdb_art_count": "5",
-        "jav_censored_javdb_tag_option": "1",
-        "jav_censored_javdb_use_extras": "False",
-        "jav_censored_javdb_test_code": "JUFE-487",
     }
 
     site_map = {
@@ -125,7 +136,6 @@ class LogicJavCensored(LogicModuleBase):
     }
 
     db_prefix = {
-        "jav321": "jav_censored_ama",
     }
 
     def __init__(self, PM):

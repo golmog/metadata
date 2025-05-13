@@ -36,7 +36,6 @@ class P:
             ["ftv", "외국TV"],
             ["music_normal", "음악 일반"],
             ["jav_censored", "JavCensored"],
-            ["jav_censored_ama", "JavCensored AMA"],
             ["jav_uncensored", "JavUnCensored"],
             ["jav_fc2", "JavFc2"],
             ["book", "책"],
@@ -67,13 +66,9 @@ class P:
                 ["setting", "설정"],
                 ["dmm", "DMM"],
                 ["mgs", "MGS"],
-                ["javbus", "Javbus"],
-                ["javdb", "JavDB"],
-            ],
-            "jav_censored_ama": [
-                ["setting", "설정"],
-                ["mgs", "MGS"],
                 ["jav321", "Jav321"],
+                ["javdb", "JavDB"],
+                ["javbus", "Javbus"],
             ],
             "jav_uncensored": [
                 ["setting", "설정"],
@@ -94,7 +89,7 @@ class P:
     }
 
     plugin_info = {
-        "version": "0.2.0.2",
+        "version": "0.2.0.3",
         "name": package_name,
         "category": "tool",
         "icon": "",
