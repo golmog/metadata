@@ -15,12 +15,11 @@
   <div class="tab-content mb-4" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
       {{ macros.setting_input_text_and_buttons('jav_censored_mgsdvd_test_code', '테스트', [['jav_censored_mgsdvd_test_btn', '테스트'], ['jav_censored_mgsdvd_nfo_download_btn', 'NFO 다운로드']], value=arg['jav_censored_mgsdvd_test_code'], desc=None) }}
-      <!-- {{ macros.setting_checkbox('jav_censored_mgsdvd_use_sjva', '메타 서버 사용', value=arg['jav_censored_mgsdvd_use_sjva'], desc=['meta.sjva.me에서 우선 검색하여 가져옵니다.', '데이터가 있으면 서버에서 번역까지 포함된 메타데이터를 가져옵니다.', '데이터가 없으면 설정에 따르며 결과를 서버에 저장합니다.', '저장조건: 구글 번역 사용, 이미지 URL 처리 - 디스코드 Proxy']) }} -->
+
       {{ macros.setting_checkbox('jav_censored_mgsdvd_use_proxy', 'Proxy 사용', value=arg['jav_censored_mgsdvd_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
       <div id="jav_censored_mgsdvd_use_proxy_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_mgsdvd_proxy_url', 'Proxy URL', value=arg['jav_censored_mgsdvd_proxy_url']) }}
       </div>
-      <!-- {{ macros.setting_radio('jav_censored_mgsdvd_image_mode', '이미지 URL 처리 방법', ['원본', 'SJVA Proxy', '디스코드 Redirect', '디스코드 Proxy'], value=arg['jav_censored_mgsdvd_image_mode'], desc=['원본: 원본 URL (클라이언트가 해당 URL에 접속 가능해야 함)', 'SJVA Proxy: SJVA가 이미지를 받아서 중계하는 URL (lazy)', '디스코드 Redirect: 이미지를 디스코드에 업로드 후 Redirect하는 URL (lazy)', '디스코드 Proxy: 이미지를 디스코드에 업로드 후 그 URL을 반환']) }} -->
       {{ macros.m_hr() }}
       {{ macros.setting_input_textarea('jav_censored_mgsdvd_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_mgsdvd_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
       {{ macros.setting_input_textarea('jav_censored_mgsdvd_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_mgsdvd_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
@@ -29,9 +28,9 @@
       {{ macros.setting_radio('jav_censored_mgsdvd_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_mgsdvd_tag_option']) }}
       {{ macros.setting_checkbox('jav_censored_mgsdvd_use_extras', '예고편 사용', value=arg['jav_censored_mgsdvd_use_extras'], desc=None) }}
     {{ macros.m_tab_content_end() }}
-  </div><!--tab-content-->
+  </div>
 </form>
-</div><!--전체-->
+</div>
 
 <script type="text/javascript">
 var package_name = "{{arg['package_name'] }}";

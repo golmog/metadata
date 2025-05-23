@@ -16,7 +16,7 @@
     {{ macros.m_tab_content_start('normal', true) }}
       {{ macros.setting_input_text('jav_censored_ama_order', '아마추어 사이트 우선순위', value=arg['jav_censored_ama_order'], desc=['메타데이터를 가져올 아마추어 사이트의 우선순위 설정', '예: jav321, mgsama, dmm, javbus']) }}
       
-      {{ macros.m_hr() }} <!-- 구분선 추가 -->
+      {{ macros.m_hr() }}
       <p class="form-text text-muted">
         <strong>참고:</strong>
         <ul>
@@ -26,10 +26,9 @@
         </ul>
       </p>
     {{ macros.m_tab_content_end() }}
-    <!-- {{ macros.m_tab_content_end() }} 이중으로 된 부분 제거 -->
-  </div><!--tab-content-->
+  </div>
 </form>
-</div><!--전체-->
+</div>
 
 <script type="text/javascript">
 var package_name = "{{arg['package_name'] }}";
