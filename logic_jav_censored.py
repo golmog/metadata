@@ -37,7 +37,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_db_version": "1",
         "jav_censored_order": "mgsdvd, dmm, jav321, javdb, javbus",
         "jav_censored_actor_order": "avdbs, hentaku",
-        "jav_censored_result_priority_order": "mgsdvd, dmm_videoa, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
+        "jav_censored_result_priority_order": "dmm_videoa, mgsdvd, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
         # 통합 이미지 설정
         "jav_censored_image_mode": "0", # 0:원본, 1:SJVA Proxy, 2:Discord Redirect, 3:Discord Proxy, 4:이미지 서버
