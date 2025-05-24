@@ -35,7 +35,7 @@ ModelSetting = P.ModelSetting
 class LogicJavCensored(LogicModuleBase):
     db_default = {
         "jav_censored_db_version": "1",
-        "jav_censored_order": "mgsdvd, dmm, jav321, javdb, javbus",
+        "jav_censored_order": "dmm, mgsdvd, jav321, javdb, javbus",
         "jav_censored_actor_order": "avdbs, hentaku",
         "jav_censored_result_priority_order": "dmm_videoa, mgsdvd, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
