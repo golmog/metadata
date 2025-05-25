@@ -8,19 +8,28 @@
 
   <nav>  
     {{ macros.m_tab_head_start() }}
-      {{ macros.m_tab_head2('site_fc2ppvdb', 'fc2ppvdb.com 설정', true) }}
+      {{ macros.m_tab_head2('site_fc2ppvdb', 'fc2ppvdb.com', true) }}
+      {{ macros.m_tab_head2('site_fc2com', 'fc2.com', false) }}
     {{ macros.m_tab_head_end() }}
   </nav>
 
   <form id='setting' name='setting'>
     <div class="tab-content" id="nav-tabContent">
       {{ macros.m_tab_content_start('site_fc2ppvdb', true) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2ppvdb_code', '테스트', [['jav_fc2_fc2ppvdb_test_btn', '테스트']], value=arg['jav_fc2_fc2ppvdb_code'], desc=None) }}
         {{ macros.setting_checkbox('jav_fc2_fc2ppvdb_use_proxy', 'Proxy 사용', value=arg['jav_fc2_fc2ppvdb_use_proxy'], desc=['On : sjva를 설치한 곳에서 fc2ppvdb.com 사이트 접속이 안 될 경우 사용']) }}
         <div id="jav_fc2_fc2ppvdb_use_proxy_div" class="collapse">
         {{ macros.setting_input_text('jav_fc2_fc2ppvdb_proxy_url', 'Proxy URL', value=arg['jav_fc2_fc2ppvdb_proxy_url']) }}
         </div>
+      {{ macros.m_tab_content_end() }}
+      {{ macros.m_tab_content_start('site_fc2com', false) }}
+        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2com_code', '테스트', [['jav_fc2_fc2com_test_btn', '테스트']], value=arg['jav_fc2_fc2com_code'], desc=None) }}
+        {{ macros.setting_checkbox('jav_fc2_fc2com_use_proxy', 'Proxy 사용', value=arg['jav_fc2_fc2com_use_proxy'], desc=['On : sjva를 설치한 곳에서 fc2com.com 사이트 접속이 안 될 경우 사용']) }}
+        <div id="jav_fc2_fc2com_use_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_fc2_fc2com_proxy_url', 'Proxy URL', value=arg['jav_fc2_fc2com_proxy_url']) }}
+        </div>
         {{ macros.m_hr() }}
-        {{ macros.setting_input_text_and_buttons('jav_fc2_fc2ppvdb_code', '테스트', [['jav_fc2_fc2ppvdb_test_btn', '테스트']], value=arg['jav_fc2_fc2ppvdb_code'], desc=None) }}
+        {{ macros.setting_input_int('jav_fc2_fc2com_art_count', '최대 아트 수 제한', value=arg['jav_fc2_fc2com_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
       {{ macros.m_tab_content_end() }}
 
     </div>
@@ -31,6 +40,18 @@
   var package_name = "{{arg['package_name'] }}";
   var sub = "{{arg['sub'] }}";
   var current_data = null;
+
+  //fc2com.com
+  $(document).ready(function(){
+    use_collapse("jav_fc2_fc2com_use_proxy");
+  });
+
+  $('#jav_fc2_fc2com_use_proxy').change(function() {use_collapse('jav_fc2_fc2com_use_proxy');});
+  
+  $("body").on('click', '#jav_fc2_fc2com_test_btn', function(e){
+    e.preventDefault();
+    func_test('fc2com');
+  });
 
   //fc2ppvdb.com
   $(document).ready(function(){

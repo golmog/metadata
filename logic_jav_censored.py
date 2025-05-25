@@ -107,8 +107,8 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javdb_small_image_to_poster": "",
         "jav_censored_javdb_crop_mode": "",
         "jav_censored_javdb_title_format": "[{title}] {tagline}",
-        "jav_censored_javdb_art_count": "2",
-        "jav_censored_javdb_tag_option": "1",
+        "jav_censored_javdb_art_count": "0",
+        "jav_censored_javdb_tag_option": "2",
         "jav_censored_javdb_use_extras": "False",
         "jav_censored_javdb_test_code": "JUFE-487",
 

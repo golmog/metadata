@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-#########################################################
 # python
 import os, sys, traceback, re, json, datetime, time
 # third-party
@@ -13,10 +12,11 @@ from tool_base import ToolUtil, ToolBaseNotify
 # lib_metadata
 from lib_metadata.server_util import MetadataServerUtil
 from lib_metadata import SiteAvdbs, SiteHentaku
+from lib_metadata.site_fc2.site_fc2com import SiteFc2Com
 from lib_metadata.site_fc2.site_fc2ppvdb import SiteFc2ppvdb
 
-#########################################################
 from .plugin import P
+
 module_name = 'jav_fc2'
 logger = P.logger
 ModelSetting = P.ModelSetting
@@ -25,7 +25,7 @@ package_name = P.package_name
 class LogicJavFc2(LogicModuleBase):
     db_default = {
         f'{module_name}_db_version' : '1',
-        f'{module_name}_order' : 'fc2ppvdb',
+        f'{module_name}_order' : 'fc2ppvdb, fc2com',
         f'{module_name}_title_format' : '[{title}] {tagline}',
         f'{module_name}_use_extras' : 'False',
 
@@ -33,14 +33,21 @@ class LogicJavFc2(LogicModuleBase):
         f'{module_name}_fc2ppvdb_use_proxy' : 'False',
         f'{module_name}_fc2ppvdb_proxy_url' : '',
 
+        # fc2com 사이트 설정
+        f'{module_name}_fc2com_use_proxy' : 'False',
+        f'{module_name}_fc2com_proxy_url' : '',
+        f'{module_name}_fc2com_art_count' : '0',
+
         # 테스트용 코드
-        f'{module_name}_fc2ppvdb_code' : 'FC2-2313436',
-        f'{module_name}_total_code' : 'FC2-2313436',
+        f'{module_name}_fc2com_code' : 'FC2-4690907',
+        f'{module_name}_fc2ppvdb_code' : 'FC2-4690907',
+        f'{module_name}_total_code' : 'FC2-4690907',
     }
 
     site_map = {
         'avdbs': SiteAvdbs,
         'hentaku': SiteHentaku,
+        'fc2com': SiteFc2Com,
         'fc2ppvdb': SiteFc2ppvdb,
     }
 
@@ -64,9 +71,9 @@ class LogicJavFc2(LogicModuleBase):
             if sub == 'test':
                 code = req.form['code']
                 call = req.form['call']
-                
+
                 ModelSetting.set(f'{self.name}_{call}_code', code)
-                
+
                 ret = {}
 
                 match = re.search(r'FC2(?:-PPV)?(?:-|_|\s)?(\d{6,8})(?:-cd\d)?', code.upper())
@@ -82,7 +89,7 @@ class LogicJavFc2(LogicModuleBase):
                         first_result_code = ret['search_results'][0].get('code')
                         if first_result_code:
                             ret['first_item_info'] = self.info(first_result_code)
-                
+
                 elif call in self.site_map:
                     SiteClass = self.site_map[call]
                     site_key = SiteClass.site_name
@@ -90,7 +97,7 @@ class LogicJavFc2(LogicModuleBase):
                     # 개별 사이트 테스트를 위한 설정 가져오기
                     current_site_settings = self.__site_settings(site_key)
                     current_site_settings['manual'] = True
-                                        
+
                     # 1. 해당 사이트의 search 함수 호출
                     search_data = SiteClass.search(processed_code, **current_site_settings)
                     ret['search'] = search_data
@@ -124,13 +131,13 @@ class LogicJavFc2(LogicModuleBase):
                 else:
                     processed_keyword = keyword
                     logger.warning(f"API 검색: FC2 코드 정규식 매칭 실패: {keyword}. 원본 코드 사용.")
-                
+
                 search_results = self.search(processed_keyword, manual=manual)
                 return jsonify(search_results)
 
             elif sub == 'info':
                 code = req.args.get('code')
-                
+
                 info_data = self.info(code)
                 return jsonify(info_data)
 
@@ -143,40 +150,58 @@ class LogicJavFc2(LogicModuleBase):
     # 설정 헬퍼 함수들
     ################################################################
     def __site_settings(self, site_name_key):
-        """
-        지정된 사이트 이름(키)에 대한 기본 설정을 반환합니다.
-        주로 프록시 설정과 JavCensored에서 가져온 이미지 관련 설정을 포함합니다.
-        site_name_key: 'fc2ppvdb' 등 self.site_map의 키
-        """
         settings = {}
-        
+
         # 프록시 설정
         settings['proxy_url'] = None
         if ModelSetting.get_bool(f'{self.name}_{site_name_key}_use_proxy'):
             settings['proxy_url'] = ModelSetting.get(f'{self.name}_{site_name_key}_proxy_url')
-        
+
         # 이미지 관련 설정 (JavCensored 설정 따름)
         settings['image_mode'] = ModelSetting.get('jav_censored_image_mode')
         settings['use_image_server'] = ModelSetting.get_bool('jav_censored_use_image_server')
         settings['image_server_url'] = ModelSetting.get('jav_censored_image_server_url')
         settings['image_server_local_path'] = ModelSetting.get('jav_censored_image_server_local_path')
-        
-        # FC2 전용 공통 설정 (필요시 추가)
-        # settings['some_fc2_specific_setting'] = ModelSetting.get(f'{self.name}_some_setting')
 
         return settings
 
     def __info_settings(self, site_name_key, code_for_site=None):
         settings = self.__site_settings(site_name_key)
-        
-        settings['url_prefix_segment'] = 'jav/fc2' 
-        
-        # FC2 사이트별로 필요한 추가 상세 설정 (db_default 및 UI에 해당 설정이 있어야 함)
-        # settings['max_arts'] = ModelSetting.get_int(f'{self.name}_{site_name_key}_art_count', 0)
-        settings['use_extras'] = ModelSetting.get_bool(f'{self.name}_use_extras') # 공통 extras 설정을 따를 경우
-        # settings['use_extras'] = ModelSetting.get_bool(f'{self.name}_{site_name_key}_use_extras', True) # 사이트별 extras 설정을 따를 경우
 
-        # 기타 필요한 설정 추가 가능
+        settings['url_prefix_segment'] = 'jav/fc2' 
+
+        art_count_key = f'{self.name}_{site_name_key}_art_count'
+        if art_count_key in self.db_default:
+            art_count_str = ModelSetting.get(art_count_key)
+            if art_count_str is not None and art_count_str.strip().isdigit():
+                settings['max_arts'] = int(art_count_str.strip())
+            else:
+                try:
+                    settings['max_arts'] = int(self.db_default[art_count_key])
+                except (ValueError, TypeError):
+                    settings['max_arts'] = 0
+                    logger.warning(f"Value for key '{art_count_key}' ('{art_count_str}') and its db_default ('{self.db_default.get(art_count_key)}') are not valid digits. Defaulting max_arts to 0.")
+        else:
+            settings['max_arts'] = 0
+            logger.debug(f"Key '{art_count_key}' not defined in db_default for {site_name_key}. Defaulting max_arts to 0.")
+
+        use_extras_key = f'{self.name}_{site_name_key}_use_extras'
+        if use_extras_key in self.db_default:
+            use_extras_str = ModelSetting.get(use_extras_key)
+            if use_extras_str is not None:
+                settings['use_extras'] = (use_extras_str.lower() == 'true')
+            else:
+                settings['use_extras'] = (str(self.db_default[use_extras_key]).lower() == 'true')
+        else:
+            common_use_extras_str = ModelSetting.get(f'{self.name}_use_extras')
+            if common_use_extras_str is not None:
+                settings['use_extras'] = (common_use_extras_str.lower() == 'true')
+            else:
+                settings['use_extras'] = False
+            logger.debug(f"Key '{use_extras_key}' not defined in db_default for {site_name_key}. Using common/default use_extras: {settings['use_extras']}.")
+
+        # logger.debug(f"__info_settings for '{site_name_key}': max_arts={settings.get('max_arts')}, use_extras={settings.get('use_extras')}")
+
         return settings
 
     ################################################################
@@ -234,7 +259,7 @@ class LogicJavFc2(LogicModuleBase):
 
     def info(self, code_module_site_id):
         logger.debug(f"FC2 Info 시작 - Code:[{code_module_site_id}]")
-        final_info_data = None # 최종 반환될 메타데이터
+        final_info_data = None
 
         # 1. lib_metadata의 사이트 클래스를 통해 정보 조회
         site_char_from_code = code_module_site_id[1]
@@ -244,7 +269,7 @@ class LogicJavFc2(LogicModuleBase):
                 if hasattr(site_class_obj, 'module_char') and site_class_obj.module_char == code_module_site_id[0]:
                     target_site_key = key
                     break
-        
+
         if target_site_key and target_site_key in self.site_map:
             SiteClass = self.site_map[target_site_key]
             if SiteClass is not None:
@@ -259,7 +284,7 @@ class LogicJavFc2(LogicModuleBase):
 
         else:
             logger.error(f"코드로 적합한 FC2 작품 사이트 클래스를 찾을 수 없음: {code_module_site_id} (site_char: {site_char_from_code})")
-            
+
         # 2. 배우 정보 처리 (final_info_data가 성공적으로 채워졌을 경우에만 실행)
         if final_info_data and isinstance(final_info_data, dict) and 'actor' in final_info_data and final_info_data['actor']:
             logger.debug(f"FC2 Info: 배우 정보 처리 시작. 총 {len(final_info_data['actor'])}명")
@@ -278,7 +303,7 @@ class LogicJavFc2(LogicModuleBase):
                 if final_info_data.get('actor') and isinstance(final_info_data.get('actor'), list) and final_info_data['actor']:
                     if final_info_data['actor'][0].get('name'):
                         actor_name_for_format = final_info_data['actor'][0]['name']
-                
+
                 format_dict = {
                     'originaltitle': final_info_data.get("originaltitle", ""),
                     'plot': final_info_data.get("plot", ""),
@@ -311,16 +336,11 @@ class LogicJavFc2(LogicModuleBase):
 
 
     def info2(self, code_module_site_id, SiteClass_obj):
-        """
-        지정된 SiteClass를 사용하여 아이템의 상세 정보를 조회합니다.
-        code_module_site_id: 'LP123456' 형태의 내부 코드
-        SiteClass_obj: lib_metadata에서 가져온 사이트 처리 클래스 (예: SiteFc2ppvdb)
-        """
         site_name = SiteClass_obj.site_name
-        
+
         current_info_settings = self.__info_settings(site_name, code_module_site_id)
         logger.debug(f"info2: Code={code_module_site_id}, SiteClass={site_name}, Settings={current_info_settings}")
-        
+
         site_info_response = None
         try:
             site_info_response = SiteClass_obj.info(code_module_site_id, **current_info_settings)
@@ -380,7 +400,7 @@ class LogicJavFc2(LogicModuleBase):
         logger.debug(f"Processing actor: {original_name_ja}")
 
         actor_site_order = ModelSetting.get_list("jav_censored_actor_order", ",")
-        
+
         updated_by_db = False
         for actor_site_key in actor_site_order:
             if actor_site_key not in self.site_map:
@@ -394,7 +414,7 @@ class LogicJavFc2(LogicModuleBase):
 
             actor_site_settings = self._get_actor_site_settings(actor_site_key)
             logger.debug(f"'{original_name_ja}' 배우 정보 조회 시도: 사이트='{actor_site_key}', 설정={actor_site_settings}")
-            
+
             try:
                 if hasattr(ActorSiteClass, 'get_actor_info'):
                     get_info_success = ActorSiteClass.get_actor_info(actor_entity_dict, **actor_site_settings)
@@ -410,6 +430,6 @@ class LogicJavFc2(LogicModuleBase):
             except Exception as e_actor_info:
                 logger.error(f"'{actor_site_key}' 사이트에서 배우 '{original_name_ja}' 정보 조회 중 예외: {e_actor_info}")
                 logger.error(traceback.format_exc())
-        
+
         if not updated_by_db:
             logger.debug(f"'{original_name_ja}' 배우 정보를 DB에서 업데이트하지 못했습니다.")
