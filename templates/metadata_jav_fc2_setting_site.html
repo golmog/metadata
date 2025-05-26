@@ -21,6 +21,8 @@
         <div id="jav_fc2_fc2ppvdb_use_proxy_div" class="collapse">
         {{ macros.setting_input_text('jav_fc2_fc2ppvdb_proxy_url', 'Proxy URL', value=arg['jav_fc2_fc2ppvdb_proxy_url']) }}
         </div>
+        {{ macros.m_hr() }}
+        {{ macros.setting_checkbox('jav_fc2_fc2ppvdb_use_review', '리뷰 정보 사용', value=arg['jav_fc2_fc2ppvdb_use_review'], desc=['On : FC2PPVDB 사이트의 댓글 정보를 리뷰로 가져옵니다. (번역 설정에 따라 번역됨)']) }}
       {{ macros.m_tab_content_end() }}
       {{ macros.m_tab_content_start('site_fc2com', false) }}
         {{ macros.setting_input_text_and_buttons('jav_fc2_fc2com_code', '테스트', [['jav_fc2_fc2com_test_btn', '테스트']], value=arg['jav_fc2_fc2com_code'], desc=None) }}

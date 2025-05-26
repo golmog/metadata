@@ -32,6 +32,7 @@ class LogicJavFc2(LogicModuleBase):
         # fc2ppvdb 사이트 설정
         f'{module_name}_fc2ppvdb_use_proxy' : 'False',
         f'{module_name}_fc2ppvdb_proxy_url' : '',
+        f'{module_name}_fc2ppvdb_use_review' : 'False',
 
         # fc2com 사이트 설정
         f'{module_name}_fc2com_use_proxy' : 'False',
@@ -200,6 +201,12 @@ class LogicJavFc2(LogicModuleBase):
                 settings['use_extras'] = False
             logger.debug(f"Key '{use_extras_key}' not defined in db_default for {site_name_key}. Using common/default use_extras: {settings['use_extras']}.")
 
+        use_review_key = f'{self.name}_{site_name_key}_use_review'
+        if use_review_key in self.db_default:
+            settings['use_review'] = ModelSetting.get_bool(use_review_key)
+            # if settings['use_review']:
+            #    logger.debug(f"__info_settings for '{site_name_key}': use_review is enabled ({settings['use_review']}) from key '{use_review_key}'.")
+
         # logger.debug(f"__info_settings for '{site_name_key}': max_arts={settings.get('max_arts')}, use_extras={settings.get('use_extras')}")
 
         return settings
@@ -323,9 +330,6 @@ class LogicJavFc2(LogicModuleBase):
 
             if not ModelSetting.get_bool(f'{self.name}_use_extras'):
                 final_info_data['extras'] = []
-
-            logger.debug(f"FC2 Info 종료. 최종 데이터 반환.")
-            return final_info_data
 
         elif final_info_data is None:
             logger.debug(f"FC2 Info: 최종적으로 반환할 정보가 없습니다 (모든 소스 확인 후). Code: {code_module_site_id}")
