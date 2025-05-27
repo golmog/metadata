@@ -331,6 +331,9 @@ class LogicJavFc2(LogicModuleBase):
             if not ModelSetting.get_bool(f'{self.name}_use_extras'):
                 final_info_data['extras'] = []
 
+            # logger.debug(f"FC2 Info 종료. 최종 데이터 반환.")
+            return final_info_data
+
         elif final_info_data is None:
             logger.debug(f"FC2 Info: 최종적으로 반환할 정보가 없습니다 (모든 소스 확인 후). Code: {code_module_site_id}")
             return None
