@@ -33,6 +33,7 @@ class LogicJavFc2(LogicModuleBase):
         f'{module_name}_fc2ppvdb_use_proxy' : 'False',
         f'{module_name}_fc2ppvdb_proxy_url' : '',
         f'{module_name}_fc2ppvdb_use_review' : 'False',
+        f'{module_name}_fc2ppvdb_not_found_delay' : '0',
 
         # fc2com 사이트 설정
         f'{module_name}_fc2com_use_proxy' : 'False',
@@ -164,12 +165,25 @@ class LogicJavFc2(LogicModuleBase):
         settings['image_server_url'] = ModelSetting.get('jav_censored_image_server_url')
         settings['image_server_local_path'] = ModelSetting.get('jav_censored_image_server_local_path')
 
+        delay_key = f'{self.name}_{site_name_key}_not_found_delay' 
+
+        # 페이지 없음 딜레이 설정
+        if ModelSetting.has_key(delay_key) or delay_key in self.db_default:
+            delay_value_str = ModelSetting.get(delay_key)
+            if delay_value_str is not None and delay_value_str.strip().isdigit():
+                settings['not_found_delay_seconds'] = int(delay_value_str)
+            else:
+                default_delay_str = self.db_default.get(delay_key, '0') 
+                settings['not_found_delay_seconds'] = int(default_delay_str) if default_delay_str.strip().isdigit() else 0
+                if delay_value_str is not None:
+                    logger.warning(f"'{delay_key}' 값이 유효하지 않음 ('{delay_value_str}'). 기본값 {settings['not_found_delay_seconds']}초 사용.")
+
         return settings
 
     def __info_settings(self, site_name_key, code_for_site=None):
         settings = self.__site_settings(site_name_key)
 
-        settings['url_prefix_segment'] = 'jav/fc2' 
+        settings['url_prefix_segment'] = 'jav/fc2'
 
         art_count_key = f'{self.name}_{site_name_key}_art_count'
         if art_count_key in self.db_default:
