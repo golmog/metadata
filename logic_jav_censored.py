@@ -273,7 +273,7 @@ class LogicJavCensored(LogicModuleBase):
                 continue
 
             logger.debug(f"--- Searching on site: {site_key_in_order} ---")
-            
+
             # UI 테스트(manual=True) 시에는 해당 사이트의 현재 설정을 가져와 search2에 전달
             # 자동 검색(manual=False) 시에는 search2 내부에서 __site_settings를 호출
             current_site_settings_for_test = self.__site_settings(site_key_in_order) if manual else None
@@ -285,7 +285,7 @@ class LogicJavCensored(LogicModuleBase):
                     if not isinstance(item_result, dict):
                         logger.error(f"  Item from {site_key_in_order} is not a dict: {item_result}")
                         continue
-                    
+
                     # EntityAVSearch.as_dict()가 score, site_key, content_type 등을 반환한다고 가정
                     # site_key가 없다면 현재 루프의 site_key_in_order 사용
                     item_result['original_score'] = item_result.get("score", 0)
@@ -301,11 +301,11 @@ class LogicJavCensored(LogicModuleBase):
                         break # 현재 사이트의 나머지 아이템 처리는 중단하고, 다음 단계로 (우선 사이트 종료)
             else:
                 logger.debug(f"  No results from {site_key_in_order}")
-            
+
             if early_exit_triggered: # 조기 종료 플래그가 켜졌으면 전체 사이트 검색 루프 종료
                 logger.debug("  Early exit triggered. Stopping further site searches.")
                 break 
-        
+
         logger.debug(f"--- All site searches completed or exited early. Total initial results: {len(all_results)} ---")
 
         if not all_results:
@@ -316,17 +316,17 @@ class LogicJavCensored(LogicModuleBase):
         if not manual and all_results:
             logger.debug("--- Starting HQ Poster check ---")
             all_results_sorted_for_hq_check = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
-            
+
             if all_results_sorted_for_hq_check: 
                 top_original_score = all_results_sorted_for_hq_check[0].get("original_score", 0)
                 score_threshold = 95
-                
+
                 if top_original_score >= score_threshold:
                     candidates_for_hq_check = [
                         item for item in all_results_sorted_for_hq_check 
                         if item.get("original_score", 0) >= score_threshold
                     ]
-                    logger.info(f"HQ Check: {len(candidates_for_hq_check)} candidates (score >= {score_threshold}).")
+                    logger.debug(f"HQ Check: {len(candidates_for_hq_check)} candidates (score >= {score_threshold}).")
 
                     for candidate_item_ref in candidates_for_hq_check:
                         item_in_all_results_to_update = next(
@@ -341,7 +341,7 @@ class LogicJavCensored(LogicModuleBase):
                         if not item_in_all_results_to_update:
                             logger.warning(f"HQ Check: Could not find original item in all_results for candidate code {candidate_item_ref.get('code')}. Skipping HQ check for this item.")
                             continue
-                        
+
                         code_for_hq_check = item_in_all_results_to_update.get("code")
                         site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
 
@@ -361,14 +361,14 @@ class LogicJavCensored(LogicModuleBase):
                                     if thumb_item_hq.get('aspect') == 'poster': ps_url_hq = thumb_item_hq.get('value')
                                     if thumb_item_hq.get('aspect') == 'landscape': pl_url_hq = thumb_item_hq.get('value')
                                     if ps_url_hq and pl_url_hq: break
-                                
+
                                 if ps_url_hq and pl_url_hq:
                                     settings_for_hq_proxy = self.__site_settings(site_key_for_hq_check)
                                     proxy_url_for_hq_util = settings_for_hq_proxy.get("proxy_url")
-                                    
+
                                     poster_pos_result = SiteUtil.has_hq_poster(ps_url_hq, pl_url_hq, proxy_url=proxy_url_for_hq_util)
                                     if poster_pos_result:
-                                        logger.info(f"HQ Check PASSED for {code_for_hq_check} on {site_key_for_hq_check}.")
+                                        logger.debug(f"HQ Check PASSED for {code_for_hq_check} on {site_key_for_hq_check}.")
                                         item_in_all_results_to_update['hq_poster_score_adj'] = 0
                                     else:
                                         logger.debug(f"HQ Check FAILED (has_hq_poster returned None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
@@ -393,7 +393,7 @@ class LogicJavCensored(LogicModuleBase):
         priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
         dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
         lowest_priority = len(priority_list)
-        
+
         def get_priority_value_for_sort(item_to_sort):
             site_key_prio = item_to_sort.get('site_key')
             content_type_prio = item_to_sort.get('content_type')
@@ -440,11 +440,9 @@ class LogicJavCensored(LogicModuleBase):
             for i, item_log_final_list in enumerate(final_results_with_score_assigned[:5]):
                 logger.debug(f"  {i+1}. Final Score={item_log_final_list.get('score')}, AdjScore={item_log_final_list.get('adjusted_score')}, OrigScore={item_log_final_list.get('original_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioValue={get_priority_value_for_sort(item_log_final_list)}, Code={item_log_final_list.get('code')}")
 
-
                 # 디버깅용
-                if item_log_final_list.get('site_key') == 'dmm':
-                    logger.debug(f"  DMM Item: Score={item_log_final_list.get('score')}, Code={item_log_final_list.get('code')}, image_url='{item_log_final_list.get('image_url')}'")
-
+                #if item_log_final_list.get('site_key') == 'dmm':
+                #    logger.debug(f"  DMM Item: Score={item_log_final_list.get('score')}, Code={item_log_final_list.get('code')}, image_url='{item_log_final_list.get('image_url')}'")
 
         logger.debug(f"======= jav censored search END - Returning {len(final_results_with_score_assigned)} results. =======")
         return final_results_with_score_assigned
@@ -549,9 +547,9 @@ class LogicJavCensored(LogicModuleBase):
 
             if (current_image_mode == '3' or current_image_mode == '5') and \
                 use_custom_proxy_server and custom_proxy_url_base:
-                
+
                 logger.debug(f"Applying custom Discord proxy server: {custom_proxy_url_base} for code {code}")
-                
+
                 data_to_modify = ret # entity.as_dict()의 결과가 담긴 dict
                 if data_to_modify is None: # 방어 코드
                     logger.warning("data_to_modify is None before URL rewrite. Skipping rewrite.")
@@ -585,13 +583,13 @@ class LogicJavCensored(LogicModuleBase):
                 # entity.fanart 수정 (리스트 내 URL들)
                 if data_to_modify.get('fanart') and isinstance(data_to_modify['fanart'], list):
                     data_to_modify['fanart'] = [rewrite_discord_url(fanart_url) for fanart_url in data_to_modify['fanart']]
-                
+
                 # entity.actor의 thumb 수정 (만약 배우 이미지도 디스코드 프록시를 사용한다면)
                 if data_to_modify.get('actor') and isinstance(data_to_modify['actor'], list):
                     for actor_item in data_to_modify['actor']:
                         if isinstance(actor_item, dict) and 'thumb' in actor_item:
                             actor_item['thumb'] = rewrite_discord_url(actor_item['thumb'])
-                
+
                 # entity.extras의 thumb 수정 (트레일러 썸네일 등)
                 if data_to_modify.get('extras') and isinstance(data_to_modify['extras'], list):
                     for extra_item in data_to_modify['extras']:
@@ -693,7 +691,7 @@ class LogicJavCensored(LogicModuleBase):
             updated_name = entity_actor.get("name", None)
             updated_thumb = entity_actor.get("thumb", None)
             logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 성공. Name: {updated_name}, Thumb: {bool(updated_thumb)}")
-            
+
             return True
         else:
             logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
