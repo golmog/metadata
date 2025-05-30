@@ -6,6 +6,7 @@ from io import BytesIO
 import requests
 from flask import Blueprint, Response, redirect, request, send_file, abort
 from PIL import Image
+from PIL import UnidentifiedImageError
 
 # sjva 공용
 from framework import app, check_api, path_data, py_urllib
@@ -120,7 +121,6 @@ def initialize():
         from .logic_book import LogicBook
         from .logic_ftv import LogicFtv
         from .logic_jav_censored import LogicJavCensored
-        from .logic_jav_censored_ama import LogicJavCensoredAma
         from .logic_jav_fc2 import LogicJavFc2
         from .logic_jav_uncensored import LogicJavUncensored
         from .logic_ktv import LogicKtv
@@ -134,7 +134,6 @@ def initialize():
         P.module_list = [
             LogicKtv(P),
             LogicJavCensored(P),
-            LogicJavCensoredAma(P),
             LogicJavUncensored(P),
             LogicJavFc2(P),
             LogicOttShow(P),
@@ -207,10 +206,72 @@ def baseapi(sub):
 
             # image open
             res = SiteUtil.get_response(image_url, proxy_url=proxy_url)
-            bytes_im = BytesIO(res.content)
-            im = Image.open(bytes_im)
-            imformat = im.format
-            mimetype = im.get_format_mimetype()
+
+            # --- 응답 검증 추가 ---
+            if res is None:
+                P.logger.error(f"image_proxy: SiteUtil.get_response returned None for URL: {image_url}")
+                abort(404) # 또는 적절한 에러 응답
+                return # 함수 종료
+            
+            if res.status_code != 200:
+                P.logger.error(f"image_proxy: Received status code {res.status_code} for URL: {image_url}. Content: {res.text[:200]}")
+                abort(res.status_code if res.status_code >= 400 else 500)
+                return
+
+            content_type_header = res.headers.get('Content-Type', '').lower()
+            if not content_type_header.startswith('image/'):
+                P.logger.error(f"image_proxy: Expected image Content-Type, but got '{content_type_header}' for URL: {image_url}. Content: {res.text[:200]}")
+                abort(400) # 잘못된 요청 또는 서버 응답 오류
+                return
+            # --- 응답 검증 끝 ---
+
+            try:
+                bytes_im = BytesIO(res.content)
+                im = Image.open(bytes_im)
+                imformat = im.format
+                if imformat is None: # Pillow가 포맷을 감지 못하는 경우 (드물지만 발생 가능)
+                    P.logger.warning(f"image_proxy: Pillow could not determine format for image from URL: {image_url}. Attempting to infer from Content-Type.")
+                    if 'jpeg' in content_type_header or 'jpg' in content_type_header:
+                        imformat = 'JPEG'
+                    elif 'png' in content_type_header:
+                        imformat = 'PNG'
+                    elif 'webp' in content_type_header:
+                        imformat = 'WEBP'
+                    elif 'gif' in content_type_header:
+                        imformat = 'GIF'
+                    else:
+                        P.logger.error(f"image_proxy: Could not infer image format from Content-Type '{content_type_header}'. URL: {image_url}")
+                        abort(400)
+                        return
+                mimetype = im.get_format_mimetype()
+                if mimetype is None: # 위에서 imformat을 강제로 설정한 경우 mimetype도 설정
+                    if imformat == 'JPEG': mimetype = 'image/jpeg'
+                    elif imformat == 'PNG': mimetype = 'image/png'
+                    elif imformat == 'WEBP': mimetype = 'image/webp'
+                    elif imformat == 'GIF': mimetype = 'image/gif'
+                    else:
+                        P.logger.error(f"image_proxy: Could not determine mimetype for inferred format '{imformat}'. URL: {image_url}")
+                        abort(400)
+                        return
+
+            except UnidentifiedImageError as e: # PIL.UnidentifiedImageError 명시적 임포트 필요
+                P.logger.error(f"image_proxy: PIL.UnidentifiedImageError for URL: {image_url}. Response Content-Type: {content_type_header}")
+                P.logger.error(f"image_proxy: Error details: {e}")
+                # 디버깅을 위해 실패한 이미지 데이터 일부 저장 (선택적)
+                try:
+                    failed_image_path = os.path.join(path_data, "tmp", f"failed_image_{time.time()}.bin")
+                    with open(failed_image_path, 'wb') as f:
+                        f.write(res.content)
+                    P.logger.info(f"image_proxy: Content of failed image saved to: {failed_image_path}")
+                except Exception as save_err:
+                    P.logger.error(f"image_proxy: Could not save failed image content: {save_err}")
+                abort(400) # 잘못된 이미지 파일
+                return
+            except Exception as e_pil:
+                P.logger.error(f"image_proxy: General PIL error for URL: {image_url}: {e_pil}")
+                P.logger.error(traceback.format_exc())
+                abort(500)
+                return
 
             # apply crop - quality loss
             crop_mode = request.args.get("crop_mode")
@@ -222,6 +283,7 @@ def baseapi(sub):
                     return Response(buf.getvalue(), mimetype=mimetype)
             bytes_im.seek(0)
             return send_file(bytes_im, mimetype=mimetype)
+
         elif sub == "discord_proxy":
             image_url = py_urllib.unquote_plus(request.args.get("url"))
             proxy_url = request.args.get("proxy_url")

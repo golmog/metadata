@@ -14,18 +14,18 @@
   <form id='setting' name='setting'>
   <div class="tab-content mb-4" id="nav-tabContent">
     {{ macros.m_tab_content_start('normal', true) }}
-      {{ macros.setting_input_text_and_buttons('jav_censored_ama_jav321_test_code', '테스트', [['jav_censored_ama_jav321_test_btn', '테스트']], value=arg['jav_censored_ama_jav321_test_code'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_ama_jav321_use_proxy', 'Proxy 사용', value=arg['jav_censored_ama_jav321_use_proxy'], desc=['SJVA가 해당 사이트에 접속할 수 없을 때 사용']) }}
-      <div id="jav_censored_ama_jav321_use_proxy_div" class="collapse">
-      {{ macros.setting_input_text('jav_censored_ama_jav321_proxy_url', 'Proxy URL', value=arg['jav_censored_ama_jav321_proxy_url']) }}
+      {{ macros.setting_input_text_and_buttons('jav_censored_jav321_test_code', '테스트', [['jav_censored_jav321_test_btn', '테스트']], value=arg['jav_censored_jav321_test_code'], desc=None) }}
+      {{ macros.setting_checkbox('jav_censored_jav321_use_proxy', 'Proxy 사용', value=arg['jav_censored_jav321_use_proxy'], desc=['SJVA가 해당 사이트에 접속할 수 없을 때 사용']) }}
+      <div id="jav_censored_jav321_use_proxy_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_jav321_proxy_url', 'Proxy URL', value=arg['jav_censored_jav321_proxy_url']) }}
       </div>
       {{ macros.m_hr() }}
-      {{ macros.setting_input_textarea('jav_censored_ama_jav321_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_ama_jav321_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
-      {{ macros.setting_input_textarea('jav_censored_ama_jav321_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_ama_jav321_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
-      {{ macros.setting_input_text('jav_censored_ama_jav321_title_format', '타이틀 포맷', value=arg['jav_censored_ama_jav321_title_format'], desc=['title originaltitle plot sorttitle runtime country premiered year actor tagline']) }}
-      {{ macros.setting_input_int('jav_censored_ama_jav321_art_count', '최대 아트 수 제한', value=arg['jav_censored_ama_jav321_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
-      {{ macros.setting_radio('jav_censored_ama_jav321_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_ama_jav321_tag_option']) }}
-      {{ macros.setting_checkbox('jav_censored_ama_jav321_use_extras', '예고편 사용', value=arg['jav_censored_ama_jav321_use_extras'], desc=None) }}
+      {{ macros.setting_input_textarea('jav_censored_jav321_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_jav321_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
+      {{ macros.setting_input_textarea('jav_censored_jav321_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_jav321_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
+      {{ macros.setting_input_text('jav_censored_jav321_title_format', '타이틀 포맷', value=arg['jav_censored_jav321_title_format'], desc=['title originaltitle plot sorttitle runtime country premiered year actor tagline']) }}
+      {{ macros.setting_input_int('jav_censored_jav321_art_count', '최대 아트 수 제한', value=arg['jav_censored_jav321_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
+      {{ macros.setting_radio('jav_censored_jav321_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_jav321_tag_option']) }}
+      {{ macros.setting_checkbox('jav_censored_jav321_use_extras', '예고편 사용', value=arg['jav_censored_jav321_use_extras'], desc=None) }}
     {{ macros.m_tab_content_end() }}
   </div>
 </form>
@@ -37,26 +37,26 @@ var sub = "{{arg['sub'] }}";
 var current_data = null;
 
 $(document).ready(function(){
-  use_collapse("jav_censored_ama_jav321_use_proxy");
+  use_collapse("jav_censored_jav321_use_proxy");
 });
 
-$('#jav_censored_ama_jav321_use_proxy').change(function() {use_collapse('jav_censored_ama_jav321_use_proxy');});
+$('#jav_censored_jav321_use_proxy').change(function() {use_collapse('jav_censored_jav321_use_proxy');});
 
-$("body").on('click', '#jav_censored_ama_jav321_test_btn', function(e){
+$("body").on('click', '#jav_censored_jav321_test_btn', function(e){
   e.preventDefault();
   var site_call = 'jav321';
   func_test(site_call);
 });
 
 function func_test(call) {
-  var test_code_field_id = `jav_censored_ama_jav321_test_code`;
+  var test_code_field_id = `jav_censored_jav321_test_code`;
   var code = document.getElementById(test_code_field_id).value;
 
   if (!code || !code.trim()) {
     return;
   }
   $.ajax({
-    url: '/' + package_name + '/ajax/' + 'jav_censored_ama' + '/test',
+    url: '/' + package_name + '/ajax/' + 'jav_censored' + '/test',
     type: "POST", 
     cache: false,
     data: {code:code, call:call},

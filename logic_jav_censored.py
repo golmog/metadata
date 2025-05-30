@@ -160,6 +160,7 @@ class LogicJavCensored(LogicModuleBase):
                 ModelSetting.set(f"{db_prefix}_test_code", code)
 
                 current_site_settings = self.__site_settings(call)
+                logger.debug(f"process_ajax (test, call='{call}'): current_site_settings['proxy_url'] = {current_site_settings.get('proxy_url')}")
 
                 # 메타데이터 검색 (search2 사용)
                 data = self.search2(code, call, manual=True, site_settings_override=current_site_settings)
@@ -438,7 +439,13 @@ class LogicJavCensored(LogicModuleBase):
             logger.debug("Top results after final scoring:")
             for i, item_log_final_list in enumerate(final_results_with_score_assigned[:5]):
                 logger.debug(f"  {i+1}. Final Score={item_log_final_list.get('score')}, AdjScore={item_log_final_list.get('adjusted_score')}, OrigScore={item_log_final_list.get('original_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioValue={get_priority_value_for_sort(item_log_final_list)}, Code={item_log_final_list.get('code')}")
-        
+
+
+                # 디버깅용
+                if item_log_final_list.get('site_key') == 'dmm':
+                    logger.debug(f"  DMM Item: Score={item_log_final_list.get('score')}, Code={item_log_final_list.get('code')}, image_url='{item_log_final_list.get('image_url')}'")
+
+
         logger.debug(f"======= jav censored search END - Returning {len(final_results_with_score_assigned)} results. =======")
         return final_results_with_score_assigned
 
@@ -602,6 +609,21 @@ class LogicJavCensored(LogicModuleBase):
             logger.exception(f"Error during Discord URL rewrite for code {code}: {e_rewrite}")
         # === URL 치환 로직 끝 ===
 
+        #logger.debug(f"Final 'ret' dictionary being returned by info() for code {code}:")
+        #try:
+        #    import json
+        #    loggable_ret = {}
+        #    if ret:
+        #        loggable_ret['title'] = ret.get('title')
+        #        loggable_ret['thumb'] = ret.get('thumb')
+        #        loggable_ret['fanart_count'] = len(ret.get('fanart', []))
+        #        if ret.get('actor'):
+        #            loggable_ret['actor_thumbs'] = [a.get('thumb') for a in ret['actor'] if isinstance(a, dict)]
+        #    logger.debug(json.dumps(loggable_ret, indent=2, ensure_ascii=False))
+        #except Exception as e_log_json:
+        #    logger.error(f"Error logging final 'ret' dictionary: {e_log_json}")
+        #    logger.debug(f"Partial final 'ret' (raw): {str(ret)[:500]}")
+
         return ret
 
     def info2(self, code, site):
@@ -680,15 +702,34 @@ class LogicJavCensored(LogicModuleBase):
     def __site_settings(self, site: str):
         db_prefix = f"{self.db_prefix.get(site, self.name)}_{site}"
         proxy_url = None
-        if ModelSetting.get_bool(f"{db_prefix}_use_proxy"):
-            proxy_url = ModelSetting.get(f"{db_prefix}_proxy_url")
-        return {
+        use_proxy_setting_key = f"{db_prefix}_use_proxy"
+        proxy_url_setting_key = f"{db_prefix}_proxy_url"
+
+        # --- 디버깅 로그 ---
+        #raw_use_proxy_value = ModelSetting.get(use_proxy_setting_key) # bool 변환 전 원본 값 확인
+        #logger.debug(f"__site_settings for '{site}':")
+        #logger.debug(f"  Key for use_proxy: '{use_proxy_setting_key}'")
+        #logger.debug(f"  Raw value from ModelSetting.get('{use_proxy_setting_key}'): '{raw_use_proxy_value}' (Type: {type(raw_use_proxy_value)})")
+        #logger.debug(f"  Value from ModelSetting.get_bool('{use_proxy_setting_key}'): {is_proxy_enabled_for_site} (Type: {type(is_proxy_enabled_for_site)})")
+
+        is_proxy_enabled_for_site = ModelSetting.get_bool(use_proxy_setting_key)
+
+        if is_proxy_enabled_for_site:
+            proxy_url = ModelSetting.get(proxy_url_setting_key)
+            #logger.debug(f"  PROXY IS ENABLED for '{site}'. URL read from '{proxy_url_setting_key}': '{proxy_url}'")
+        else:
+            #logger.debug(f"  PROXY IS DISABLED for '{site}'. proxy_url remains: {proxy_url}")
+            pass
+
+        final_settings = {
             "proxy_url": proxy_url,
             "image_mode": ModelSetting.get("jav_censored_image_mode"),
             "use_image_server": ModelSetting.get_bool("jav_censored_use_image_server"),
             "image_server_url": ModelSetting.get("jav_censored_image_server_url"),
             "image_server_local_path": ModelSetting.get("jav_censored_image_server_local_path"),
         }
+        # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}'")
+        return final_settings
 
     def __info_settings(self, site: str, code: str):
         db_prefix = f"{self.db_prefix.get(site, self.name)}_{site}"
