@@ -14,6 +14,7 @@ from lib_metadata.server_util import MetadataServerUtil
 from lib_metadata import SiteAvdbs, SiteHentaku
 from lib_metadata.site_fc2.site_fc2com import SiteFc2Com
 from lib_metadata.site_fc2.site_fc2ppvdb import SiteFc2ppvdb
+from lib_metadata.site_util import SiteUtil
 
 from .plugin import P
 
@@ -82,8 +83,13 @@ class LogicJavFc2(LogicModuleBase):
                 if match:
                     processed_code = match.group(1).lstrip('0')
                 else:
-                    processed_code = code 
-                    logger.warning(f"FC2 코드 정규식 매칭 실패: {code}. 원본 코드 사용.")
+                    processed_code_temp = re.sub(r'\D', '', code)
+                    if processed_code_temp.isdigit() and 5 <= len(processed_code_temp) <= 8:
+                        processed_code = processed_code_temp.lstrip('0')
+                        logger.warning(f"FC2 코드 정규식 매칭 실패: '{code}'. 숫자 부분 '{processed_code}' 사용.")
+                    else:
+                        processed_code = code
+                        logger.error(f"FC2 코드 정규식 매칭 실패 및 숫자 추출 실패: '{code}'. 원본 코드 사용.")
 
                 if call == 'total':
                     ret['search_results'] = self.search(processed_code, manual=True)
@@ -131,8 +137,13 @@ class LogicJavFc2(LogicModuleBase):
                 if match:
                     processed_keyword = match.group(1).lstrip('0')
                 else:
-                    processed_keyword = keyword
-                    logger.warning(f"API 검색: FC2 코드 정규식 매칭 실패: {keyword}. 원본 코드 사용.")
+                    processed_keyword_temp = re.sub(r'\D', '', keyword)
+                    if processed_keyword_temp.isdigit() and 5 <= len(processed_keyword_temp) <= 8:
+                        processed_keyword = processed_keyword_temp.lstrip('0')
+                        logger.warning(f"API 검색: FC2 코드 정규식 매칭 실패: '{keyword}'. 숫자 부분 '{processed_keyword}' 사용.")
+                    else:
+                        processed_keyword = keyword
+                        logger.error(f"API 검색: FC2 코드 정규식 매칭 실패 및 숫자 추출 실패: '{keyword}'. 원본 코드 사용.")
 
                 search_results = self.search(processed_keyword, manual=manual)
                 return jsonify(search_results)
@@ -157,33 +168,34 @@ class LogicJavFc2(LogicModuleBase):
         # 프록시 설정
         settings['proxy_url'] = None
         if ModelSetting.get_bool(f'{self.name}_{site_name_key}_use_proxy'):
-            settings['proxy_url'] = ModelSetting.get(f'{self.name}_{site_name_key}_proxy_url')
+            proxy_val = ModelSetting.get(f'{self.name}_{site_name_key}_proxy_url')
+            if proxy_val and proxy_val.strip():
+                settings['proxy_url'] = proxy_val
 
         # 이미지 관련 설정 (JavCensored 설정 따름)
         settings['image_mode'] = ModelSetting.get('jav_censored_image_mode')
         settings['use_image_server'] = ModelSetting.get_bool('jav_censored_use_image_server')
         settings['image_server_url'] = ModelSetting.get('jav_censored_image_server_url')
         settings['image_server_local_path'] = ModelSetting.get('jav_censored_image_server_local_path')
-
-        delay_key = f'{self.name}_{site_name_key}_not_found_delay' 
+        settings['url_prefix_segment'] = 'jav/fc2'
 
         # 페이지 없음 딜레이 설정
+        delay_key = f'{self.name}_{site_name_key}_not_found_delay' 
         if ModelSetting.has_key(delay_key) or delay_key in self.db_default:
             delay_value_str = ModelSetting.get(delay_key)
             if delay_value_str is not None and delay_value_str.strip().isdigit():
                 settings['not_found_delay_seconds'] = int(delay_value_str)
             else:
-                default_delay_str = self.db_default.get(delay_key, '0') 
+                # db_default에서 가져올 때도 유효성 검사
+                default_delay_str = self.db_default.get(delay_key, '0') # 기본값 '0'
                 settings['not_found_delay_seconds'] = int(default_delay_str) if default_delay_str.strip().isdigit() else 0
-                if delay_value_str is not None:
+                if delay_value_str is not None: # 사용자가 설정한 값이 있지만 유효하지 않은 경우
                     logger.warning(f"'{delay_key}' 값이 유효하지 않음 ('{delay_value_str}'). 기본값 {settings['not_found_delay_seconds']}초 사용.")
 
         return settings
 
     def __info_settings(self, site_name_key, code_for_site=None):
         settings = self.__site_settings(site_name_key)
-
-        settings['url_prefix_segment'] = 'jav/fc2'
 
         art_count_key = f'{self.name}_{site_name_key}_art_count'
         if art_count_key in self.db_default:
@@ -198,7 +210,7 @@ class LogicJavFc2(LogicModuleBase):
                     logger.warning(f"Value for key '{art_count_key}' ('{art_count_str}') and its db_default ('{self.db_default.get(art_count_key)}') are not valid digits. Defaulting max_arts to 0.")
         else:
             settings['max_arts'] = 0
-            logger.debug(f"Key '{art_count_key}' not defined in db_default for {site_name_key}. Defaulting max_arts to 0.")
+            #logger.debug(f"Key '{art_count_key}' not defined in db_default for {site_name_key}. Defaulting max_arts to 0.")
 
         use_extras_key = f'{self.name}_{site_name_key}_use_extras'
         if use_extras_key in self.db_default:
@@ -213,7 +225,7 @@ class LogicJavFc2(LogicModuleBase):
                 settings['use_extras'] = (common_use_extras_str.lower() == 'true')
             else:
                 settings['use_extras'] = False
-            logger.debug(f"Key '{use_extras_key}' not defined in db_default for {site_name_key}. Using common/default use_extras: {settings['use_extras']}.")
+            #logger.debug(f"Key '{use_extras_key}' not defined in db_default for {site_name_key}. Using common/default use_extras: {settings['use_extras']}.")
 
         use_review_key = f'{self.name}_{site_name_key}_use_review'
         if use_review_key in self.db_default:
@@ -231,51 +243,112 @@ class LogicJavFc2(LogicModuleBase):
     def search(self, keyword_num_part, manual=False):
         logger.debug(f"FC2 Search 시작 - Keyword(num_part):[{keyword_num_part}] Manual:[{manual}]")
 
-        all_results = []
-        # 설정에서 정의된 사이트 검색 순서 (예: 'fc2ppvdb,fc2com')
-        site_order_list = ModelSetting.get_list(f'{self.name}_order', ',') 
+        all_results_temp = []
+        site_order_list = ModelSetting.get_list(f'{self.name}_order', ',')
 
-        for site_key_in_order in site_order_list:
+        for site_idx, site_key_in_order in enumerate(site_order_list):
             if site_key_in_order not in self.site_map:
                 logger.warning(f"'{site_key_in_order}'는 site_map에 정의되지 않은 사이트입니다. 건너뜁니다.")
                 continue
 
             SiteClass = self.site_map[site_key_in_order]
-            logger.debug(f"--- '{SiteClass.site_name}' 사이트에서 검색 시작 ---")
+            logger.debug(f"--- '{SiteClass.site_name}' 사이트(우선순위: {site_idx+1})에서 검색 시작 ---")
 
             current_site_settings = self.__site_settings(site_key_in_order)
-            current_site_settings['do_trans'] = manual
             current_site_settings['manual'] = manual
 
             try:
-                # SiteClass.search는 {'ret': 'success', 'data': [item_dict, ...]} 형태 반환 가정
                 site_search_result = SiteClass.search(keyword_num_part, **current_site_settings)
 
                 if site_search_result and site_search_result.get('ret') == 'success':
-                    site_data = site_search_result.get('data', [])
-                    if site_data:
-                        logger.debug(f"'{SiteClass.site_name}'에서 {len(site_data)}개의 결과 찾음.")
-                        # 점수 재조정 또는 사이트별 가중치 적용 등은 여기서 가능
-                        # 예: if site_key_in_order != site_order_list[0]: # 첫번째 사이트가 아니면 점수 약간 차감
-                        #         for item in site_data: item['score'] = item.get('score', 0) - 1 
-                        all_results.extend(site_data)
+                    site_data_list = site_search_result.get('data', [])
+                    if isinstance(site_data_list, list) and site_data_list:
+                        logger.debug(f"'{SiteClass.site_name}'에서 {len(site_data_list)}개의 유효한 결과 찾음.")
+                        
+                        for item_dict in site_data_list:
+                            item_dict['_site_key'] = site_key_in_order
+                            item_dict['_original_score'] = item_dict.get('score', 0)
+                        
+                        all_results_temp.extend(site_data_list)
+                        
+                        # 자동 검색(manual=False) 시, 첫 번째 우선순위 사이트에서 고득점 결과 나오면 조기 종료
+                        if not manual and site_key_in_order == site_order_list[0]:
+                            current_site_high_score_data = [item for item in site_data_list if item.get('score',0) > 95]
+                            if current_site_high_score_data:
+                                logger.debug(f"최우선 사이트 '{site_key_in_order}'에서 고득점({current_site_high_score_data[0].get('score')}) 결과 찾음. 자동 검색 조기 종료.")
+                                break # 사이트 루프 종료
+                    # else: # 'ret'='success'이지만 data가 비어있거나 list가 아닌 경우는 아래 else에서 처리됨
+                        # logger.debug(f"'{SiteClass.site_name}'에서 검색 성공했으나, 반환된 데이터가 비어있거나 유효한 아이템 리스트가 아님.")
+                else: # 'ret'이 'success'가 아닌 경우 (예: 'no_match', 'error_site_level' 등)
+                    log_message = f"'{SiteClass.site_name}'에서 유효한 검색 결과를 가져오지 못함. "
+                    if site_search_result:
+                        log_message += f"Response ret='{site_search_result.get('ret')}', Message='{str(site_search_result.get('data'))[:200]}'" # data 내용 일부 로깅
                     else:
-                        logger.debug(f"'{SiteClass.site_name}'에서 결과를 찾지 못했습니다.")
-                else:
-                    logger.warning(f"'{SiteClass.site_name}' 검색 실패 또는 반환 형식 오류. 응답: {site_search_result}")
+                        log_message += "Response is None."
+                    logger.debug(log_message) # 사이트 레벨에서 결과 없거나 오류난 것은 DEBUG로 로깅
+
             except Exception as e_search:
                 logger.error(f"'{SiteClass.site_name}' 검색 중 예외 발생: {e_search}")
                 logger.error(traceback.format_exc())
+        
+        # --- 모든 사이트 검색 완료 후 처리 ---
+        final_results_to_process = []
 
-            if not manual and all_results and all_results[0].get('score', 0) > 95 and site_key_in_order == site_order_list[0]:
-                logger.debug(f"최우선 사이트 '{site_key_in_order}'에서 고득점({all_results[0].get('score')}) 결과 찾음. 검색 조기 종료.")
-                break
+        if manual and all_results_temp: # 수동 검색일 때만 페널티 적용
+            logger.debug("수동 검색 모드: 100점 동점자 페널티 (차등 감점) 적용 시작")
+            grouped_by_uicode = {}
+            for item in all_results_temp:
+                key = item.get('ui_code', item.get('code', ''))
+                if key not in grouped_by_uicode: grouped_by_uicode[key] = []
+                grouped_by_uicode[key].append(item)
 
-        if all_results:
-            all_results = sorted(all_results, key=lambda k: k.get('score', 0), reverse=True)
+            for ui_code_key, items_group in grouped_by_uicode.items():
+                hundred_score_items = [item for item in items_group if item.get('_original_score') == 100]
+                
+                if len(hundred_score_items) > 1:
+                    hundred_score_items.sort(key=lambda x: site_order_list.index(x['_site_key']) if x['_site_key'] in site_order_list else float('inf'))
+                    for idx, item_100 in enumerate(hundred_score_items):
+                        if idx > 0: # 첫 번째(idx=0)는 페널티 없음
+                            penalty = idx
+                            item_100['score'] = 100 - penalty # 점수 직접 업데이트
+                            logger.debug(f"수동 검색 페널티: '{item_100.get('ui_code')}' ({item_100['_site_key']}) 원본 점수 100 -> {item_100['score']} (우선순위 패널티: {penalty}점)")
+                final_results_to_process.extend(items_group) # 페널티 적용된 (또는 안된) 그룹 아이템들 추가
+        else: # 자동 검색이거나, 수동 검색이지만 all_results_temp가 비어있는 경우
+            final_results_to_process = all_results_temp
+        
+        # manual=True (에이전트 검색)일 때 이미지 URL 처리
+        if manual:
+            global_image_mode = ModelSetting.get('jav_censored_image_mode')
+            image_mode_for_agent_search = '1' if global_image_mode != '0' else '0'
+            if global_image_mode != '0': # 프록시 사용하는 경우에만 로그
+                logger.debug(f"Manual search image processing: global_image_mode='{global_image_mode}', effective_mode_for_agent_search='{image_mode_for_agent_search}'")
 
-        logger.debug(f"FC2 Search 종료. 총 {len(all_results)}개의 결과 반환.")
-        return all_results
+            for item_dict in final_results_to_process: # 페널티 적용된 리스트 사용
+                item_site_key = item_dict.get('_site_key') # 페널티 적용 위해 저장해둔 site_key 사용
+                proxy_for_item = None
+                if item_site_key: # _site_key가 있어야 해당 사이트 프록시 설정 조회 가능
+                    proxy_for_item = self.__site_settings(item_site_key).get('proxy_url')
+                # else: # _site_key 없는 경우는 이론상 발생하면 안됨 (위에서 다 할당하므로)
+                #     logger.warning(f"Item (ui_code: {item_dict.get('ui_code')}) is missing '_site_key' during image processing.")
+
+                if 'image_url' in item_dict and item_dict['image_url']:
+                    original_image_url = item_dict['image_url']
+                    processed_url = SiteUtil.process_image_mode(
+                        image_mode_for_agent_search,
+                        original_image_url,
+                        proxy_url=proxy_for_item
+                    )
+                    item_dict['image_url'] = processed_url
+        
+        # 최종 정렬 및 임시 키 제거
+        if final_results_to_process:
+            for item in final_results_to_process: # 반환 전 임시 키 제거
+                item.pop('_site_key', None)
+                item.pop('_original_score', None)
+            final_results_to_process = sorted(final_results_to_process, key=lambda k: k.get('score', 0), reverse=True)
+
+        logger.debug(f"FC2 Search 종료. 총 {len(final_results_to_process)}개의 결과 반환.")
+        return final_results_to_process
 
 
     def info(self, code_module_site_id):
@@ -294,7 +367,7 @@ class LogicJavFc2(LogicModuleBase):
         if target_site_key and target_site_key in self.site_map:
             SiteClass = self.site_map[target_site_key]
             if SiteClass is not None:
-                logger.debug(f"'{SiteClass.site_name}'의 info2 메소드 호출 예정. Code: {code_module_site_id}")
+                #logger.debug(f"'{SiteClass.site_name}'의 info2 메소드 호출 예정. Code: {code_module_site_id}")
                 final_info_data = self.info2(code_module_site_id, SiteClass) # self.info2 호출
                 if final_info_data:
                     logger.debug(f"'{SiteClass.site_name}'에서 정보 조회 성공 (info2 반환).")
@@ -314,7 +387,7 @@ class LogicJavFc2(LogicModuleBase):
                     self.process_fc2_actor_info(actor_entity_dict)
                 else:
                     logger.warning(f"FC2 Info: 유효하지 않은 배우 정보 객체 또는 originalname 없음: {actor_entity_dict}")
-            logger.debug("FC2 Info: 배우 정보 처리 완료.")
+            #logger.debug("FC2 Info: 배우 정보 처리 완료.")
 
         # 3. 최종 정보가 있으면 타이틀 포맷팅 및 후처리
         if final_info_data and isinstance(final_info_data, dict):
