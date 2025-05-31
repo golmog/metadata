@@ -735,22 +735,7 @@ class LogicJavCensored(LogicModuleBase):
         sett["max_arts"] = ModelSetting.get_int(f"{db_prefix}_art_count")
         sett["use_extras"] = ModelSetting.get_bool(f"{db_prefix}_use_extras")
 
-        ps_to_poster = False
-        for tmp in ModelSetting.get_list(f"{db_prefix}_small_image_to_poster", ","):
-            if tmp and tmp in code:
-                ps_to_poster = True
-                break
-        sett["ps_to_poster"] = ps_to_poster
-
-        crop_mode = None
-        for tmp in ModelSetting.get(f"{db_prefix}_crop_mode").splitlines():
-            if not tmp.strip(): continue
-            tmp = list(map(str.strip, tmp.split(":", 1)))
-            if len(tmp) != 2:
-                continue
-            if tmp[0] and tmp[0] in code and tmp[1] in ["r", "l", "c"]:
-                crop_mode = tmp[1]
-                break
-        sett["crop_mode"] = crop_mode
+        sett["ps_to_poster_labels_str"] = ModelSetting.get(f"{db_prefix}_small_image_to_poster")
+        sett["crop_mode_settings_str"] = ModelSetting.get(f"{db_prefix}_crop_mode")
 
         return sett
