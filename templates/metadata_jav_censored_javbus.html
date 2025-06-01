@@ -25,7 +25,6 @@
       {{ macros.setting_input_text('jav_censored_javbus_title_format', '타이틀 포맷', value=arg['jav_censored_javbus_title_format'], desc=['title runtime premiered year actor tagline']) }}
       {{ macros.setting_input_int('jav_censored_javbus_art_count', '최대 아트 수 제한', value=arg['jav_censored_javbus_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
       {{ macros.setting_radio('jav_censored_javbus_tag_option', '태그(컬렉션) 옵션', ['사용안함', '라벨', '라벨 + 메타 사이트 태그', '메타 사이트 태그'], value=arg['jav_censored_javbus_tag_option']) }}
-      {{ macros.setting_checkbox('jav_censored_javbus_use_extras', '예고편 사용', value=arg['jav_censored_javbus_use_extras'], desc=None) }}
     {{ macros.m_tab_content_end() }}
   </div>
 </form>
