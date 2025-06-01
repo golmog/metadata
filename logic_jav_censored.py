@@ -272,8 +272,11 @@ class LogicJavCensored(LogicModuleBase):
         site_list_from_setting = ModelSetting.get_list(f"{self.name}_order", ",")
         logger.debug(f"Site list from setting: {site_list_from_setting}")
 
-        priority_sites_for_early_exit = {"dmm", "mgsdvd"} # 자동 검색 시 100점 매칭 시 조기 종료할 사이트
-        early_exit_triggered = False # 조기 종료 플래그
+        priority_sites_for_early_exit = {
+            "dmm": ["videoa", "dvd"],  # DMM은 videoa 또는 dvd 타입일 때만 조기 종료
+            "mgsdvd": True             # MGStageDVD는 모든 타입에 대해 조기 종료
+        }
+        early_exit_triggered = False 
 
         # 1단계: 각 사이트 검색 및 결과 취합
         for site_key_in_order in site_list_from_setting:
@@ -284,7 +287,6 @@ class LogicJavCensored(LogicModuleBase):
             logger.debug(f"--- Searching on site: {site_key_in_order} ---")
 
             current_site_settings_for_test = self.__site_settings(site_key_in_order) if manual else None
-
             data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual, site_settings_override=current_site_settings_for_test)
 
             if data_from_search2: 
@@ -295,22 +297,47 @@ class LogicJavCensored(LogicModuleBase):
                         continue
 
                     item_result_dict['original_score'] = item_result_dict.get("score", 0)
+
+                    if 'site_key' not in item_result_dict or not item_result_dict.get('site_key'):
+                        item_result_dict['site_key'] = site_key_in_order
                     item_result_dict['hq_poster_passed'] = False
+                    if 'is_priority_label_site' not in item_result_dict:
+                        item_result_dict['is_priority_label_site'] = False
 
                     all_results.append(item_result_dict)
 
-                    # 자동 검색 시 조기 종료 (원본 점수 및 우선 레이블 플래그 기준)
-                    if not manual and item_result_dict.get('site_key') in priority_sites_for_early_exit and item_result_dict['original_score'] == 100:
-                        if item_result_dict.get('is_priority_label_site'): 
-                            logger.info(f"Found 100-score PRIORITY LABEL match from site '{item_result_dict['site_key']}' for '{keyword}'. Activating early exit.")
-                        else:
-                            logger.info(f"Found 100-score match from priority site '{item_result_dict['site_key']}' for '{keyword}'. Activating early exit.")
-                        early_exit_triggered = True
-                        break 
-            # else: logger.debug(f"  No valid results from {site_key_in_order}")
+                    if not manual and item_result_dict['original_score'] == 100:
+                        current_item_site = item_result_dict.get('site_key')
+                        current_item_type = item_result_dict.get('content_type')
+                        is_prio_label = item_result_dict.get('is_priority_label_site')
+
+                        # 해당 사이트가 조기 종료 대상인지 확인
+                        early_exit_condition_for_site = priority_sites_for_early_exit.get(current_item_site)
+
+                        if early_exit_condition_for_site:
+                            trigger_early_exit_now = False
+                            log_reason = ""
+
+                            if early_exit_condition_for_site is True: # 모든 타입 허용 (예: mgsdvd)
+                                trigger_early_exit_now = True
+                                log_reason = f"site '{current_item_site}' allows early exit for any type."
+                            elif isinstance(early_exit_condition_for_site, list): # 타입 목록 지정 (예: dmm)
+                                if current_item_type in early_exit_condition_for_site:
+                                    trigger_early_exit_now = True
+                                    log_reason = f"site '{current_item_site}' allows early exit for type '{current_item_type}'."
+                                else:
+                                    logger.info(f"Found 100-score match from '{current_item_site}' (type: '{current_item_type}') for '{keyword}', but type is not in early exit list {early_exit_condition_for_site}. Continuing search.")
+
+                            if trigger_early_exit_now:
+                                if is_prio_label: 
+                                    logger.info(f"Found 100-score PRIORITY LABEL match. {log_reason} Activating early exit for '{keyword}'.")
+                                else:
+                                    logger.info(f"Found 100-score match. {log_reason} Activating early exit for '{keyword}'.")
+                                early_exit_triggered = True
+                                break
 
             if early_exit_triggered:
-                logger.debug("  Early exit triggered. Stopping further site searches.")
+                logger.debug("  Early exit triggered by 100-score match. Stopping further site searches.")
                 break 
 
         logger.debug(f"--- All site searches completed. Total initial results: {len(all_results)} ---")
@@ -391,7 +418,7 @@ class LogicJavCensored(LogicModuleBase):
             item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) + item_adj_score.get('hq_poster_score_adj', 0)
 
         # 4단계: 사용자 정의 우선순위에 따른 정렬
-        logger.debug("--- Starting Custom Priority Sort ---")
+        # logger.debug("--- Starting Custom Priority Sort ---")
         priority_string = ModelSetting.get('jav_censored_result_priority_order')
         priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
         dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
@@ -426,13 +453,13 @@ class LogicJavCensored(LogicModuleBase):
             label_prio_val_debug = 0 if item_debug.get('is_priority_label_site') else 1
             adj_score_debug = -item_debug.get("adjusted_score", 0)
             prio_val_debug = get_priority_value_for_sort(item_debug) # 기존 함수 호출
-            logger.debug(f"    Item {i}: Code={item_debug.get('code')}, Site={item_debug.get('site_key')}, PrioLabelFlag={item_debug.get('is_priority_label_site')}, SortKey=({label_prio_val_debug}, {adj_score_debug}, {prio_val_debug})")
+            #logger.debug(f"    Item {i}: Code={item_debug.get('code')}, Site={item_debug.get('site_key')}, PrioLabelFlag={item_debug.get('is_priority_label_site')}, SortKey=({label_prio_val_debug}, {adj_score_debug}, {prio_val_debug})")
 
         sorted_results_after_priority = sorted(all_results, key=get_custom_sort_key_for_final)
-        #logger.debug("--- Custom Priority Sort (with Label Priority Flag) END ---")
+        # logger.debug("--- Custom Priority Sort (with Label Priority Flag) END ---")
 
         # 6단계: "조정된 점수"가 같은 동점자 그룹 내에서, 최종 정렬 순서에 따라 페널티 적용
-        logger.debug("--- Starting Tie-Breaking Penalty and Final Score Assignment ---")
+        # logger.debug("--- Starting Tie-Breaking Penalty and Final Score Assignment ---")
         # final_results_with_score_assigned 리스트를 새로 만들지 않고, sorted_results_after_priority를 직접 수정
         if sorted_results_after_priority:
             last_adjusted_score_for_penalty_group = None 
@@ -453,8 +480,8 @@ class LogicJavCensored(LogicModuleBase):
                 
                 last_adjusted_score_for_penalty_group = current_adj_score
                 penalty_for_current_score_group += 1
-        
-        logger.debug("--- Tie-Breaking Penalty and Final Score Assignment END ---")
+
+        # logger.debug("--- Tie-Breaking Penalty and Final Score Assignment END ---")
 
         # 최종 반환할 리스트는 이제 sorted_results_after_priority (점수가 업데이트됨)
         final_results_to_return = sorted_results_after_priority
@@ -731,7 +758,7 @@ class LogicJavCensored(LogicModuleBase):
             "image_server_local_path": ModelSetting.get(f"{self.name}_image_server_local_path"),
             "priority_label_setting_str": ModelSetting.get(f"{db_prefix}_priority_search_labels") 
         }
-        logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
+        # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
         return final_settings
 
     def __info_settings(self, site: str, code: str):
