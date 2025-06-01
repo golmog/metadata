@@ -324,7 +324,7 @@ class LogicJavCensored(LogicModuleBase):
 
         # --- 기존 조기 종료 관련 설정 ---
         priority_sites_for_general_early_exit = { # 일반 조기 종료 대상
-            "dmm": ["videoa", "dvd"],
+            "dmm": ["videoa",],
             "mgsdvd": True 
         }
         early_exit_triggered = False
