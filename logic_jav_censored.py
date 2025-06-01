@@ -1,5 +1,6 @@
 # third-party
 from flask import jsonify, render_template
+import re
 
 # sjva 공용
 from framework import SystemModelSetting
@@ -269,75 +270,116 @@ class LogicJavCensored(LogicModuleBase):
     def search(self, keyword, manual=False):
         logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         all_results = []
-        site_list_from_setting = ModelSetting.get_list(f"{self.name}_order", ",")
-        logger.debug(f"Site list from setting: {site_list_from_setting}")
+        original_site_order_list = ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
+        
+        # --- 1. 현재 검색어의 대표 레이블 추출 ---
+        current_keyword_label = ""
+        if keyword and '-' in keyword:
+            current_keyword_label = keyword.split('-', 1)[0].upper()
+        elif keyword: 
+            match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
+            if match_kw_label: current_keyword_label = match_kw_label.group(1)
+        
+        # --- is_keyword_potentially_priority_for_any_site 플래그 계산 ---
+        is_keyword_potentially_priority_for_any_site = False
+        if current_keyword_label: # 대표 레이블이 추출되었을 때만 확인
+            # 모든 사이트의 "지정 레이블 최우선" 설정을 순회
+            for site_key_for_potential_check in self.site_map.keys(): # site_map에 등록된 모든 사이트
+                # 실제로는 original_site_order_list를 순회하는 것이 더 효율적일 수 있으나, 모든 가능성을 보려면 site_map 사용
+                db_prefix_potential = f"{self.db_prefix.get(site_key_for_potential_check, self.name)}_{site_key_for_potential_check}"
+                priority_labels_str_potential = ModelSetting.get(f"{db_prefix_potential}_priority_search_labels")
+                if priority_labels_str_potential:
+                    site_priority_labels_set_potential = {lbl.strip().upper() for lbl in priority_labels_str_potential.split(',') if lbl.strip()}
+                    if current_keyword_label in site_priority_labels_set_potential:
+                        is_keyword_potentially_priority_for_any_site = True
+                        logger.debug(f"  Potential Priority: Keyword label '{current_keyword_label}' is a priority for site '{site_key_for_potential_check}'.")
+                        break # 하나라도 찾으면 더 이상 확인할 필요 없음
+            if is_keyword_potentially_priority_for_any_site:
+                logger.debug(f"Keyword label '{current_keyword_label}' is potentially a priority label for at least one site. 조기 종료 조건이 이에 따라 조정됩니다.")
+        
+        special_priority_site = None # 이 검색어에 대해 특별히 우선 검색할 사이트
+        if current_keyword_label:
+            logger.debug(f"Search keyword: '{keyword}', Extracted keyword label: '{current_keyword_label}' for dynamic site ordering.")
+            # original_site_order_list 순서대로 각 사이트의 우선 레이블 설정을 확인
+            for site_key_check_priority in original_site_order_list:
+                if site_key_check_priority not in self.site_map: continue
+                
+                db_prefix_check = f"{self.db_prefix.get(site_key_check_priority, self.name)}_{site_key_check_priority}"
+                priority_labels_str = ModelSetting.get(f"{db_prefix_check}_priority_search_labels")
+                if priority_labels_str:
+                    site_priority_labels_set = {lbl.strip().upper() for lbl in priority_labels_str.split(',') if lbl.strip()}
+                    if current_keyword_label in site_priority_labels_set:
+                        special_priority_site = site_key_check_priority
+                        logger.debug(f"Keyword label '{current_keyword_label}' is a priority for site '{special_priority_site}'. This site will be searched first.")
+                        break # 첫 번째로 매칭되는 우선 지정 사이트를 찾으면 중단
+        
+        # --- 2. 검색 순서 동적 조정 ---
+        site_list_for_current_search = list(original_site_order_list) # 복사본 사용
+        if special_priority_site and special_priority_site in site_list_for_current_search:
+            site_list_for_current_search.remove(special_priority_site)
+            site_list_for_current_search.insert(0, special_priority_site)
+            logger.debug(f"Dynamically adjusted site search order: {site_list_for_current_search}")
+        else:
+            logger.debug(f"Using default site search order: {site_list_for_current_search}")
 
-        priority_sites_for_early_exit = {
-            "dmm": ["videoa", "dvd"],  # DMM은 videoa 또는 dvd 타입일 때만 조기 종료
-            "mgsdvd": True             # MGStageDVD는 모든 타입에 대해 조기 종료
+        # --- 기존 조기 종료 관련 설정 ---
+        priority_sites_for_general_early_exit = { # 일반 조기 종료 대상
+            "dmm": ["videoa", "dvd"],
+            "mgsdvd": True 
         }
-        early_exit_triggered = False 
+        early_exit_triggered = False
 
-        # 1단계: 각 사이트 검색 및 결과 취합
-        for site_key_in_order in site_list_from_setting:
-            if site_key_in_order not in self.site_map:
-                logger.warning(f"Site '{site_key_in_order}' not in site_map. Skipping.")
-                continue
+        # --- 3. 각 사이트 검색 (조정된 순서 또는 기본 순서 사용) ---
+        for site_key_in_order in site_list_for_current_search: # 조정된 순서 사용
+            if early_exit_triggered: break
 
-            logger.debug(f"--- Searching on site: {site_key_in_order} ---")
-
-            current_site_settings_for_test = self.__site_settings(site_key_in_order) if manual else None
-            data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual, site_settings_override=current_site_settings_for_test)
+            if site_key_in_order not in self.site_map: continue # 이 부분은 위에서 이미 처리 가능
+            logger.debug(f"--- Searching on site: {site_key_in_order} (Effective Order) ---")
+            
+            # current_site_settings에는 priority_label_setting_str이 포함됨 (__site_settings에서 설정)
+            current_site_settings = self.__site_settings(site_key_in_order)
+            
+            data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual, site_settings_override=current_site_settings)
 
             if data_from_search2: 
                 logger.debug(f"  Got {len(data_from_search2)} result(s) from {site_key_in_order}")
                 for item_result_dict in data_from_search2: 
-                    if not isinstance(item_result_dict, dict):
-                        logger.error(f"  Item from {site_key_in_order} is not a dict: {item_result_dict}")
-                        continue
-
                     item_result_dict['original_score'] = item_result_dict.get("score", 0)
-
-                    if 'site_key' not in item_result_dict or not item_result_dict.get('site_key'):
-                        item_result_dict['site_key'] = site_key_in_order
+                    item_result_dict['site_key'] = item_result_dict.get("site_key", site_key_in_order)
                     item_result_dict['hq_poster_passed'] = False
                     if 'is_priority_label_site' not in item_result_dict:
                         item_result_dict['is_priority_label_site'] = False
 
                     all_results.append(item_result_dict)
 
+                    # --- 자동 검색 시 조기 종료 로직 ---
                     if not manual and item_result_dict['original_score'] == 100:
                         current_item_site = item_result_dict.get('site_key')
                         current_item_type = item_result_dict.get('content_type')
-                        is_prio_label = item_result_dict.get('is_priority_label_site')
+                        is_this_item_priority_label_match = item_result_dict.get('is_priority_label_site', False)
 
-                        # 해당 사이트가 조기 종료 대상인지 확인
-                        early_exit_condition_for_site = priority_sites_for_early_exit.get(current_item_site)
-
-                        if early_exit_condition_for_site:
-                            trigger_early_exit_now = False
-                            log_reason = ""
-
-                            if early_exit_condition_for_site is True: # 모든 타입 허용 (예: mgsdvd)
-                                trigger_early_exit_now = True
-                                log_reason = f"site '{current_item_site}' allows early exit for any type."
-                            elif isinstance(early_exit_condition_for_site, list): # 타입 목록 지정 (예: dmm)
-                                if current_item_type in early_exit_condition_for_site:
-                                    trigger_early_exit_now = True
-                                    log_reason = f"site '{current_item_site}' allows early exit for type '{current_item_type}'."
-                                else:
-                                    logger.info(f"Found 100-score match from '{current_item_site}' (type: '{current_item_type}') for '{keyword}', but type is not in early exit list {early_exit_condition_for_site}. Continuing search.")
-
-                            if trigger_early_exit_now:
-                                if is_prio_label: 
-                                    logger.info(f"Found 100-score PRIORITY LABEL match. {log_reason} Activating early exit for '{keyword}'.")
-                                else:
-                                    logger.info(f"Found 100-score match. {log_reason} Activating early exit for '{keyword}'.")
+                        allow_general_early_exit = False
+                        site_early_exit_config = priority_sites_for_general_early_exit.get(current_item_site)
+                        if site_early_exit_config is True: allow_general_early_exit = True
+                        elif isinstance(site_early_exit_config, list) and current_item_type in site_early_exit_config: allow_general_early_exit = True
+                        
+                        if allow_general_early_exit:
+                            # 특별 우선 검색 대상 사이트에서 "지정 레이블" 매칭된 100점 결과가 나왔다면, 즉시 조기 종료.
+                            if current_item_site == special_priority_site and is_this_item_priority_label_match:
+                                logger.info(f"PRIORITY LABEL match (100-score) found on its designated priority site '{current_item_site}'. Activating early exit for '{keyword}'.")
                                 early_exit_triggered = True
                                 break
+                            # 특별 우선 검색 대상 사이트가 아니거나, 또는 지정 레이블 매칭이 아닌 일반 100점일 경우,
+                            # 그리고 이 검색어 레이블이 다른 사이트에서 우선 지정되지 "않았을" 때만 조기 종료.
+                            elif not is_keyword_potentially_priority_for_any_site:
+                                logger.info(f"General 100-score match from '{current_item_site}' (type: {current_item_type}). Activating early exit for '{keyword}'. (Keyword not a priority label for other sites)")
+                                early_exit_triggered = True
+                                break
+                            elif is_keyword_potentially_priority_for_any_site and not is_this_item_priority_label_match:
+                                logger.info(f"General 100-score match from '{current_item_site}' (type: {current_item_type}). Keyword IS a priority for other sites. Continuing search.")
 
             if early_exit_triggered:
-                logger.debug("  Early exit triggered by 100-score match. Stopping further site searches.")
+                logger.debug("  Early exit triggered. Stopping further site searches.")
                 break 
 
         logger.debug(f"--- All site searches completed. Total initial results: {len(all_results)} ---")
