@@ -491,24 +491,22 @@ class LogicJavCensored(LogicModuleBase):
 
         # 5단계: 사용자 정의 우선순위에 따른 정렬
         # logger.debug("--- Starting Custom Priority Sort (with Label Priority Flag) ---")
-        for i, item_debug in enumerate(all_results):
-            label_prio_val_debug = 0 if item_debug.get('is_priority_label_site') else 1
-            adj_score_debug = -item_debug.get("adjusted_score", 0)
-            prio_val_debug = get_priority_value_for_sort(item_debug) # 기존 함수 호출
-            #logger.debug(f"    Item {i}: Code={item_debug.get('code')}, Site={item_debug.get('site_key')}, PrioLabelFlag={item_debug.get('is_priority_label_site')}, SortKey=({label_prio_val_debug}, {adj_score_debug}, {prio_val_debug})")
+        # for i, item_debug in enumerate(all_results):
+        #    label_prio_val_debug = 0 if item_debug.get('is_priority_label_site') else 1
+        #    adj_score_debug = -item_debug.get("adjusted_score", 0)
+        #    prio_val_debug = get_priority_value_for_sort(item_debug)
+        #    logger.debug(f"    Item {i}: Code={item_debug.get('code')}, Site={item_debug.get('site_key')}, PrioLabelFlag={item_debug.get('is_priority_label_site')}, SortKey=({label_prio_val_debug}, {adj_score_debug}, {prio_val_debug})")
 
         sorted_results_after_priority = sorted(all_results, key=get_custom_sort_key_for_final)
         # logger.debug("--- Custom Priority Sort (with Label Priority Flag) END ---")
 
         # 6단계: "조정된 점수"가 같은 동점자 그룹 내에서, 최종 정렬 순서에 따라 페널티 적용
         # logger.debug("--- Starting Tie-Breaking Penalty and Final Score Assignment ---")
-        # final_results_with_score_assigned 리스트를 새로 만들지 않고, sorted_results_after_priority를 직접 수정
         if sorted_results_after_priority:
             last_adjusted_score_for_penalty_group = None 
             penalty_for_current_score_group = 0      
 
-            for item_in_sorted_list in sorted_results_after_priority: # 이제 이 리스트를 직접 수정
-                # final_item_for_output = item_in_sorted_list.copy() # 복사본 사용 안 함
+            for item_in_sorted_list in sorted_results_after_priority:
                 
                 current_adj_score = item_in_sorted_list.get('adjusted_score', 0)
 
@@ -516,16 +514,13 @@ class LogicJavCensored(LogicModuleBase):
                     penalty_for_current_score_group = 0
                 
                 calculated_final_score = current_adj_score - penalty_for_current_score_group
-                item_in_sorted_list['score'] = max(0, calculated_final_score) # 원본 리스트 아이템의 'score' 직접 수정
-                
-                # final_results_with_score_assigned.append(final_item_for_output) # 새 리스트에 추가 안 함
-                
+                item_in_sorted_list['score'] = max(0, calculated_final_score)
+
                 last_adjusted_score_for_penalty_group = current_adj_score
                 penalty_for_current_score_group += 1
 
         # logger.debug("--- Tie-Breaking Penalty and Final Score Assignment END ---")
 
-        # 최종 반환할 리스트는 이제 sorted_results_after_priority (점수가 업데이트됨)
         final_results_to_return = sorted_results_after_priority
 
         if final_results_to_return: # 변수명 변경에 따른 로깅 수정
@@ -762,7 +757,7 @@ class LogicJavCensored(LogicModuleBase):
             logger.warning(f"process_actor2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return False
 
-        logger.debug(f"process_actor2: '{originalname}' 정보를 사이트 '{site}'에서 조회 시작...")
+        #logger.debug(f"process_actor2: '{originalname}' 정보를 사이트 '{site}'에서 조회 시작...")
         sett = self.__site_settings(site)
         if is_avdbs:
             sett['use_local_db'] = ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
