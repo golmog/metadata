@@ -69,6 +69,11 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_dmm_use_sjva": "False",
         "jav_censored_dmm_use_proxy": "False",
         "jav_censored_dmm_proxy_url": "",
+        "jav_censored_dmm_parser_type0_rules": "^\\d(3dsvr)(\\d+)$=>1=>2",
+        "jav_censored_dmm_parser_type1_labels": "AP, GOOD, TEN",
+        "jav_censored_dmm_parser_type2_labels": "ID",
+        "jav_censored_dmm_parser_type3_labels": "AP, ID, NTRD, SORA, SW",
+        "jav_censored_dmm_parser_type4_labels": "AP, MMGH, SORA",
         "jav_censored_dmm_small_image_to_poster": "",
         "jav_censored_dmm_crop_mode": "",
         "jav_censored_dmm_priority_search_labels": "",
@@ -85,9 +90,10 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_mgsdvd_small_image_to_poster": "",
         "jav_censored_mgsdvd_crop_mode": "",
         "jav_censored_mgsdvd_priority_search_labels": "",
+        "jav_censored_mgsdvd_maintain_series_number_labels": "GOOD, TEN",
         "jav_censored_mgsdvd_title_format": "[{title}] {tagline}",
         "jav_censored_mgsdvd_art_count": "0",
-        "jav_censored_mgsdvd_tag_option": "2",
+        "jav_censored_mgsdvd_tag_option": "0",
         "jav_censored_mgsdvd_use_extras": "False",
         "jav_censored_mgsdvd_test_code": "abf-010",
 
@@ -100,7 +106,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_jav321_priority_search_labels": "",
         "jav_censored_jav321_title_format": "[{title}] {tagline}",
         "jav_censored_jav321_art_count": "0",
-        "jav_censored_jav321_tag_option": "2",
+        "jav_censored_jav321_tag_option": "0",
         "jav_censored_jav321_use_extras": "False",
         "jav_censored_jav321_test_code": "abw-354",
 
@@ -113,7 +119,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javdb_priority_search_labels": "",
         "jav_censored_javdb_title_format": "[{title}] {tagline}",
         "jav_censored_javdb_art_count": "0",
-        "jav_censored_javdb_tag_option": "2",
+        "jav_censored_javdb_tag_option": "0",
         "jav_censored_javdb_use_extras": "False",
         "jav_censored_javdb_test_code": "JUFE-487",
 
@@ -126,7 +132,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javbus_priority_search_labels": "",
         "jav_censored_javbus_title_format": "[{title}] {tagline}",
         "jav_censored_javbus_art_count": "0",
-        "jav_censored_javbus_tag_option": "2",
+        "jav_censored_javbus_tag_option": "0",
         "jav_censored_javbus_use_extras": "False",
         "jav_censored_javbus_test_code": "abw-354",
     }
@@ -795,6 +801,23 @@ class LogicJavCensored(LogicModuleBase):
             "image_server_local_path": ModelSetting.get(f"{self.name}_image_server_local_path"),
             "priority_label_setting_str": ModelSetting.get(f"{db_prefix}_priority_search_labels") 
         }
+
+        if site == 'dmm':
+            final_settings["dmm_parser_rules"] = {
+                "type0_rules": ModelSetting.get('jav_censored_dmm_parser_type0_rules'),
+                "type1": ModelSetting.get('jav_censored_dmm_parser_type1_labels'),
+                "type2": ModelSetting.get('jav_censored_dmm_parser_type2_labels'),
+                "type3": ModelSetting.get('jav_censored_dmm_parser_type3_labels'),
+                "type4": ModelSetting.get('jav_censored_dmm_parser_type4_labels'),
+            }
+
+        if site == 'mgsdvd':
+            final_settings["maintain_series_number_labels"] = ModelSetting.get('jav_censored_mgsdvd_maintain_series_number_labels')
+
+        # logger.debug(f"LOGIC: __site_settings for '{site}' prepared. Contains 'dmm_parser_rules': {'dmm_parser_rules' in final_settings}")
+        # if 'dmm_parser_rules' in final_settings:
+            # logger.debug(f"LOGIC: Content of dmm_parser_rules: {final_settings['dmm_parser_rules']}")
+
         # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
         return final_settings
 
@@ -808,6 +831,10 @@ class LogicJavCensored(LogicModuleBase):
         
         sett["ps_to_poster_labels_str"] = ModelSetting.get(f"{db_prefix_info}_small_image_to_poster")
         sett["crop_mode_settings_str"] = ModelSetting.get(f"{db_prefix_info}_crop_mode")
+
+        # logger.debug(f"LOGIC: __info_settings for '{site}' inherits settings. Contains 'dmm_parser_rules': {'dmm_parser_rules' in sett}")
+        # if 'dmm_parser_rules' in sett:
+        #     logger.debug(f"LOGIC: Content of dmm_parser_rules in info_settings: {sett['dmm_parser_rules']}")
 
         # logger.debug(f"__info_settings for site '{site}', code '{code}': Prepared settings for SiteClass.info: {sett}")
         return sett
