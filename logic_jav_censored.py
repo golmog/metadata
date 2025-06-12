@@ -73,7 +73,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_dmm_parser_type1_labels": "AP, GOOD, SAN, TEN",
         "jav_censored_dmm_parser_type2_labels": "ID",
         "jav_censored_dmm_parser_type3_labels": "AP, ID, NTRD, SAN, SORA, SW, TEN",
-        "jav_censored_dmm_parser_type4_labels": "AP, MMGH",
+        "jav_censored_dmm_parser_type4_labels": "",
         "jav_censored_dmm_small_image_to_poster": "",
         "jav_censored_dmm_crop_mode": "",
         "jav_censored_dmm_priority_search_labels": "",
@@ -104,6 +104,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_jav321_small_image_to_poster": "",
         "jav_censored_jav321_crop_mode": "",
         "jav_censored_jav321_priority_search_labels": "",
+        "jav_censored_jav321_maintain_series_number_labels": "ABF, AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
         "jav_censored_jav321_title_format": "[{title}] {tagline}",
         "jav_censored_jav321_art_count": "0",
         "jav_censored_jav321_tag_option": "0",
@@ -117,6 +118,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javdb_small_image_to_poster": "",
         "jav_censored_javdb_crop_mode": "",
         "jav_censored_javdb_priority_search_labels": "",
+        "jav_censored_javdb_maintain_series_number_labels": "ABF, AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
         "jav_censored_javdb_title_format": "[{title}] {tagline}",
         "jav_censored_javdb_art_count": "0",
         "jav_censored_javdb_tag_option": "0",
@@ -130,6 +132,7 @@ class LogicJavCensored(LogicModuleBase):
         "jav_censored_javbus_small_image_to_poster": "",
         "jav_censored_javbus_crop_mode": "",
         "jav_censored_javbus_priority_search_labels": "",
+        "jav_censored_javbus_maintain_series_number_labels": "ABF, AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
         "jav_censored_javbus_title_format": "[{title}] {tagline}",
         "jav_censored_javbus_art_count": "0",
         "jav_censored_javbus_tag_option": "0",
@@ -153,6 +156,7 @@ class LogicJavCensored(LogicModuleBase):
     def __init__(self, PM):
         super().__init__(PM, "setting")
         self.name = "jav_censored"
+        self.keyword_cache = {}
 
     def process_menu(self, sub, req):
         arg = ModelSetting.to_dict()
@@ -174,15 +178,16 @@ class LogicJavCensored(LogicModuleBase):
                 current_site_settings = self.__site_settings(call)
                 logger.debug(f"process_ajax (test, call='{call}'): current_site_settings['proxy_url'] = {current_site_settings.get('proxy_url')}")
 
-                # 메타데이터 검색 (search2 사용)
-                data = self.search2(code, call, manual=True, site_settings_override=current_site_settings)
-                if data is None or not data: # 검색 결과 없는 경우 처리
-                    return jsonify({"ret": "no_match", "log": f"no results for '{code}' by '{call}'"})
+                # 테스트는 search와 info가 한 번에 일어나므로, search 함수를 직접 호출
+                search_results = self.search(keyword, manual=True)
+                
+                if not search_results:
+                    return jsonify({"ret": "no_match", "log": f"no results for '{keyword}'"})
+                
+                # search 함수가 keyword_cache를 채웠으므로, info는 code만 전달해도 됨
+                info_data = self.info(search_results[0]['code'])
 
-                # 첫 번째 검색 결과의 코드로 상세 정보 조회 (info 사용)
-                info_data = self.info(data[0]["code"])
-
-                return jsonify({"search": data, "info": info_data if info_data else {}})
+                return jsonify({"search": search_results, "info": info_data if info_data else {}})
 
             if sub == "actor_test":
                 name = req.form["name"]
@@ -236,20 +241,19 @@ class LogicJavCensored(LogicModuleBase):
 
     def process_normal(self, sub, req):
         if sub == "nfo_download":
-            code = req.args.get("code")
+            keyword = req.args.get("code")
             call = req.args.get("call")
-            if call in ["dmm", "mgsdvd"]:
+            if call in self.site_map:
                 db_prefix = f"{self.db_prefix.get(call, self.name)}_{call}"
-                ModelSetting.set(f"{db_prefix}_test_code", code)
-                data = self.search2(code, call)
-                if data:
-                    info = self.info(data[0]["code"])
+                ModelSetting.set(f"{db_prefix}_test_code", keyword)
+                
+                # NFO 다운로드도 search -> info 흐름을 따름
+                search_results = self.search2(keyword, call)
+                if search_results:
+                    self.keyword_cache[search_results[0]['code']] = keyword # 수동 캐싱
+                    info = self.info(search_results[0]["code"])
                     if info:
-                        return UtilNfo.make_nfo_movie(
-                            info,
-                            output="file",
-                            filename=info["originaltitle"].upper() + ".nfo",
-                        )
+                        return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
         return None
 
     #########################################################
@@ -275,6 +279,7 @@ class LogicJavCensored(LogicModuleBase):
 
     def search(self, keyword, manual=False):
         logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
+        self.keyword_cache = {}
         all_results = []
         original_site_order_list = ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
         
@@ -355,6 +360,8 @@ class LogicJavCensored(LogicModuleBase):
                     item_result_dict['hq_poster_passed'] = False
                     if 'is_priority_label_site' not in item_result_dict:
                         item_result_dict['is_priority_label_site'] = False
+                    if 'code' in item_result_dict:
+                        self.keyword_cache[item_result_dict['code']] = keyword
 
                     all_results.append(item_result_dict)
 
@@ -538,7 +545,7 @@ class LogicJavCensored(LogicModuleBase):
         return final_results_to_return
 
 
-    def info(self, code):
+    def info(self, code, keyword=None):
         if code[1] == "B":
             site = "javbus"
         elif code[1] == "D":
@@ -553,7 +560,12 @@ class LogicJavCensored(LogicModuleBase):
             logger.error("처리할 수 없는 코드: code=%s", code)
             return None
 
-        ret = self.info2(code, site)
+        if keyword is None:
+            keyword = self.keyword_cache.get(code)
+            if keyword:
+                logger.debug(f"info: Found keyword '{keyword}' in cache for code '{code}'.")
+
+        ret = self.info2(code, site, keyword)
         if ret is None:
             logger.debug(f"info2 returned None for code: {code}")
             return ret
@@ -714,13 +726,13 @@ class LogicJavCensored(LogicModuleBase):
 
         return ret
 
-    def info2(self, code, site):
+    def info2(self, code, site, keyword):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        sett = self.__info_settings(site, code)
+        sett = self.__info_settings(site, code, keyword)
         sett['url_prefix_segment'] = 'jav/cen'
 
         logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...")
@@ -802,7 +814,7 @@ class LogicJavCensored(LogicModuleBase):
             "priority_label_setting_str": ModelSetting.get(f"{db_prefix}_priority_search_labels") 
         }
 
-        if site == 'dmm':
+        if site in ['dmm', 'jav321']:
             final_settings["dmm_parser_rules"] = {
                 "type0_rules": ModelSetting.get('jav_censored_dmm_parser_type0_rules'),
                 "type1": ModelSetting.get('jav_censored_dmm_parser_type1_labels'),
@@ -811,8 +823,9 @@ class LogicJavCensored(LogicModuleBase):
                 "type4": ModelSetting.get('jav_censored_dmm_parser_type4_labels'),
             }
 
-        if site == 'mgsdvd':
-            final_settings["maintain_series_number_labels"] = ModelSetting.get('jav_censored_mgsdvd_maintain_series_number_labels')
+        if site in ['mgsdvd', 'jav321', 'javbus', 'javdb']:
+            setting_key = f"{db_prefix}_maintain_series_number_labels"
+            final_settings["maintain_series_number_labels"] = ModelSetting.get(setting_key)
 
         # logger.debug(f"LOGIC: __site_settings for '{site}' prepared. Contains 'dmm_parser_rules': {'dmm_parser_rules' in final_settings}")
         # if 'dmm_parser_rules' in final_settings:
@@ -821,8 +834,8 @@ class LogicJavCensored(LogicModuleBase):
         # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
         return final_settings
 
-    def __info_settings(self, site: str, code: str):
-        sett = self.__site_settings(site) 
+    def __info_settings(self, site: str, code: str, keyword):
+        sett = self.__site_settings(site)
         
         db_prefix_info = f"{self.db_prefix.get(site, self.name)}_{site}"
 
@@ -831,6 +844,9 @@ class LogicJavCensored(LogicModuleBase):
         
         sett["ps_to_poster_labels_str"] = ModelSetting.get(f"{db_prefix_info}_small_image_to_poster")
         sett["crop_mode_settings_str"] = ModelSetting.get(f"{db_prefix_info}_crop_mode")
+
+        if keyword:
+            sett["original_keyword"] = keyword
 
         # logger.debug(f"LOGIC: __info_settings for '{site}' inherits settings. Contains 'dmm_parser_rules': {'dmm_parser_rules' in sett}")
         # if 'dmm_parser_rules' in sett:
