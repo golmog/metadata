@@ -441,7 +441,7 @@ class LogicJavCensored(LogicModuleBase):
                         item_in_all_results_to_update['hq_poster_score_adj'] = -1
 
                         try:
-                            info_data_for_hq_check = self.info2(code_for_hq_check, site_key_for_hq_check) 
+                            info_data_for_hq_check = self.info2(code_for_hq_check, site_key_for_hq_check, keyword)
 
                             if info_data_for_hq_check:
                                 ps_url_hq, pl_url_hq = None, None
