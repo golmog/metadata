@@ -432,6 +432,7 @@ class LogicJavCensored(LogicModuleBase):
 
                         code_for_hq_check = item_in_all_results_to_update.get("code")
                         site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
+                        ps_url_for_hq_check = candidate_item_ref.get("image_url")
 
                         if not code_for_hq_check or not site_key_for_hq_check:
                             logger.warning(f"HQ Check: Code or site_key missing for an item. Skipping HQ check.")
@@ -441,7 +442,12 @@ class LogicJavCensored(LogicModuleBase):
                         item_in_all_results_to_update['hq_poster_score_adj'] = -1
 
                         try:
-                            info_data_for_hq_check = self.info2(code_for_hq_check, site_key_for_hq_check, keyword)
+                            info_data_for_hq_check = self.info2(
+                                code_for_hq_check, 
+                                site_key_for_hq_check, 
+                                keyword, 
+                                ps_url=ps_url_for_hq_check
+                            )
 
                             if info_data_for_hq_check:
                                 ps_url_hq, pl_url_hq = None, None
@@ -726,7 +732,7 @@ class LogicJavCensored(LogicModuleBase):
 
         return ret
 
-    def info2(self, code, site, keyword):
+    def info2(self, code, site, keyword, ps_url=None):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
@@ -834,7 +840,7 @@ class LogicJavCensored(LogicModuleBase):
         # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
         return final_settings
 
-    def __info_settings(self, site: str, code: str, keyword):
+    def __info_settings(self, site: str, code: str, keyword, ps_url=None):
         sett = self.__site_settings(site)
         
         db_prefix_info = f"{self.db_prefix.get(site, self.name)}_{site}"
