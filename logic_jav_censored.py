@@ -749,7 +749,7 @@ class LogicJavCensored(LogicModuleBase):
 
         if data and data.get("ret") == "success" and data.get("data"):
             ret = data["data"]
-            logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
+            logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
 
             return ret
         else:
@@ -800,7 +800,7 @@ class LogicJavCensored(LogicModuleBase):
 
             return True
         else:
-            logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
+            # logger.debug(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
             return False
 
     def __site_settings(self, site: str):
