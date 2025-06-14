@@ -178,14 +178,12 @@ class LogicJavCensored(LogicModuleBase):
                 current_site_settings = self.__site_settings(call)
                 logger.debug(f"process_ajax (test, call='{call}'): current_site_settings['proxy_url'] = {current_site_settings.get('proxy_url')}")
 
-                # 테스트는 search와 info가 한 번에 일어나므로, search 함수를 직접 호출
-                search_results = self.search(keyword, manual=True)
-                
+                search_results = self.search2(code, call, manual=True, site_settings_override=current_site_settings)
+
                 if not search_results:
-                    return jsonify({"ret": "no_match", "log": f"no results for '{keyword}'"})
-                
-                # search 함수가 keyword_cache를 채웠으므로, info는 code만 전달해도 됨
-                info_data = self.info(search_results[0]['code'])
+                    return jsonify({"ret": "no_match", "log": f"no results for '{code}'"})
+
+                info_data = self.info(search_results[0]['code'], keyword=code)
 
                 return jsonify({"search": search_results, "info": info_data if info_data else {}})
 
@@ -393,7 +391,7 @@ class LogicJavCensored(LogicModuleBase):
 
             if early_exit_triggered:
                 logger.debug("  Early exit triggered. Stopping further site searches.")
-                break 
+                break
 
         logger.debug(f"--- All site searches completed. Total initial results: {len(all_results)} ---")
         if not all_results:
