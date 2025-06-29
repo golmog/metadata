@@ -160,7 +160,11 @@ class ModuleKtv(PluginModuleBase):
                         SiteTmdbTv.apply(tmdb_id, show, apply_image=True, apply_actor_image=True)
 
                 if 'tving_episode_id' in show['extra_info']:
-                    SiteTvingTv.apply_tv_by_episode_code(show, show['extra_info']['tving_episode_id'], apply_plot=False, apply_image=True )
+                    SiteTvingTv.apply_tv_by_episode_code(show, show['extra_info']['tving_episode_id'], apply_plot=False, apply_image=True)
+                elif 'tving_id' in show['extra_info']:
+                    tving_program = SupportTving.get_program_programid(show['extra_info']['tving_id'])
+                    if tving_program:
+                        SiteTvingTv._apply_tv_by_program(show, tving_program, apply_plot=False, apply_image=True)
                 else: #use_tving 정도
                     SiteTvingTv.apply_tv_by_search(show, apply_plot=False, apply_image=True)
 
