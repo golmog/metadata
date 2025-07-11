@@ -29,7 +29,7 @@ setting = {
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
                     {'uri': 'test', 'name': '테스트'},
-                ]
+                ] 
             },
             {
                 'uri': 'music_normal',
@@ -44,6 +44,18 @@ setting = {
                 'name': '책',
                 'list': [
                     {'uri': 'naver', 'name': '네이버 책 검색 API'},
+                ]
+            },
+            {
+                'uri': 'jav_censored',
+                'name': 'JAV (Censored)',
+                'list': [
+                    {'uri': 'setting', 'name': '설정'},
+                    {'uri': 'dmm', 'name': 'DMM'},
+                    {'uri': 'mgs', 'name': 'MGS'},
+                    {'uri': 'jav321', 'name': 'Jav321'},
+                    {'uri': 'javdb', 'name': 'JavDB'},
+                    {'uri': 'javbus', 'name': 'Javbus'},
                 ]
             },
             {
@@ -75,7 +87,8 @@ try:
     from .mod_movie import ModuleMovie
     from .mod_music_normal import ModuleMusicNormal
     from .mod_route import ModuleRoute
-    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook])
+    from .mod_jav_censored import ModuleJavCensored
+    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())

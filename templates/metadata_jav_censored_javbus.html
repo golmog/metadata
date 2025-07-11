@@ -1,35 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div>
-  {{ macros.m_button_group([['global_setting_save_btn', '설정 저장']])}}
-  {{ macros.m_row_start('5') }}
-  {{ macros.m_row_end() }}
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
 
-  <nav>  
-    {{ macros.m_tab_head_start() }}
-      {{ macros.m_tab_head2('normal', '설정', true) }}
-    {{ macros.m_tab_head_end() }}
-  </nav>
-  <form id='setting' name='setting'>
-  <div class="tab-content" id="nav-tabContent">
-    {{ macros.m_tab_content_start('normal', true) }}
-      {{ macros.setting_checkbox('jav_censored_javbus_use_proxy', 'Proxy 사용', value=arg['jav_censored_javbus_use_proxy'], desc=['On : sjva를 설치한 곳에서 javbus 사이트 접속이 안 될 경우 사용']) }}
-      <div id="jav_censored_javbus_use_proxy_div" class="collapse">
-      {{ macros.setting_input_text('jav_censored_javbus_proxy_url', 'Proxy URL', value=arg['jav_censored_javbus_proxy_url']) }}
-      </div>
-      {{ macros.setting_radio('jav_censored_javbus_image_mode', '이미지 URL 처리 방법', ['원본 URL', 'SJVA Proxy URL', '디스코드 Proxy URL', '디스코드 URL'], value=arg['jav_censored_javbus_image_mode'], desc=['원본 : 원본 URL 리턴. (클라이언트가 외국인 경우)', 'SJVA Proxy URL : SJVA가 이미지를 받고 그 이미지를 리턴 (한국)', '디스코드 Proxy URL : 이미지를 디스코드에 업로드 후 디스코드 URL Redirect', '디스코드 URL : Proxy 작업을 미리한 고정 디스코드 URL']) }}
-      {{ macros.setting_input_text_and_buttons('jav_censored_javbus_code', '테스트', [['jav_censored_javbus_test_btn', '테스트']], value=arg['jav_censored_javbus_code'], desc=None) }}
-    {{ macros.m_tab_content_end() }}
-  </div><!--tab-content-->
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('normal', '설정', true) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+<form id='setting' name='setting'>
+<div class="tab-content mb-4" id="nav-tabContent">
+  {{ macros.m_tab_content_start('normal', true) }}
+    {{ macros.setting_input_text_and_buttons('jav_censored_javbus_test_code', '테스트', [['jav_censored_javbus_test_btn', '테스트']], value=arg['jav_censored_javbus_test_code'], desc=None) }}
+    {{ macros.setting_checkbox('jav_censored_javbus_use_proxy', 'Proxy 사용', value=arg['jav_censored_javbus_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
+    <div id="jav_censored_javbus_use_proxy_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_javbus_proxy_url', 'Proxy URL', value=arg['jav_censored_javbus_proxy_url']) }}
+    </div>
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_textarea('jav_censored_javbus_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_javbus_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
+    {{ macros.setting_input_textarea('jav_censored_javbus_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_javbus_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_textarea('jav_censored_javbus_maintain_series_number_labels', '시리즈 넘버 유지 레이블', value=arg.get('jav_censored_javbus_maintain_series_number_labels', ''), row='3', desc=['여기에 입력된 레이블은 품번, 제목, 파일명 등에 시리즈 넘버(숫자 Prefix)를 유지합니다. (예: 436ABF-021)', '주로 중복 레이블 구분용으로 입력합니다(이미지 서버 이용시 파일명에도 적용됨).', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: ABF, GOOD)']) }}
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_text('jav_censored_javbus_title_format', '타이틀 포맷', value=arg['jav_censored_javbus_title_format'], desc=['title runtime premiered year actor tagline']) }}
+    {{ macros.setting_input_int('jav_censored_javbus_art_count', '최대 아트 수 제한', value=arg['jav_censored_javbus_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
+    {{ macros.setting_radio_with_value('jav_censored_javbus_tag_option', '태그(컬렉션) 옵션', [['not_using','사용안함'], ['label', '라벨'], ['label_and_site', '라벨 + 메타 사이트 태그'], ['site', '메타 사이트 태그']], value=arg['jav_censored_javbus_tag_option']) }}
+  {{ macros.m_tab_content_end() }}
+</div>
 </form>
-</div><!--전체-->
+
 
 <script type="text/javascript">
-var package_name = "{{arg['package_name'] }}";
-var sub = "{{arg['sub'] }}";
-var current_data = null;
-
 $(document).ready(function(){
   use_collapse("jav_censored_javbus_use_proxy");
 });
@@ -38,22 +41,12 @@ $('#jav_censored_javbus_use_proxy').change(function() {use_collapse('jav_censore
 
 $("body").on('click', '#jav_censored_javbus_test_btn', function(e){
   e.preventDefault();
-  func_test('javbus');
+  code = $('#jav_censored_javbus_test_code').val();
+  if (!code || !code.trim()) {
+    notify('테스트 코드 입력', 'warning');
+    return
+  }
+  globalSendCommand('test', 'javbus', code);
 });
-
-function func_test(call) {
-  code = document.getElementById("jav_censored_javbus_code").value
-  $.ajax({
-    url: '/' + package_name + '/ajax/' + sub + '/test',
-    type: "POST", 
-    cache: false,
-    data: {code:code, call:call},
-    dataType: "json",
-    success: function (ret) {
-      m_modal(ret)
-    }
-  });
-}
-
-</script>    
+</script>
 {% endblock %}
