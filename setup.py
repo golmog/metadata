@@ -52,7 +52,7 @@ setting = {
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
                     {'uri': 'dmm', 'name': 'DMM'},
-                    {'uri': 'mgs', 'name': 'MGS'},
+                    {'uri': 'mgstage', 'name': 'MGStage'},
                     {'uri': 'jav321', 'name': 'Jav321'},
                     {'uri': 'javdb', 'name': 'JavDB'},
                     {'uri': 'javbus', 'name': 'Javbus'},

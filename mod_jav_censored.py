@@ -6,7 +6,7 @@ from support_site import (
     SiteHentaku,
     SiteJav321,
     SiteJavbus,
-    SiteMgstageDvd,
+    SiteMgstage,
     SiteUtilAv as SiteUtil,
     SiteJavdb,
     UtilNfo,
@@ -27,15 +27,15 @@ class ModuleJavCensored(PluginModuleBase):
             "hentaku": SiteHentaku,
             "jav321": SiteJav321,
             "javbus": SiteJavbus,
-            "mgsdvd": SiteMgstageDvd,
+            "mgstage": SiteMgstage,
             "javdb": SiteJavdb,
         }
 
         self.db_default = {
             f"{self.name}_db_version": "1",
-            f"{self.name}_order": "dmm, mgsdvd, jav321, javdb, javbus",
+            f"{self.name}_order": "dmm, mgstage, jav321, javdb, javbus",
             f"{self.name}_actor_order": "avdbs, hentaku",
-            f"{self.name}_result_priority_order": "dmm_videoa, mgsdvd, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
+            f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
             # 통합 이미지 설정
             f"{self.name}_image_mode": "original", 
@@ -88,19 +88,19 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_dmm_use_extras": "False",
             f"{self.name}_dmm_test_code": "ssni-900",
 
-            # mgsdvd
-            f"{self.name}_mgsdvd_use_sjva": "False",
-            f"{self.name}_mgsdvd_use_proxy": "False",
-            f"{self.name}_mgsdvd_proxy_url": "",
-            f"{self.name}_mgsdvd_small_image_to_poster": "",
-            f"{self.name}_mgsdvd_crop_mode": "",
-            f"{self.name}_mgsdvd_priority_search_labels": "",
-            f"{self.name}_mgsdvd_maintain_series_number_labels": "GOOD, TEN",
-            f"{self.name}_mgsdvd_title_format": "[{title}] {tagline}",
-            f"{self.name}_mgsdvd_art_count": "0",
-            f"{self.name}_mgsdvd_tag_option": "not_using",
-            f"{self.name}_mgsdvd_use_extras": "False",
-            f"{self.name}_mgsdvd_test_code": "abf-010",
+            # mgstage
+            f"{self.name}_mgstage_use_sjva": "False",
+            f"{self.name}_mgstage_use_proxy": "False",
+            f"{self.name}_mgstage_proxy_url": "",
+            f"{self.name}_mgstage_small_image_to_poster": "",
+            f"{self.name}_mgstage_crop_mode": "",
+            f"{self.name}_mgstage_priority_search_labels": "",
+            f"{self.name}_mgstage_maintain_series_number_labels": "GOOD, TEN",
+            f"{self.name}_mgstage_title_format": "[{title}] {tagline}",
+            f"{self.name}_mgstage_art_count": "0",
+            f"{self.name}_mgstage_tag_option": "not_using",
+            f"{self.name}_mgstage_use_extras": "False",
+            f"{self.name}_mgstage_test_code": "abf-010",
 
             # jav321
             f"{self.name}_jav321_use_sjva": "False",
@@ -150,7 +150,7 @@ class ModuleJavCensored(PluginModuleBase):
             ret = {'ret': 'success'}
             if command == "test":
                 code = arg2
-                call = arg1 # 'dmm', 'mgsdvd', 'javbus' 등
+                call = arg1 # 'dmm', 'mgstage', 'javbus' 등
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
@@ -329,7 +329,7 @@ class ModuleJavCensored(PluginModuleBase):
         # --- 기존 조기 종료 관련 설정 ---
         priority_sites_for_general_early_exit = { # 일반 조기 종료 대상
             "dmm": ["videoa",],
-            "mgsdvd": True 
+            "mgstage": True 
         }
         early_exit_triggered = False
 
@@ -552,7 +552,7 @@ class ModuleJavCensored(PluginModuleBase):
         elif code[1] == "T":
             site = "jav321"
         elif code[1] == "M":
-            site = "mgsdvd"
+            site = "mgstage"
         elif code[1] == "J":
             site = "javdb"
         else:
@@ -822,7 +822,7 @@ class ModuleJavCensored(PluginModuleBase):
                 "type4": P.ModelSetting.get('jav_censored_dmm_parser_type4_labels'),
             }
 
-        if site in ['mgsdvd', 'jav321', 'javbus', 'javdb']:
+        if site in ['mgstage', 'jav321', 'javbus', 'javdb']:
             setting_key = f"{db_prefix}_maintain_series_number_labels"
             final_settings["maintain_series_number_labels"] = P.ModelSetting.get(setting_key)
 
