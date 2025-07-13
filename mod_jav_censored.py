@@ -646,7 +646,7 @@ class ModuleJavCensored(PluginModuleBase):
             use_custom_proxy_server = P.ModelSetting.get_bool("jav_censored_use_discord_proxy_server")
             custom_proxy_url_base = P.ModelSetting.get("jav_censored_discord_proxy_server_url").strip().rstrip('/')
 
-            if (current_image_mode == 'discord_proxy' or current_image_mode == '5') and \
+            if (current_image_mode in ['ff_proxy', 'discord_proxy']) and \
                 use_custom_proxy_server and custom_proxy_url_base:
 
                 logger.debug(f"Applying custom Discord proxy server: {custom_proxy_url_base} for code {code}")
