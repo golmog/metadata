@@ -21,11 +21,6 @@
 {{ macros.setting_input_textarea('jav_censored_mgstage_priority_search_labels', '지정 레이블 최우선 검색', value=arg['jav_censored_mgstage_priority_search_labels'], row='3', desc=['여기에 입력된 레이블의 작품은 MGStage 검색 결과를 다른 사이트보다 우선적으로 최상단에 표시하려고 시도합니다.', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: DLDSS,LUXU)']) }}
 {{ macros.m_hr() }}
 {{ macros.setting_input_textarea('jav_censored_mgstage_maintain_series_number_labels', '시리즈 넘버 유지 레이블', value=arg['jav_censored_mgstage_maintain_series_number_labels'], row='3', desc=['여기에 입력된 레이블은 품번, 제목, 파일명 등에 시리즈 넘버(숫자 Prefix)를 유지합니다. (예: 298GOOD-001)', '주로 중복 레이블 구분용으로 입력합니다(이미지 서버 이용시 파일명에도 적용됨).', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: GOOD, TEN)']) }}
-{{ macros.m_hr() }}
-{{ macros.setting_input_text('jav_censored_mgstage_title_format', '타이틀 포맷', value=arg['jav_censored_mgstage_title_format'], desc=['title runtime premiered year actor tagline']) }}
-{{ macros.setting_input_int('jav_censored_mgstage_art_count', '최대 아트 수 제한', value=arg['jav_censored_mgstage_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
-{{ macros.setting_radio_with_value('jav_censored_mgstage_tag_option', '태그(컬렉션) 옵션', [['not_using','사용안함'], ['label', '라벨'], ['label_and_site', '라벨 + 메타 사이트 태그'], ['site', '메타 사이트 태그']], value=arg['jav_censored_mgstage_tag_option']) }}
-{{ macros.setting_checkbox('jav_censored_mgstage_use_extras', '예고편 사용', value=arg['jav_censored_mgstage_use_extras'], desc=None) }}
 </div>
 </form>
 

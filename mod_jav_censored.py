@@ -35,47 +35,41 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_actor_order": "avdbs",
             f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
-            # 통합 이미지 설정
-            f"{self.name}_image_mode": "ff_proxy", 
-            # 0:원본, 1:SJVA Proxy, 2:Discord Redirect, 3:Discord Proxy, 4:이미지 서버
-            # original, ff_proxy, discord_redirect, discord_proxy, image_server
+            # 공통 설정
+            f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
+            f"{self.name}_title_format": "[{title}] {tagline}",
+            f"{self.name}_art_count": "0",
+            f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
+            f"{self.name}_use_extras": "False",
+
+            # 이미지 모드
             # 3개로 정리ff_proxy, discord_proxy, image_server
-
-            f"{self.name}_trans_option": "using", 
-            #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
-
-            #f"{self.name}_use_image_server": "False",
-            f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
-            f"{self.name}_image_server_local_path": "/data/images",
-            f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
-
+            f"{self.name}_image_mode": "ff_proxy", 
 
             # 디스코드 프록시 서버 관련 설정
             f"{self.name}_use_discord_proxy_server": "False",
             f"{self.name}_discord_proxy_server_url": "",
             f"{self.name}_use_my_webhook": "False",
             f"{self.name}_my_webhook_list": "",
+
+            # 이미지 서버
+            f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
+            f"{self.name}_image_server_local_path": "/data/images",
+            f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
             
             # avdbs
-            #f"{self.name}_avdbs_use_sjva": "False",
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",
-            f"{self.name}_avdbs_test_name": "",
             f"{self.name}_avdbs_use_local_db": "False",
             f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/{P.package_name}/files/jav_actors2.db",
             "jav_actor_img_url_prefix": "",
+            f"{self.name}_avdbs_test_name": "",
 
             # hentaku
-            f"{self.name}_hentaku_use_sjva": "False",
             f"{self.name}_hentaku_use_proxy": "False",
             f"{self.name}_hentaku_proxy_url": "",
             f"{self.name}_hentaku_test_name": "",
 
-            # '태그(컬렉션) 옵션', 
-            # ['not_using','사용안함'], 
-            # ['label', '라벨'], 
-            # ['label_and_site', '라벨 + 메타 사이트 태그'], 
-            # ['site', '메타 사이트 태그']
             # dmm
             f"{self.name}_dmm_use_proxy": "False",
             f"{self.name}_dmm_proxy_url": "",
@@ -87,10 +81,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_dmm_small_image_to_poster": "",
             f"{self.name}_dmm_crop_mode": "",
             f"{self.name}_dmm_priority_search_labels": "",
-            f"{self.name}_dmm_title_format": "[{title}] {tagline}",
-            f"{self.name}_dmm_art_count": "0",
-            f"{self.name}_dmm_tag_option": "not_using",
-            f"{self.name}_dmm_use_extras": "False",
             f"{self.name}_dmm_test_code": "ssni-900",
 
             # mgstage
@@ -101,10 +91,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_mgstage_crop_mode": "",
             f"{self.name}_mgstage_priority_search_labels": "",
             f"{self.name}_mgstage_maintain_series_number_labels": "GOOD, TEN",
-            f"{self.name}_mgstage_title_format": "[{title}] {tagline}",
-            f"{self.name}_mgstage_art_count": "0",
-            f"{self.name}_mgstage_tag_option": "not_using",
-            f"{self.name}_mgstage_use_extras": "False",
             f"{self.name}_mgstage_test_code": "abf-010",
 
             # jav321
@@ -115,10 +101,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_jav321_crop_mode": "",
             f"{self.name}_jav321_priority_search_labels": "",
             f"{self.name}_jav321_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
-            f"{self.name}_jav321_title_format": "[{title}] {tagline}",
-            f"{self.name}_jav321_art_count": "0",
-            f"{self.name}_jav321_tag_option": "not_using",
-            f"{self.name}_jav321_use_extras": "False",
             f"{self.name}_jav321_test_code": "abw-354",
 
             # javdb
@@ -129,10 +111,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javdb_crop_mode": "",
             f"{self.name}_javdb_priority_search_labels": "",
             f"{self.name}_javdb_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
-            f"{self.name}_javdb_title_format": "[{title}] {tagline}",
-            f"{self.name}_javdb_art_count": "0",
-            f"{self.name}_javdb_tag_option": "not_using",
-            f"{self.name}_javdb_use_extras": "False",
             f"{self.name}_javdb_test_code": "JUFE-487",
 
             # javbus
@@ -143,10 +121,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_crop_mode": "",
             f"{self.name}_javbus_priority_search_labels": "",
             f"{self.name}_javbus_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
-            f"{self.name}_javbus_title_format": "[{title}] {tagline}",
-            f"{self.name}_javbus_art_count": "0",
-            f"{self.name}_javbus_tag_option": "not_using",
-            f"{self.name}_javbus_use_extras": "False",
             f"{self.name}_javbus_test_code": "abw-354",
         }
         
@@ -167,14 +141,14 @@ class ModuleJavCensored(PluginModuleBase):
     # 사이트 설정값이 바뀌면 config
     def setting_save_after(self, change_list):
         ins_list = []
-        """
+        
         always_all_set = [
-            "jav_censored_trans_option",
-            "jav_censored_image_mode", 
-            "jav_censored_image_server_url",
-            "jav_censored_image_server_local_path",
-            "jav_censored_use_discord_proxy_server",
-            "jav_censored_discord_proxy_server_url"
+            "jav_censored_use_extras",
+            "jav_censored_max_arts", 
+            #"jav_censored_image_server_url",
+            #"jav_censored_image_server_local_path",
+            #"jav_censored_use_discord_proxy_server",
+            #"jav_censored_discord_proxy_server_url"
         ]
         # 굳이???? 
         for tmp in always_all_set:
@@ -183,7 +157,7 @@ class ModuleJavCensored(PluginModuleBase):
                 break
             if ins_list:
                 break
-        """
+        
         if True:
             for key in change_list:
                 if key.endswith("_test_code"):
@@ -685,7 +659,7 @@ class ModuleJavCensored(PluginModuleBase):
         original_calculated_title = ret.get("title", "")
 
         try: # 타이틀 포맷팅
-            title_format = P.ModelSetting.get(f"{db_prefix}_title_format")
+            title_format = P.ModelSetting.get(f"{self.name}_title_format")
             format_dict = {
                 'originaltitle': ret.get("originaltitle", ""),
                 'plot': ret.get("plot", ""),
@@ -709,7 +683,7 @@ class ModuleJavCensored(PluginModuleBase):
             ret["title"] = original_calculated_title # 오류 시 포맷팅 전 제목으로 복구
 
         if "tag" in ret:
-            tag_option = P.ModelSetting.get(f"{db_prefix}_tag_option")
+            tag_option = P.ModelSetting.get(f"{self.name}_tag_option")
             if tag_option == "not_using":
                 ret["tag"] = []
             elif tag_option == "label":
@@ -723,92 +697,7 @@ class ModuleJavCensored(PluginModuleBase):
                     if label is None or _ != label:
                         tmp.append(_)
                 ret["tag"] = tmp
-
-        # === 디스코드 프록시 URL 치환 로직 ===
-        """
-        try:
-            current_image_mode = P.ModelSetting.get("jav_censored_image_mode")
-            use_custom_proxy_server = P.ModelSetting.get_bool("jav_censored_use_discord_proxy_server")
-            custom_proxy_url_base = P.ModelSetting.get("jav_censored_discord_proxy_server_url").strip().rstrip('/')
-
-            if (current_image_mode in ['ff_proxy', 'discord_proxy']) and \
-                use_custom_proxy_server and custom_proxy_url_base:
-
-                logger.debug(f"Applying custom Discord proxy server: {custom_proxy_url_base} for code {code}")
-
-                data_to_modify = ret # entity.as_dict()의 결과가 담긴 dict
-                if data_to_modify is None: # 방어 코드
-                    logger.warning("data_to_modify is None before URL rewrite. Skipping rewrite.")
-                    return ret # 또는 다른 적절한 처리
-
-                # DiscordUtil.isurlattachment 함수를 가져오거나, 유사한 로직 사용
-                # from lib_metadata.discord import DiscordUtil # 상단에 임포트 필요
-
-                def rewrite_discord_url(url_string):
-                    if isinstance(url_string, str) and DiscordUtil.isurlattachment(url_string):
-                        try:
-                            # URL 파싱하여 경로 및 쿼리 유지
-                            parsed_url = urlparse(url_string)
-                            new_url = f"{custom_proxy_url_base}{parsed_url.path}"
-                            if parsed_url.query:
-                                new_url += f"?{parsed_url.query}"
-                            logger.debug(f"  Rewriting Discord URL: '{url_string}' -> '{new_url}'")
-                            return new_url
-                        except Exception as e_parse_rewrite:
-                            logger.error(f"  Error parsing/rewriting URL '{url_string}': {e_parse_rewrite}")
-                            return url_string
-                    return url_string
-
-                # entity.thumb 수정 (poster, landscape)
-                if data_to_modify.get('thumb') and isinstance(data_to_modify['thumb'], list):
-                    for thumb_item in data_to_modify['thumb']:
-                        if isinstance(thumb_item, dict) and 'value' in thumb_item:
-                            thumb_item['value'] = rewrite_discord_url(thumb_item['value'])
-                        # EntityThumb에 thumb 필드가 있다면 그것도 처리 (지금은 value만)
-
-                # entity.fanart 수정 (리스트 내 URL들)
-                if data_to_modify.get('fanart') and isinstance(data_to_modify['fanart'], list):
-                    data_to_modify['fanart'] = [rewrite_discord_url(fanart_url) for fanart_url in data_to_modify['fanart']]
-
-                # entity.actor의 thumb 수정 (만약 배우 이미지도 디스코드 프록시를 사용한다면)
-                if data_to_modify.get('actor') and isinstance(data_to_modify['actor'], list):
-                    for actor_item in data_to_modify['actor']:
-                        if isinstance(actor_item, dict) and 'thumb' in actor_item:
-                            actor_item['thumb'] = rewrite_discord_url(actor_item['thumb'])
-
-                # entity.extras의 thumb 수정 (트레일러 썸네일 등)
-                if data_to_modify.get('extras') and isinstance(data_to_modify['extras'], list):
-                    for extra_item in data_to_modify['extras']:
-                        if isinstance(extra_item, dict) and 'thumb' in extra_item:
-                            extra_item['thumb'] = rewrite_discord_url(extra_item['thumb'])
-
-            else:
-                if current_image_mode == 'discord_proxy' or current_image_mode == '5':
-                    if not use_custom_proxy_server:
-                        logger.debug(f"Custom Discord proxy server is NOT enabled for code {code}.")
-                    if not custom_proxy_url_base:
-                        logger.debug(f"Custom Discord proxy server URL is empty for code {code}.")
-            
-        except Exception as e_rewrite:
-            logger.exception(f"Error during Discord URL rewrite for code {code}: {e_rewrite}")
-        """
-        # === URL 치환 로직 끝 ===
-
-        #logger.debug(f"Final 'ret' dictionary being returned by info() for code {code}:")
-        #try:
-        #    import json
-        #    loggable_ret = {}
-        #    if ret:
-        #        loggable_ret['title'] = ret.get('title')
-        #        loggable_ret['thumb'] = ret.get('thumb')
-        #        loggable_ret['fanart_count'] = len(ret.get('fanart', []))
-        #        if ret.get('actor'):
-        #            loggable_ret['actor_thumbs'] = [a.get('thumb') for a in ret['actor'] if isinstance(a, dict)]
-        #    logger.debug(json.dumps(loggable_ret, indent=2, ensure_ascii=False))
-        #except Exception as e_log_json:
-        #    logger.error(f"Error logging final 'ret' dictionary: {e_log_json}")
-        #    logger.debug(f"Partial final 'ret' (raw): {str(ret)[:500]}")
-
+        
         return ret
 
     def info2(self, code, site, keyword, ps_url=None):

@@ -29,11 +29,6 @@
 {{ macros.setting_input_textarea('jav_censored_dmm_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_dmm_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예- 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
 {{ macros.m_hr() }}
 {{ macros.setting_input_textarea('jav_censored_dmm_priority_search_labels', '지정 레이블 최우선 검색', value=arg['jav_censored_dmm_priority_search_labels'], row='3', desc=['여기에 입력된 레이블의 작품은 DMM 검색 결과를 다른 사이트보다 우선적으로 최상단에 표시하려고 시도합니다.', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: DLDSS,LUXU)']) }}
-{{ macros.m_hr() }}
-{{ macros.setting_input_text('jav_censored_dmm_title_format', '타이틀 포맷', value=arg['jav_censored_dmm_title_format'], desc=['title runtime premiered year actor tagline']) }}
-{{ macros.setting_input_int('jav_censored_dmm_art_count', '최대 아트 수 제한', value=arg['jav_censored_dmm_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
-{{ macros.setting_radio_with_value('jav_censored_dmm_tag_option', '태그(컬렉션) 옵션', [['not_using','사용안함'], ['label', '라벨'], ['label_and_site', '라벨 + 메타 사이트 태그'], ['site', '메타 사이트 태그']], value=arg['jav_censored_dmm_tag_option']) }}
-{{ macros.setting_checkbox('jav_censored_dmm_use_extras', '예고편 사용', value=arg['jav_censored_dmm_use_extras'], desc=None) }}
 </div>
 </form>
 

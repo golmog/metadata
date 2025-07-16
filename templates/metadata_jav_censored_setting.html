@@ -25,29 +25,37 @@
   }}
   <!--{{ macros.setting_input_text('jav_censored_actor_order', '배우 우선순위', value=arg['jav_censored_actor_order'], desc=['배우정보를 가져울 순위 설정', 'avdbs, hentaku']) }}-->
   {{ macros.m_hr() }}
-  {{ macros.setting_radio_with_value('jav_censored_trans_option', '번역 옵션', [['not_using', '안함'], ['using', '기본 번역'], ['using_plugin', '번역 플러그인 사용']], value=arg['jav_censored_trans_option'], desc=None) }}
+    {{ macros.setting_radio_with_value('jav_censored_trans_option', '번역 옵션', [['not_using', '안함'], ['using', '기본 번역'], ['using_plugin', '번역 플러그인 사용']], value=arg['jav_censored_trans_option'], desc=None) }}
+
+    {{ macros.setting_input_text('jav_censored_title_format', '타이틀 포맷', value=arg['jav_censored_title_format'], desc=['title runtime premiered year actor tagline']) }}
+
+    {{ macros.setting_input_int('jav_censored_art_count', '최대 아트 수 제한', value=arg['jav_censored_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
+
+    {{ macros.setting_radio_with_value('jav_censored_tag_option', '태그(컬렉션) 옵션', [['not_using','사용안함'], ['label', '라벨'], ['label_and_site', '라벨 + 메타 사이트 태그'], ['site', '메타 사이트 태그']], value=arg['jav_censored_tag_option']) }}
+
+    {{ macros.setting_checkbox('jav_censored_use_extras', '예고편 사용', value=arg['jav_censored_use_extras'], desc=None) }}
 
   {{ macros.m_hr() }}
   {{ macros.setting_radio_with_value('jav_censored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_censored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용']) }}
 
   <div id="jav_censored_use_discord_proxy_div" class="collapse">
-  {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다.', '미사용시 일정시간 이후 url이 작동하지 않습니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다.', '미사용시 일정시간 이후 url이 작동하지 않습니다.']) }}
   
-  {{ macros.setting_input_text('jav_censored_discord_proxy_server_url', '디스코드 Proxy 서버(FF) 주소', value=arg['jav_censored_discord_proxy_server_url'], placeholder='예: https://ff.my-domain.com (끝에 / 없이 입력)') }}
+    {{ macros.setting_input_text('jav_censored_discord_proxy_server_url', '디스코드 Proxy 서버(FF) 주소', value=arg['jav_censored_discord_proxy_server_url'], placeholder='예: https://ff.my-domain.com (끝에 / 없이 입력)') }}
 
-  {{ macros.setting_checkbox('jav_censored_use_my_webhook', '본인 웹훅 사용', value=arg['jav_censored_use_my_webhook'], desc=['Off: FF 내장된 웹훅 사용']) }}
+    {{ macros.setting_checkbox('jav_censored_use_my_webhook', '본인 웹훅 사용', value=arg['jav_censored_use_my_webhook'], desc=['Off: FF 내장된 웹훅 사용']) }}
   
-  {{ macros.setting_input_textarea('jav_censored_my_webhook_list', '디스코드 웹훅', value=arg['jav_censored_my_webhook_list'], row='5', desc=['연령 제한 채널 설정 필수', '구분자 엔터']) }}
-  
+    {{ macros.setting_input_textarea('jav_censored_my_webhook_list', '디스코드 웹훅', value=arg['jav_censored_my_webhook_list'], row='5', desc=['연령 제한 채널 설정 필수', '구분자 엔터']) }}
   </div>
 
   <div id="jav_censored_use_image_server_div" class="collapse">
-  {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com', desc=['FF DDNS/images URL은 /data/images 폴더를 라우팅합니다.']) }}
-  {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
+    {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com', desc=['FF DDNS/images URL은 /data/images 폴더를 라우팅합니다.']) }}
+    
+    {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
   
-  {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
-
+    {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
   </div>
+
 
 
 </form>

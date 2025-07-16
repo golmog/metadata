@@ -7,15 +7,15 @@
 
 - 이치로님의 Discord Proxy 플러그인 설치 : [https://github.com/by275/discord_proxy](https://github.com/by275/discord_proxy)
 
-    - 본인의 토큰의 값 설정.
-    - 위의 동작하지 않는 URL에서 `https://cdn.discordapp.com` 값을 본인 FF DDNS로 변경하면 정상적으로 로딩 함.
+    - 본인의 토큰 값 설정.
+    - 위의 동작하지 않는 URL에서 `https://cdn.discordapp.com` 대신 FF DDNS로 변경하여 정상적으로 로딩 하는지 확인.
 
 - 본인의 웹훅을 사용하면 설정한 채널에 이미지가 올라오며 Discord Proxy 플러그인에서 proxy 처리여부 설정 가능.
 
 
 ### 이미지 서버
 
-- FF는 기본적으로 본인 FF DDNS/images 예)`https://ff.sample.com/images` URL로 `/data/images' 폴더를 라우팅한다.
+- FF는 기본적으로 본인 FF DDNS/images 예)`https://ff.sample.com/images` URL로 `/data/images' 폴더를 라우팅.
 
 - 파일명: 
     - `{code}_p.jpg`: 포스터

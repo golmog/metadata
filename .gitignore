@@ -3,5 +3,5 @@ __pycache__/
 *.pyc
 *.log
 tmp/
-.db-shm
-*.db-wal
+jav_actors2.db-shm
+jav_actors2.db-wal
