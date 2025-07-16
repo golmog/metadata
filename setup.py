@@ -51,11 +51,14 @@ setting = {
                 'name': 'JAV (Censored)',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
+                    {'uri': 'avdbs', 'name': 'Avdbs'},
+                    #{'uri': 'hentaku', 'name': 'Hentaku'},
                     {'uri': 'dmm', 'name': 'DMM'},
                     {'uri': 'mgstage', 'name': 'MGStage'},
                     {'uri': 'jav321', 'name': 'Jav321'},
                     {'uri': 'javdb', 'name': 'JavDB'},
                     {'uri': 'javbus', 'name': 'Javbus'},
+                    {'uri': 'manual/files/jav_censored.md', 'name': '매뉴얼'},
                 ]
             },
             {
@@ -79,7 +82,7 @@ setting = {
 from plugin import *
 
 P = create_plugin_instance(setting)
-
+PLUGIN_ROOT = os.path.dirname(__file__)
 try:
     from .mod_book import ModuleBook
     from .mod_ftv import ModuleFtv
@@ -94,3 +97,4 @@ except Exception as e:
     P.logger.error(traceback.format_exc())
 
 logger = P.logger
+

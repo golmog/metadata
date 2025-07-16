@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOpenBtn', '사이트', [('url','https://hentaku.co')] ]])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<nav>
+
+</nav>
+<form id='setting' name='setting'>
+<div class="tab-content mb-4" id="nav-tabContent">
+   {{ macros.setting_input_text_and_buttons('jav_censored_hentaku_test_name', '테스트', [['jav_censored_hentaku_test_btn', '테스트']], value=arg['jav_censored_hentaku_test_name'], desc=None) }}
+    {{ macros.setting_checkbox('jav_censored_hentaku_use_proxy', 'Proxy 사용', value=arg['jav_censored_hentaku_use_proxy'], desc=['sjva가 해당 사이트에 접속할 수 없을 때 사용']) }}
+    <div id="jav_censored_hentaku_use_proxy_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_hentaku_proxy_url', 'Proxy URL', value=arg['jav_censored_hentaku_proxy_url']) }}
+    </div>
+</div>
+</form>
+
+
+<script type="text/javascript">
+$(document).ready(function(){
+  use_collapse("jav_censored_hentaku_use_proxy");
+});
+
+$('#jav_censored_hentaku_use_proxy').change(function() {use_collapse('jav_censored_hentaku_use_proxy');});
+
+$("body").on('click', '#jav_censored_hentaku_test_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('actor_test', 'hentaku', $('#jav_censored_hentaku_test_name').val());
+});
+
+
+</script>
+{% endblock %}

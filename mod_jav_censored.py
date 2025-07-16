@@ -1,5 +1,5 @@
 from urllib.parse import urlparse
-
+from flask import send_from_directory
 from support_site import (
     SiteDmm,
     SiteAvdbs,
@@ -12,9 +12,7 @@ from support_site import (
     UtilNfo,
     DiscordUtil
 )
-
 from .setup import *
-
 from support import d
 
 class ModuleJavCensored(PluginModuleBase):
@@ -34,29 +32,37 @@ class ModuleJavCensored(PluginModuleBase):
         self.db_default = {
             f"{self.name}_db_version": "1",
             f"{self.name}_order": "dmm, mgstage, jav321, javdb, javbus",
-            f"{self.name}_actor_order": "avdbs, hentaku",
+            f"{self.name}_actor_order": "avdbs",
             f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
             # 통합 이미지 설정
-            f"{self.name}_image_mode": "original", 
+            f"{self.name}_image_mode": "ff_proxy", 
             # 0:원본, 1:SJVA Proxy, 2:Discord Redirect, 3:Discord Proxy, 4:이미지 서버
             # original, ff_proxy, discord_redirect, discord_proxy, image_server
+            # 3개로 정리ff_proxy, discord_proxy, image_server
 
-            f"{self.name}_use_image_server": "False",
-            f"{self.name}_image_server_url": "",
+            f"{self.name}_trans_option": "using", 
+            #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
+
+            #f"{self.name}_use_image_server": "False",
+            f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
             f"{self.name}_image_server_local_path": "/data/images",
+            f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
+
 
             # 디스코드 프록시 서버 관련 설정
             f"{self.name}_use_discord_proxy_server": "False",
             f"{self.name}_discord_proxy_server_url": "",
-
+            f"{self.name}_use_my_webhook": "False",
+            f"{self.name}_my_webhook_list": "",
+            
             # avdbs
-            f"{self.name}_avdbs_use_sjva": "False",
+            #f"{self.name}_avdbs_use_sjva": "False",
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",
             f"{self.name}_avdbs_test_name": "",
             f"{self.name}_avdbs_use_local_db": "False",
-            f"{self.name}_avdbs_local_db_path": "/data/db/jav_actors.db",
+            f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/{P.package_name}/files/jav_actors2.db",
             "jav_actor_img_url_prefix": "",
 
             # hentaku
@@ -71,7 +77,6 @@ class ModuleJavCensored(PluginModuleBase):
             # ['label_and_site', '라벨 + 메타 사이트 태그'], 
             # ['site', '메타 사이트 태그']
             # dmm
-            f"{self.name}_dmm_use_sjva": "False",
             f"{self.name}_dmm_use_proxy": "False",
             f"{self.name}_dmm_proxy_url": "",
             f"{self.name}_dmm_parser_type0_rules": "^\\d(3dsvr)(\\d+)$=>1=>2",
@@ -103,7 +108,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_mgstage_test_code": "abf-010",
 
             # jav321
-            f"{self.name}_jav321_use_sjva": "False",
+            #f"{self.name}_jav321_use_sjva": "False",
             f"{self.name}_jav321_use_proxy": "False",
             f"{self.name}_jav321_proxy_url": "",
             f"{self.name}_jav321_small_image_to_poster": "",
@@ -144,6 +149,63 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_use_extras": "False",
             f"{self.name}_javbus_test_code": "abw-354",
         }
+        
+        try:
+            self.keyword_cache = F.get_cache(f"{P.package_name}_{self.name}_keyword_cache")
+        except Exception as e:
+            self.keyword_cache = {}
+
+    ################################################
+    # region PluginModuleBase 메서드 오버라이드
+
+    def plugin_load(self):
+        self.__set_site_setting()
+    
+    def plugin_load_celery(self):
+        self.__set_site_setting()
+    
+    # 사이트 설정값이 바뀌면 config
+    def setting_save_after(self, change_list):
+        ins_list = []
+        """
+        always_all_set = [
+            "jav_censored_trans_option",
+            "jav_censored_image_mode", 
+            "jav_censored_image_server_url",
+            "jav_censored_image_server_local_path",
+            "jav_censored_use_discord_proxy_server",
+            "jav_censored_discord_proxy_server_url"
+        ]
+        # 굳이???? 
+        for tmp in always_all_set:
+            if tmp in change_list:
+                ins_list = list(self.site_map.values())
+                break
+            if ins_list:
+                break
+        """
+        if True:
+            for key in change_list:
+                if key.endswith("_test_code"):
+                    continue
+                for site, ins in self.site_map.items():
+                    if site in key:
+                        if ins not in ins_list:
+                            ins_list.append(ins)
+                            break
+        self.__set_site_setting(ins_list)
+
+    def __set_site_setting(self, ins_list=None):
+        if ins_list is None:
+            ins_list = self.site_map.values()
+        for ins in ins_list:
+            try:
+                P.logger.debug(f"set_config site {ins.__name__} with settings.")
+                ins.set_config(P.ModelSetting)
+            except Exception as e:
+                P.logger.error(f"Error initializing site {ins}: {str(e)}")
+                #P.logger.error(traceback.format_exc())
+   
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
@@ -202,7 +264,12 @@ class ModuleJavCensored(PluginModuleBase):
                 SiteClass = self.site_map.get(call)
                 if SiteClass:
                     logger.debug(f"Actor Test: Calling {SiteClass.__name__}.get_actor_info with sett: {sett}")
-                    SiteClass.get_actor_info(entity_actor, **sett)
+                    if SiteClass in [SiteAvdbs]:
+                        SiteClass.get_actor_info(entity_actor)
+                    else:
+                        # hentaku 동작하지 않음.
+                        pass
+                        #SiteClass.get_actor_info(entity_actor, **sett)
                 else:
                     logger.error(f"Actor Test: Cannot find SiteClass for call='{call}'")
                     entity_actor['error'] = f"Site class for '{call}' not found."
@@ -217,7 +284,6 @@ class ModuleJavCensored(PluginModuleBase):
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
-
 
     def process_api(self, sub, req):
         call = req.args.get("call", "")
@@ -243,36 +309,22 @@ class ModuleJavCensored(PluginModuleBase):
                 # NFO 다운로드도 search -> info 흐름을 따름
                 search_results = self.search2(keyword, call)
                 if search_results:
-                    self.keyword_cache[search_results[0]['code']] = keyword # 수동 캐싱
+                    self.keyword_cache.set(search_results[0]['code'], keyword) # 수동 캐싱
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
         return None
 
-    #########################################################
+    # endregion PluginModuleBase 메서드 오버라이드
+    ################################################     
 
-    def search2(self, keyword, site, manual=False, site_settings_override=None):
-        SiteClass = self.site_map.get(site, None)
-        if SiteClass is None:
-            return None
-        sett = site_settings_override if site_settings_override is not None else self.__site_settings(site)
-        try:
-            data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett) 
-            if data and data.get("ret") == "success" and data.get("data"):
-                if isinstance(data["data"], list) and data["data"]:
-                    return data["data"]
-                elif not isinstance(data["data"], list):
-                    logger.warning(f"search2: Site '{site}' returned data that is not a list: {type(data['data'])}")
-            # else: # 결과 없거나 실패 시 로그는 SiteClass.search 내부 또는 여기서 처리
-            #    logger.debug(f"No valid results from {site} for '{keyword}'. Response: {data.get('ret') if data else 'None'}")
-        except Exception as e_site_search:
-            logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
-        return None
 
+    ################################################
+    # region SEARCH
 
     def search(self, keyword, manual=False):
         logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
-        self.keyword_cache = {}
+        #self.keyword_cache = {}
         all_results = []
         original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
         
@@ -354,7 +406,7 @@ class ModuleJavCensored(PluginModuleBase):
                     if 'is_priority_label_site' not in item_result_dict:
                         item_result_dict['is_priority_label_site'] = False
                     if 'code' in item_result_dict:
-                        self.keyword_cache[item_result_dict['code']] = keyword
+                        self.keyword_cache.set(item_result_dict['code'], keyword)
 
                     all_results.append(item_result_dict)
 
@@ -445,9 +497,12 @@ class ModuleJavCensored(PluginModuleBase):
                             if info_data_for_hq_check:
                                 ps_url_hq, pl_url_hq = None, None
                                 for thumb_item_hq in info_data_for_hq_check.get('thumb', []):
-                                    if thumb_item_hq.get('aspect') == 'poster': ps_url_hq = thumb_item_hq.get('value')
-                                    if thumb_item_hq.get('aspect') == 'landscape': pl_url_hq = thumb_item_hq.get('value')
-                                    if ps_url_hq and pl_url_hq: break
+                                    if thumb_item_hq.get('aspect') == 'poster': 
+                                        ps_url_hq = thumb_item_hq.get('value')
+                                    if thumb_item_hq.get('aspect') == 'landscape': 
+                                        pl_url_hq = thumb_item_hq.get('value')
+                                    if ps_url_hq and pl_url_hq: 
+                                        break
 
                                 if ps_url_hq and pl_url_hq:
                                     settings_for_hq_proxy = self.__site_settings(site_key_for_hq_check)
@@ -544,6 +599,35 @@ class ModuleJavCensored(PluginModuleBase):
         return final_results_to_return
 
 
+    def search2(self, keyword, site, manual=False, site_settings_override=None):
+        SiteClass = self.site_map.get(site, None)
+        if SiteClass is None:
+            return None
+        sett = site_settings_override if site_settings_override is not None else self.__site_settings(site)
+        try:
+            # TODO
+            if SiteClass in [SiteDmm, SiteJav321]:
+                data = SiteClass.search(keyword, do_trans=manual, manual=manual) 
+            else:    
+                data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett) 
+            if data and data.get("ret") == "success" and data.get("data"):
+                if isinstance(data["data"], list) and data["data"]:
+                    return data["data"]
+                elif not isinstance(data["data"], list):
+                    logger.warning(f"search2: Site '{site}' returned data that is not a list: {type(data['data'])}")
+            # else: # 결과 없거나 실패 시 로그는 SiteClass.search 내부 또는 여기서 처리
+            #    logger.debug(f"No valid results from {site} for '{keyword}'. Response: {data.get('ret') if data else 'None'}")
+        except Exception as e_site_search:
+            logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
+        return None
+
+    # endregion SEARCH
+    ################################################
+
+
+    ################################################
+    # region INFO
+
     def info(self, code, keyword=None):
         if code[1] == "B":
             site = "javbus"
@@ -626,13 +710,13 @@ class ModuleJavCensored(PluginModuleBase):
 
         if "tag" in ret:
             tag_option = P.ModelSetting.get(f"{db_prefix}_tag_option")
-            if tag_option == "0":
+            if tag_option == "not_using":
                 ret["tag"] = []
-            elif tag_option == "1":
+            elif tag_option == "label":
                 label = ret.get("originaltitle", "").split("-")[0] if ret.get("originaltitle") else None
                 if label: ret["tag"] = [label]
                 else: ret["tag"] = []
-            elif tag_option == "3":
+            elif tag_option == "site":
                 tmp = []
                 label = ret.get("originaltitle", "").split("-")[0] if ret.get("originaltitle") else None
                 for _ in ret.get("tag", []):
@@ -641,6 +725,7 @@ class ModuleJavCensored(PluginModuleBase):
                 ret["tag"] = tmp
 
         # === 디스코드 프록시 URL 치환 로직 ===
+        """
         try:
             current_image_mode = P.ModelSetting.get("jav_censored_image_mode")
             use_custom_proxy_server = P.ModelSetting.get_bool("jav_censored_use_discord_proxy_server")
@@ -703,9 +788,10 @@ class ModuleJavCensored(PluginModuleBase):
                         logger.debug(f"Custom Discord proxy server is NOT enabled for code {code}.")
                     if not custom_proxy_url_base:
                         logger.debug(f"Custom Discord proxy server URL is empty for code {code}.")
-
+            
         except Exception as e_rewrite:
             logger.exception(f"Error during Discord URL rewrite for code {code}: {e_rewrite}")
+        """
         # === URL 치환 로직 끝 ===
 
         #logger.debug(f"Final 'ret' dictionary being returned by info() for code {code}:")
@@ -737,7 +823,12 @@ class ModuleJavCensored(PluginModuleBase):
         logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...")
         data = None
         try:
-            data = SiteClass.info(code, **sett)
+            # TODO
+            if SiteClass in [SiteDmm, SiteJav321]:#SiteDmm]:
+                data = SiteClass.info(code) 
+            else:    
+                data = SiteClass.info(code, **sett)
+            
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
@@ -753,6 +844,14 @@ class ModuleJavCensored(PluginModuleBase):
             logger.warning(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 실패. Response ret='{response_ret}', Has data field='{has_data_field}'")
             return None
 
+
+    # endregion INFO
+    ################################################
+
+
+    ################################################
+    # region ACTOR
+
     def process_actor(self, entity_actor):
         actor_site_list = P.ModelSetting.get_list(f"{self.name}_actor_order", ",")
         for site in actor_site_list:
@@ -762,6 +861,9 @@ class ModuleJavCensored(PluginModuleBase):
         if not entity_actor.get("name", None):
             if entity_actor.get("originalname"):
                 entity_actor["name"] = entity_actor.get("originalname")
+
+
+
 
     def process_actor2(self, entity_actor, site, is_avdbs=False) -> bool:
         originalname = entity_actor.get("originalname")
@@ -774,16 +876,14 @@ class ModuleJavCensored(PluginModuleBase):
             logger.warning(f"process_actor2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return False
 
-        #logger.debug(f"process_actor2: '{originalname}' 정보를 사이트 '{site}'에서 조회 시작...")
-        sett = self.__site_settings(site)
-        if is_avdbs:
-            sett['use_local_db'] = P.ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
-            sett['local_db_path'] = P.ModelSetting.get('jav_censored_avdbs_local_db_path')
-            sett['db_image_base_url'] = P.ModelSetting.get('jav_actor_img_url_prefix')
-
         get_info_success = False
         try:
-            get_info_success = SiteClass.get_actor_info(entity_actor, **sett)
+            if SiteClass in [SiteAvdbs]:
+                get_info_success = SiteClass.get_actor_info(entity_actor)
+            else:
+                # hentaku 동작하지 않음.
+                pass
+                #get_info_success = SiteClass.get_actor_info(entity_actor, **sett)
         except Exception as e_getinfo:
             logger.exception(f"process_actor2: 사이트 '{site}'에서 배우 '{originalname}' 정보 조회 중 오류 발생: {e_getinfo}")
             get_info_success = False
@@ -792,11 +892,15 @@ class ModuleJavCensored(PluginModuleBase):
             updated_name = entity_actor.get("name", None)
             updated_thumb = entity_actor.get("thumb", None)
             logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 성공. Name: {updated_name}, Thumb: {bool(updated_thumb)}")
-
             return True
         else:
             # logger.debug(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
             return False
+
+
+    # endregion ACTOR
+    ################################################
+
 
     def __site_settings(self, site: str):
         db_prefix = f"{self.name}_{site}"
@@ -833,6 +937,7 @@ class ModuleJavCensored(PluginModuleBase):
         # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
         return final_settings
 
+
     def __info_settings(self, site: str, code: str, keyword, ps_url=None):
         sett = self.__site_settings(site)
         
@@ -853,3 +958,15 @@ class ModuleJavCensored(PluginModuleBase):
 
         # logger.debug(f"__info_settings for site '{site}', code '{code}': Prepared settings for SiteClass.info: {sett}")
         return sett
+
+
+
+@app.route('/images')
+@app.route('/images/<path:filename>')
+def serve_player(filename='index.html'):
+    dist_path = os.path.join(F.path_data, 'images')
+    file_path = os.path.join(dist_path, filename)
+    if not os.path.exists(file_path) or os.path.isdir(file_path):
+        return send_from_directory(dist_path, 'index.html')
+    return send_from_directory(dist_path, filename)
+

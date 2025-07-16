@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOpenBtn', '사이트', [('url','https://avdbs.com')] ]])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+{{ macros.m_hr_black() }}
+<form id='setting' name='setting'>
+<div class="tab-content mb-4" id="nav-tabContent">
+  {{ macros.setting_input_text_and_buttons('jav_censored_avdbs_test_name', '테스트', [['jav_censored_avdbs_test_btn', '테스트']], value=arg['jav_censored_avdbs_test_name'], desc=['浅野こころ']) }}
+    {{ macros.setting_checkbox('jav_censored_avdbs_use_proxy', 'Proxy 사용', value=arg['jav_censored_avdbs_use_proxy']) }}
+    <div id="jav_censored_avdbs_use_proxy_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_avdbs_proxy_url', 'Proxy URL', value=arg['jav_censored_avdbs_proxy_url']) }}
+    </div>
+    {{ macros.m_hr() }}
+    {{ macros.setting_checkbox('jav_censored_avdbs_use_local_db', '로컬 DB 사용', value=arg['jav_censored_avdbs_use_local_db'], desc=['Avdbs 데이터를 로컬 SQLite DB에서 먼저 조회합니다.'] )}}
+    <div id="jav_censored_avdbs_use_local_db_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_avdbs_local_db_path', '로컬 DB 경로', value=arg['jav_censored_avdbs_local_db_path']) }}
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_text('jav_actor_img_url_prefix', '배우 이미지 서버 URL Prefix', value=arg['jav_actor_img_url_prefix'], desc=['GDS에 이미지 파일이 없을 떄 사용합니다. (현재 설정 불필요)', '', '로컬 DB의 배우 이미지 경로와 조합될 URL 접두사입니다.', '예: https://my.images.com/actor_images', '이 값을 설정하면 DB의 상대 경로와 합쳐 최종 이미지 URL을 만듭니다.'], placeholder='예: https://my.server.com/actor_images') }}
+    </div>
+</div>
+</form>
+
+
+<script type="text/javascript">
+$(document).ready(function(){
+  use_collapse("jav_censored_avdbs_use_proxy");
+  use_collapse("jav_censored_avdbs_use_local_db");
+});
+
+$('#jav_censored_avdbs_use_proxy').change(function() {use_collapse('jav_censored_avdbs_use_proxy');});
+$('#jav_censored_avdbs_use_local_db').change(function() {use_collapse('jav_censored_avdbs_use_local_db');});
+
+$("body").on('click', '#jav_censored_avdbs_test_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('actor_test', 'avdbs', $('#jav_censored_avdbs_test_name').val());
+});
+
+
+</script>
+{% endblock %}

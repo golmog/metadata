@@ -172,7 +172,20 @@ class ModuleRoute(PluginModuleBase):
                 if crop_mode is not None:
                     crop_mode = unquote_plus(crop_mode)
                 ret = SiteUtilAv.discord_proxy_image(image_url, proxy_url=proxy_url, crop_mode=crop_mode)
-                return redirect(ret)             
+                return redirect(ret)    
+
+            elif sub == "jav_image":
+                image_url = unquote_plus(request.args.get("url"))
+                mode = request.args.get("mode")
+                site = request.args.get("site")
+                if mode: 
+                    mode = unquote_plus(mode)
+                return P.get_module("jav_censored").site_map[site].jav_image(image_url, mode=mode)
+            elif sub == "jav_video":
+                image_url = unquote_plus(request.args.get("url"))
+                site = request.args.get("site")
+                return P.get_module("jav_censored").site_map[site].jav_video(image_url)
+
         except Exception as e: 
             logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
