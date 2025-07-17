@@ -852,7 +852,7 @@ class ModuleJavCensored(PluginModuleBase):
 
 @app.route('/images')
 @app.route('/images/<path:filename>')
-def serve_player(filename='index.html'):
+def metadata_images(filename='index.html'):
     dist_path = os.path.join(F.path_data, 'images')
     file_path = os.path.join(dist_path, filename)
     if not os.path.exists(file_path) or os.path.isdir(file_path):
