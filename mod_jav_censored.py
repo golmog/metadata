@@ -60,7 +60,7 @@ class ModuleJavCensored(PluginModuleBase):
             # avdbs
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",
-            f"{self.name}_avdbs_use_local_db": "False",
+            f"{self.name}_avdbs_use_local_db": "True",
             f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/{P.package_name}/files/jav_actors2.db",
             "jav_actor_img_url_prefix": "",
             f"{self.name}_avdbs_test_name": "",
@@ -144,7 +144,7 @@ class ModuleJavCensored(PluginModuleBase):
         
         always_all_set = [
             "jav_censored_use_extras",
-            "jav_censored_max_arts", 
+            "jav_censored_art_count", 
             #"jav_censored_image_server_url",
             #"jav_censored_image_server_local_path",
             #"jav_censored_use_discord_proxy_server",
@@ -832,8 +832,8 @@ class ModuleJavCensored(PluginModuleBase):
         
         db_prefix_info = f"{self.name}_{site}"
 
-        sett["max_arts"] = P.ModelSetting.get_int(f"{db_prefix_info}_art_count")
-        sett["use_extras"] = P.ModelSetting.get_bool(f"{db_prefix_info}_use_extras")
+        sett["max_arts"] = P.ModelSetting.get_int(f"jav_censored_art_count")
+        sett["use_extras"] = P.ModelSetting.get_bool(f"jav_censored_use_extras")
         
         sett["ps_to_poster_labels_str"] = P.ModelSetting.get(f"{db_prefix_info}_small_image_to_poster")
         sett["crop_mode_settings_str"] = P.ModelSetting.get(f"{db_prefix_info}_crop_mode")
