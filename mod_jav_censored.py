@@ -61,7 +61,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",
             f"{self.name}_avdbs_use_local_db": "True",
-            f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/{P.package_name}/files/jav_actors2.db",
+            f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/files/jav_actors2.db",
             "jav_actor_img_url_prefix": "",
             f"{self.name}_avdbs_test_name": "",
 
