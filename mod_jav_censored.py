@@ -3,11 +3,11 @@ from flask import send_from_directory
 from support_site import (
     SiteDmm,
     SiteAvdbs,
-    SiteHentaku,
+    #SiteHentaku,
     SiteJav321,
     SiteJavbus,
     SiteMgstage,
-    SiteUtilAv as SiteUtil,
+    SiteUtil,
     SiteJavdb,
     UtilNfo,
     DiscordUtil
@@ -22,7 +22,7 @@ class ModuleJavCensored(PluginModuleBase):
         self.site_map = {
             "avdbs": SiteAvdbs,
             "dmm": SiteDmm,
-            "hentaku": SiteHentaku,
+            #"hentaku": SiteHentaku,
             "jav321": SiteJav321,
             "javbus": SiteJavbus,
             "mgstage": SiteMgstage,
@@ -84,7 +84,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_dmm_test_code": "ssni-900",
 
             # mgstage
-            f"{self.name}_mgstage_use_sjva": "False",
             f"{self.name}_mgstage_use_proxy": "False",
             f"{self.name}_mgstage_proxy_url": "",
             f"{self.name}_mgstage_small_image_to_poster": "",
@@ -94,7 +93,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_mgstage_test_code": "abf-010",
 
             # jav321
-            #f"{self.name}_jav321_use_sjva": "False",
             f"{self.name}_jav321_use_proxy": "False",
             f"{self.name}_jav321_proxy_url": "",
             f"{self.name}_jav321_small_image_to_poster": "",
@@ -104,7 +102,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_jav321_test_code": "abw-354",
 
             # javdb
-            f"{self.name}_javdb_use_sjva": "False",
             f"{self.name}_javdb_use_proxy": "False",
             f"{self.name}_javdb_proxy_url": "",
             f"{self.name}_javdb_small_image_to_poster": "",
@@ -114,7 +111,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javdb_test_code": "JUFE-487",
 
             # javbus
-            f"{self.name}_javbus_use_sjva": "False",
             f"{self.name}_javbus_use_proxy": "False",
             f"{self.name}_javbus_proxy_url": "",
             f"{self.name}_javbus_small_image_to_poster": "",
@@ -190,10 +186,7 @@ class ModuleJavCensored(PluginModuleBase):
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
-                current_site_settings = self.__site_settings(call)
-                logger.debug(f"process_ajax (test, call='{call}'): current_site_settings['proxy_url'] = {current_site_settings.get('proxy_url')}")
-
-                search_results = self.search2(code, call, manual=True, site_settings_override=current_site_settings)
+                search_results = self.search2(code, call, manual=True)
 
                 if not search_results:
                     ret['ret'] = "warning"
@@ -223,35 +216,17 @@ class ModuleJavCensored(PluginModuleBase):
                 P.ModelSetting.set(f"{db_prefix}_test_name", name)
 
                 entity_actor = {"originalname": name}
-                sett = self.__site_settings(call)
-
-                if call == 'avdbs':
-                    sett['use_local_db'] = P.ModelSetting.get_bool('jav_censored_avdbs_use_local_db')
-                    sett['local_db_path'] = P.ModelSetting.get('jav_censored_avdbs_local_db_path')
-                    sett['db_image_base_url'] = P.ModelSetting.get('jav_actor_img_url_prefix')
-                    sett['site_name_for_db_query'] = call
-
-                # Hentaku에 대한 특별한 설정이 있다면 여기에 추가
-                # elif call == 'hentaku':
-                #    pass
-
                 SiteClass = self.site_map.get(call)
-                if SiteClass:
-                    logger.debug(f"Actor Test: Calling {SiteClass.__name__}.get_actor_info with sett: {sett}")
-                    if SiteClass in [SiteAvdbs]:
-                        SiteClass.get_actor_info(entity_actor)
-                    else:
-                        # hentaku 동작하지 않음.
-                        pass
-                        #SiteClass.get_actor_info(entity_actor, **sett)
-                else:
-                    logger.error(f"Actor Test: Cannot find SiteClass for call='{call}'")
-                    entity_actor['error'] = f"Site class for '{call}' not found."
+                SiteClass.get_actor_info(entity_actor)
                 ret['title'] = f"{arg2} 검색결과"
                 ret['json'] = entity_actor
                 #return jsonify(entity_actor)
             elif command == "rcache_clear":
-                SiteUtil.session.cache.clear()
+                for instance in self.site_map.values():
+                    try:
+                        instance.session.cache.clear()
+                    except Exception as e:
+                        pass
                 return jsonify({"msg": "초기화 성공"})
             return jsonify(ret)
         except Exception as e:
@@ -361,15 +336,19 @@ class ModuleJavCensored(PluginModuleBase):
 
         # --- 3. 각 사이트 검색 (조정된 순서 또는 기본 순서 사용) ---
         for site_key_in_order in site_list_for_current_search: # 조정된 순서 사용
-            if early_exit_triggered: break
+            if early_exit_triggered: 
+                break
 
-            if site_key_in_order not in self.site_map: continue # 이 부분은 위에서 이미 처리 가능
+            if site_key_in_order not in self.site_map: 
+                continue # 이 부분은 위에서 이미 처리 가능
             logger.debug(f"--- Searching on site: {site_key_in_order} (Effective Order) ---")
             
-            # current_site_settings에는 priority_label_setting_str이 포함됨 (__site_settings에서 설정)
-            current_site_settings = self.__site_settings(site_key_in_order)
             
-            data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual, site_settings_override=current_site_settings)
+
+            # current_site_settings에는 priority_label_setting_str이 포함됨 (__site_settings에서 설정)
+            
+            data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual)
+            instance = self.site_map.get(site_key_in_order, None)
 
             if data_from_search2: 
                 logger.debug(f"  Got {len(data_from_search2)} result(s) from {site_key_in_order}")
@@ -479,10 +458,8 @@ class ModuleJavCensored(PluginModuleBase):
                                         break
 
                                 if ps_url_hq and pl_url_hq:
-                                    settings_for_hq_proxy = self.__site_settings(site_key_for_hq_check)
-                                    proxy_url_for_hq_util = settings_for_hq_proxy.get("proxy_url")
-
-                                    poster_pos_result = SiteUtil.has_hq_poster(ps_url_hq, pl_url_hq, proxy_url=proxy_url_for_hq_util)
+                                    
+                                    poster_pos_result = instance.has_hq_poster(ps_url_hq, pl_url_hq)
                                     if poster_pos_result:
                                         logger.debug(f"HQ Check PASSED for {code_for_hq_check} on {site_key_for_hq_check}.")
                                         item_in_all_results_to_update['hq_poster_score_adj'] = 0
@@ -577,13 +554,10 @@ class ModuleJavCensored(PluginModuleBase):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             return None
-        sett = site_settings_override if site_settings_override is not None else self.__site_settings(site)
+
         try:
-            # TODO
-            if SiteClass in [SiteDmm, SiteJav321]:
-                data = SiteClass.search(keyword, do_trans=manual, manual=manual) 
-            else:    
-                data = SiteClass.search(keyword, do_trans=manual, manual=manual, **sett) 
+            data = SiteClass.search(keyword, do_trans=manual, manual=manual) 
+
             if data and data.get("ret") == "success" and data.get("data"):
                 if isinstance(data["data"], list) and data["data"]:
                     return data["data"]
@@ -640,16 +614,19 @@ class ModuleJavCensored(PluginModuleBase):
                 self.process_actor(item)
                 actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
+        instance = self.site_map.get(site, None)
         for item in actors:
             self.process_actor(item)
 
             try:
                 name_ja, name_ko = item.get("originalname"), item.get("name")
                 if name_ja and name_ko:
-                    name_trans = SiteUtil.trans(name_ja)
+                    name_trans = instance.trans(name_ja)
                     if name_trans != name_ko:
-                        if ret.get("plot"): ret["plot"] = ret["plot"].replace(name_trans, name_ko)
-                        if ret.get("tagline"): ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
+                        if ret.get("plot"): 
+                            ret["plot"] = ret["plot"].replace(name_trans, name_ko)
+                        if ret.get("tagline"): 
+                            ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
                         for extra in ret.get("extras") or []:
                             if extra.get("title"): extra["title"] = extra["title"].replace(name_trans, name_ko)
             except Exception:
@@ -706,18 +683,10 @@ class ModuleJavCensored(PluginModuleBase):
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        sett = self.__info_settings(site, code, keyword)
-        sett['url_prefix_segment'] = 'jav/cen'
-
         logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...")
         data = None
         try:
-            # TODO
-            if SiteClass in [SiteDmm, SiteJav321]:#SiteDmm]:
-                data = SiteClass.info(code) 
-            else:    
-                data = SiteClass.info(code, **sett)
-            
+            data = SiteClass.info(code)
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
@@ -791,64 +760,7 @@ class ModuleJavCensored(PluginModuleBase):
     ################################################
 
 
-    def __site_settings(self, site: str):
-        db_prefix = f"{self.name}_{site}"
-        proxy_url = None
-        if P.ModelSetting.get_bool(f"{db_prefix}_use_proxy"):
-            proxy_url = P.ModelSetting.get(f"{db_prefix}_proxy_url")
-
-        final_settings = {
-            "proxy_url": proxy_url,
-            "image_mode": P.ModelSetting.get(f"{self.name}_image_mode"),
-            "use_image_server": P.ModelSetting.get_bool(f"{self.name}_use_image_server"),
-            "image_server_url": P.ModelSetting.get(f"{self.name}_image_server_url"),
-            "image_server_local_path": P.ModelSetting.get(f"{self.name}_image_server_local_path"),
-            "priority_label_setting_str": P.ModelSetting.get(f"{db_prefix}_priority_search_labels") 
-        }
-
-        if site in ['dmm', 'jav321']:
-            final_settings["dmm_parser_rules"] = {
-                "type0_rules": P.ModelSetting.get('jav_censored_dmm_parser_type0_rules'),
-                "type1": P.ModelSetting.get('jav_censored_dmm_parser_type1_labels'),
-                "type2": P.ModelSetting.get('jav_censored_dmm_parser_type2_labels'),
-                "type3": P.ModelSetting.get('jav_censored_dmm_parser_type3_labels'),
-                "type4": P.ModelSetting.get('jav_censored_dmm_parser_type4_labels'),
-            }
-
-        if site in ['mgstage', 'jav321', 'javbus', 'javdb']:
-            setting_key = f"{db_prefix}_maintain_series_number_labels"
-            final_settings["maintain_series_number_labels"] = P.ModelSetting.get(setting_key)
-
-        # logger.debug(f"LOGIC: __site_settings for '{site}' prepared. Contains 'dmm_parser_rules': {'dmm_parser_rules' in final_settings}")
-        # if 'dmm_parser_rules' in final_settings:
-            # logger.debug(f"LOGIC: Content of dmm_parser_rules: {final_settings['dmm_parser_rules']}")
-
-        # logger.debug(f"  Returning final settings for '{site}': proxy_url='{final_settings['proxy_url']}', priority_label='{final_settings['priority_label_setting_str']}'")
-        return final_settings
-
-
-    def __info_settings(self, site: str, code: str, keyword, ps_url=None):
-        sett = self.__site_settings(site)
-        
-        db_prefix_info = f"{self.name}_{site}"
-
-        sett["max_arts"] = P.ModelSetting.get_int(f"jav_censored_art_count")
-        sett["use_extras"] = P.ModelSetting.get_bool(f"jav_censored_use_extras")
-        
-        sett["ps_to_poster_labels_str"] = P.ModelSetting.get(f"{db_prefix_info}_small_image_to_poster")
-        sett["crop_mode_settings_str"] = P.ModelSetting.get(f"{db_prefix_info}_crop_mode")
-
-        if keyword:
-            sett["original_keyword"] = keyword
-
-        # logger.debug(f"LOGIC: __info_settings for '{site}' inherits settings. Contains 'dmm_parser_rules': {'dmm_parser_rules' in sett}")
-        # if 'dmm_parser_rules' in sett:
-        #     logger.debug(f"LOGIC: Content of dmm_parser_rules in info_settings: {sett['dmm_parser_rules']}")
-
-        # logger.debug(f"__info_settings for site '{site}', code '{code}': Prepared settings for SiteClass.info: {sett}")
-        return sett
-
-
+    
 
 @app.route('/images')
 @app.route('/images/<path:filename>')

@@ -10,6 +10,9 @@ Plex, KODI, Jellyfin 등과 연동하여 메타데이터를 제공하는 플러�
 
 
 ## Changelog
+- 1.2.4 (2025.07.27) by soju6jan
+  - jav censored / uncensored.
+<br><br>  
 - 1.2.3 (2025.07.11)
   - jav censored 준비
 <br><br>

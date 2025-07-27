@@ -48,7 +48,7 @@ setting = {
             },
             {
                 'uri': 'jav_censored',
-                'name': 'JAV (Censored)',
+                'name': 'JAV Censored',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
                     {'uri': 'avdbs', 'name': 'Avdbs'},
@@ -59,6 +59,13 @@ setting = {
                     {'uri': 'javdb', 'name': 'JavDB'},
                     {'uri': 'javbus', 'name': 'Javbus'},
                     {'uri': 'manual/files/jav_censored.md', 'name': '매뉴얼'},
+                ]
+            },
+            {
+                'uri': 'jav_uncensored',
+                'name': 'JAV Uncensored',
+                'list': [
+                    {'uri': 'setting', 'name': '설정'},
                 ]
             },
             {
@@ -91,7 +98,8 @@ try:
     from .mod_music_normal import ModuleMusicNormal
     from .mod_route import ModuleRoute
     from .mod_jav_censored import ModuleJavCensored
-    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored])
+    from .mod_jav_uncensored import ModuleJavUncensored
+    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored,ModuleJavUncensored])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())

@@ -185,6 +185,17 @@ class ModuleRoute(PluginModuleBase):
                 image_url = unquote_plus(request.args.get("url"))
                 site = request.args.get("site")
                 return P.get_module("jav_censored").site_map[site].jav_video(image_url)
+            elif sub == "jav_image_un":
+                image_url = unquote_plus(request.args.get("url"))
+                mode = request.args.get("mode")
+                site = request.args.get("site")
+                if mode: 
+                    mode = unquote_plus(mode)
+                return P.get_module("jav_uncensored").site_map[site]['instance'].jav_image(image_url, mode=mode)
+            elif sub == "jav_video_un":
+                image_url = unquote_plus(request.args.get("url"))
+                site = request.args.get("site")
+                return P.get_module("jav_uncensored").site_map[site]['instance'].jav_video(image_url)
 
         except Exception as e: 
             logger.error(f"Exception:{str(e)}")
