@@ -56,7 +56,8 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
             f"{self.name}_image_server_local_path": "/data/images",
             f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
-            
+            f"{self.name}_image_server_rewrite": "True",
+
             # avdbs
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",

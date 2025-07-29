@@ -54,6 +54,8 @@
     {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
   
     {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
+
+    {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일을 있을 때 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
   </div>
 
 
