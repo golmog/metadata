@@ -191,6 +191,8 @@ class ModuleRoute(PluginModuleBase):
                 site = request.args.get("site")
                 if mode: 
                     mode = unquote_plus(mode)
+                if site == 'avdbs':
+                    return P.get_module("jav_censored").site_map[site].jav_image(image_url, mode=mode)  
                 return P.get_module("jav_uncensored").site_map[site]['instance'].jav_image(image_url, mode=mode)
             elif sub == "jav_video_un":
                 image_url = unquote_plus(request.args.get("url"))

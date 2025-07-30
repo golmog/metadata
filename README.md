@@ -10,6 +10,9 @@ Plex, KODI, Jellyfin 등과 연동하여 메타데이터를 제공하는 플러�
 
 
 ## Changelog
+- 1.2.6 (2025.07.30) by soju6jan
+    - avdbs censored 모듈에서 찾도록 수정
+<br><br>    
 - 1.2.5 (2025.07.27) by soju6jan
     - 이미지서버 rewrite 옵션추가.
 <br><br>
