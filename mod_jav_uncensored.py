@@ -13,7 +13,7 @@ from .setup import *
 from support import d
 
 class ModuleJavUncensored(PluginModuleBase):
-    
+
     def __init__(self, P):
         super(ModuleJavUncensored, self).__init__(P, name='jav_uncensored', first_menu='setting')
         self.site_map = {
