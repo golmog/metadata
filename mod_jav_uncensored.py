@@ -46,6 +46,8 @@ class ModuleJavUncensored(PluginModuleBase):
 
         self.db_default = {
             f"{self.name}_db_version": "1",
+            f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
+
             f'{self.name}_1pondo_use_proxy' : 'False',
             f'{self.name}_1pondo_proxy_url' : '',
             f'{self.name}_1pondo_test_code' : '092121_001',
@@ -61,48 +63,45 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2_use_proxy' : 'False',
             f'{self.name}_fc2_proxy_url' : '',
             f'{self.name}_fc2_test_code' : '3669846',
-
         }
-        
+
+
     ################################################
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
         self.__set_site_setting()
-    
+
     def plugin_load_celery(self):
         self.__set_site_setting()
-    
+
     # 사이트 설정값이 바뀌면 config
     def setting_save_after(self, change_list):
         ins_list = []
-        
-        always_all_set = [
-            "jav_censored_use_extras",
-            "jav_censored_art_count", 
-            #"jav_censored_image_server_url",
-            #"jav_censored_image_server_local_path",
-            #"jav_censored_use_discord_proxy_server",
-            #"jav_censored_discord_proxy_server_url"
+
+        # 공통 설정(jav_censored_)이 변경된 경우, 모든 Uncensored 사이트도 다시 로드
+        common_settings = [
+            'jav_censored_image_mode', 'jav_censored_trans_option', 
+            'jav_censored_use_extras', 'jav_censored_art_count',
+            'jav_censored_title_format' 
         ]
-        # 굳이???? 
-        for tmp in always_all_set:
-            if tmp in change_list:
-                ins_list = list(self.site_map.values())
-                break
-            if ins_list:
-                break
-        
-        if True:
+        if any(setting in change_list for setting in common_settings):
+            ins_list = [v['instance'] for v in self.site_map.values()]
+        else:
+            # 기존 로직을 유지하되, Uncensored 관련 설정만 처리하도록 명확화
             for key in change_list:
                 if key.endswith("_test_code"):
                     continue
-                for site, ins in self.site_map.items():
-                    if site in key:
-                        if ins not in ins_list:
-                            ins_list.append(ins)
-                            break
-        self.__set_site_setting(ins_list)
+                if key.startswith(self.name): # jav_uncensored_ 로 시작하는 키만 확인
+                    for site, site_info in self.site_map.items():
+                        if site in key:
+                            instance = site_info['instance']
+                            if instance not in ins_list:
+                                ins_list.append(instance)
+
+        if ins_list:
+            self.__set_site_setting(ins_list)
+
 
     def __set_site_setting(self, ins_list=None):
         if ins_list is None:
@@ -114,25 +113,38 @@ class ModuleJavUncensored(PluginModuleBase):
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")
                 #P.logger.error(traceback.format_exc())
-   
+
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             ret = {'ret': 'success'}
             if command == "test":
                 code = arg2
-                call = arg1 # '1pondo', '10musume', 'heyzo', 'carib'
+                call = arg1 # '1pondo', '10musume', 'heyzo', 'carib', 'fc2'
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
-                search_results = self.search2(code, call, manual=True)
-
-                if not search_results:
-                    ret['ret'] = "warning"
-                    ret['msg'] = f"no results for '{code}'"
+                # 1. 해당 사이트의 인스턴스를 가져온다.
+                site_instance = self.site_map.get(call, {}).get('instance')
+                if not site_instance:
+                    ret['ret'] = 'error'
+                    ret['msg'] = f"Site '{call}' not found."
                     return jsonify(ret)
 
+                # manual=True는 번역을 하지 않고, 프록시 이미지 URL을 생성하는 등의 역할을 한다.
+                search_result_dict = site_instance.search(code, manual=True)
+
+                if not search_result_dict or search_result_dict['ret'] != 'success' or not search_result_dict.get('data'):
+                    ret['ret'] = "warning"
+                    ret['msg'] = f"no results for '{code}' from site '{call}'"
+                    return jsonify(ret)
+
+                search_results = search_result_dict['data']
+
+                # 3. 새로운 시그니처에 맞게 info 함수를 호출한다.
+                # info 함수는 이제 code만 인자로 받는다.
                 info_data = self.info(search_results[0]['code'])
+
                 ret['json'] = {
                     "search": search_results,
                     "info": info_data if info_data else {}
@@ -145,17 +157,30 @@ class ModuleJavUncensored(PluginModuleBase):
 
 
     def process_api(self, sub, req):
-        call = req.args.get("call", "")
-        if sub == "search" and call in ["plex", "kodi"]:
-            keyword = req.args.get("keyword").rstrip("-").strip()
-            manual = req.args.get("manual") == "True"
-            return jsonify(self.search(keyword, manual=manual))
-        if sub == "info":
-            data = self.info(req.args.get("code"))
-            if call == "kodi":
-                data = SiteUtil.info_to_kodi(data)
-            return jsonify(data)
-        return None
+        try:
+            call = req.args.get("call", "")
+            if sub == "search" and call in ["plex", "kodi"]:
+                keyword = req.args.get("keyword", "").rstrip("-").strip()
+                manual = req.args.get("manual") == "True"
+
+                search_result = self.search(keyword, manual=manual)
+                return jsonify(search_result)
+
+            if sub == "info":
+                code = req.args.get("code")
+                data = self.info(code)
+                if call == "kodi" and data:
+                    from support_site import SiteUtil
+                    data = SiteUtil.info_to_kodi(data)
+                return jsonify(data)
+
+            return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
+
+        except Exception as e:
+            logger.error(f"Exception in process_api (sub={sub}): {e}")
+            logger.error(traceback.format_exc())
+
+            return jsonify({'ret': 'exception', 'msg': str(e)}), 500
 
 
     # endregion PluginModuleBase 메서드 오버라이드
@@ -167,24 +192,26 @@ class ModuleJavUncensored(PluginModuleBase):
 
     def search(self, keyword, manual=False):
         logger.debug('uncensored search - keyword:[%s] manual:[%s]', keyword, manual)
-        do_trans = manual
-        
-        for site in self.site_map.values():
-            if any(k in keyword.lower() for k in site['keyword']):
-                instance = site['instance']
-                match = re.search(site['regex'], keyword.lower())
-                data = None
+
+        for site_name, site_info in self.site_map.items():
+            if any(k in keyword.lower() for k in site_info['keyword']):
+                instance = site_info['instance']
+                match = re.search(site_info['regex'], keyword.lower())
+
+                search_code = keyword
                 if match:
-                    code = match.group('code')
-                    if code:
-                        data = instance.search(code, do_trans=do_trans, manual=manual)
-                if data == None:
-                    data = instance.search(keyword.lower(), do_trans=do_trans, manual=manual)
-                if data['ret'] == 'success' and len(data['data']) > 0:
-                    ret = data['data']
-                    ret = sorted(ret, key=lambda k: k['score'], reverse=True)
-                    return ret
-        return
+                    try:
+                        code = match.group('code')
+                        if code: search_code = code
+                    except IndexError: pass
+
+                data = instance.search(search_code, manual=manual)
+
+                if data and data.get('ret') == 'success' and data.get('data'):
+                    return sorted(data['data'], key=lambda k: k.get('score', 0), reverse=True)
+
+        return []
+
 
     def search2(self, keyword, site, manual=False):
         SiteClass = self.site_map.get(site, None)['instance']
@@ -203,7 +230,7 @@ class ModuleJavUncensored(PluginModuleBase):
         except Exception as e_site_search:
             logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
         return None
-    
+
     # endregion SEARCH
     ################################################
 
@@ -213,36 +240,52 @@ class ModuleJavUncensored(PluginModuleBase):
 
     def info(self, code):
         censored_module = P.get_module('jav_censored')
-        for site in self.site_map.values():
-            if site['instance'].site_char == code[1]:
-                instance = site['instance']
-                ret = instance.info(code)
-                if ret['ret'] == 'success':
-                    ret = ret['data']
+        ret = None
+
+        target_instance = None
+        for site_info in self.site_map.values():
+            instance = site_info['instance']
+            if instance.site_char == code[1]:
+                target_instance = instance
                 break
 
-        if ret != None:
-            if ret.get('actor') is not None:
+        if target_instance:
+            res = target_instance.info(code)
+            if res and res['ret'] == 'success':
+                ret = res['data']
+        else:
+            logger.error(f"No site found for site_char '{code[1]}' in code '{code}'")
+            return None # 해당 사이트 없음
+
+        if ret is not None:
+            if ret.get('actor'):
                 for item in ret['actor']:
-                    # self.get_actor_from_server(item) # actor 정보, avdbs 차단 때문에 직접 메타서버로 요청
                     censored_module.process_actor(item)
 
-            ret['title'] = P.ModelSetting.get('jav_censored_title_format').format(
-                originaltitle=ret.get('originaltitle', ''),
-                plot=ret.get('plot', ''),
-                title=ret.get('title', ''),
-                sorttitle=ret.get('sorttitle', ''),
-                country=ret.get('country', ''),
-                premiered=ret.get('premiered', ''),
-                year=ret.get('year', ''),
-                actor=ret['actor'][0]['name'] if ret.get('actor') is not None and len(ret['actor']) > 0 else '',
-                tagline=ret.get('tagline', '')
-            )
+            try:
+                # 타이틀 포맷
+                title_format = P.ModelSetting.get('jav_censored_title_format')
+                ret['title'] = title_format.format(
+                    originaltitle=ret.get('originaltitle', ''),
+                    plot=ret.get('plot', ''),
+                    title=ret.get('title', ''),
+                    sorttitle=ret.get('sorttitle', ''),
+                    country=', '.join(ret.get('country', [])),
+                    premiered=ret.get('premiered', ''),
+                    year=ret.get('year', ''),
+                    actor=ret['actor'][0]['name'] if ret.get('actor') and ret['actor'][0].get('name') else '',
+                    tagline=ret.get('tagline', '')
+                )
+            except Exception as e:
+                logger.error(f"Title formatting error in uncensored info: {e}")
 
-            if P.ModelSetting.get_bool('jav_censored_use_extras') == False:
+            # 부가 영상 사용 여부
+            if not P.ModelSetting.get_bool('jav_censored_use_extras'):
                 ret['extras'] = []
 
             return ret
+        return None
+
 
     # endregion INFO
     ################################################
