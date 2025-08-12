@@ -120,7 +120,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
             f"{self.name}_javbus_test_code": "abw-354",
         }
-        
+
         try:
             self.keyword_cache = F.get_cache(f"{P.package_name}_{self.name}_keyword_cache")
         except Exception as e:
@@ -131,14 +131,16 @@ class ModuleJavCensored(PluginModuleBase):
 
     def plugin_load(self):
         self.__set_site_setting()
-    
+
+
     def plugin_load_celery(self):
         self.__set_site_setting()
-    
+
+
     # 사이트 설정값이 바뀌면 config
     def setting_save_after(self, change_list):
         ins_list = []
-        
+
         always_all_set = [
             "jav_censored_use_extras",
             "jav_censored_art_count", 
@@ -154,7 +156,7 @@ class ModuleJavCensored(PluginModuleBase):
                 break
             if ins_list:
                 break
-        
+
         if True:
             for key in change_list:
                 if key.endswith("_test_code"):
@@ -166,6 +168,7 @@ class ModuleJavCensored(PluginModuleBase):
                             break
         self.__set_site_setting(ins_list)
 
+
     def __set_site_setting(self, ins_list=None):
         if ins_list is None:
             ins_list = self.site_map.values()
@@ -176,7 +179,7 @@ class ModuleJavCensored(PluginModuleBase):
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")
                 #P.logger.error(traceback.format_exc())
-   
+
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
@@ -199,7 +202,7 @@ class ModuleJavCensored(PluginModuleBase):
                     "search": search_results,
                     "info": info_data if info_data else {}
                 }
-                
+
                 # 2025.07.11 by soju6jan 임시 코드
                 # javdb poster pil 객체로 리턴됨.
                 try:
@@ -235,6 +238,7 @@ class ModuleJavCensored(PluginModuleBase):
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 
+
     def process_api(self, sub, req):
         call = req.args.get("call", "")
         if sub == "search" and call in ["plex", "kodi"]:
@@ -248,6 +252,7 @@ class ModuleJavCensored(PluginModuleBase):
             return jsonify(data)
         return None
 
+
     def process_normal(self, sub, req):
         if sub == "nfo_download":
             keyword = req.args.get("code")
@@ -255,7 +260,7 @@ class ModuleJavCensored(PluginModuleBase):
             if call in self.site_map:
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
-                
+
                 # NFO 다운로드도 search -> info 흐름을 따름
                 search_results = self.search2(keyword, call)
                 if search_results:
@@ -264,6 +269,7 @@ class ModuleJavCensored(PluginModuleBase):
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
         return None
+
 
     # endregion PluginModuleBase 메서드 오버라이드
     ################################################     
@@ -302,7 +308,7 @@ class ModuleJavCensored(PluginModuleBase):
                         break # 하나라도 찾으면 더 이상 확인할 필요 없음
             if is_keyword_potentially_priority_for_any_site:
                 logger.debug(f"Keyword label '{current_keyword_label}' is potentially a priority label for at least one site. 조기 종료 조건이 이에 따라 조정됩니다.")
-        
+
         special_priority_site = None # 이 검색어에 대해 특별히 우선 검색할 사이트
         if current_keyword_label:
             logger.debug(f"Search keyword: '{keyword}', Extracted keyword label: '{current_keyword_label}' for dynamic site ordering.")
@@ -318,7 +324,7 @@ class ModuleJavCensored(PluginModuleBase):
                         special_priority_site = site_key_check_priority
                         logger.debug(f"Keyword label '{current_keyword_label}' is a priority for site '{special_priority_site}'. This site will be searched first.")
                         break # 첫 번째로 매칭되는 우선 지정 사이트를 찾으면 중단
-        
+
         # --- 2. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
         if special_priority_site and special_priority_site in site_list_for_current_search:
@@ -343,11 +349,9 @@ class ModuleJavCensored(PluginModuleBase):
             if site_key_in_order not in self.site_map: 
                 continue # 이 부분은 위에서 이미 처리 가능
             logger.debug(f"--- Searching on site: {site_key_in_order} (Effective Order) ---")
-            
-            
 
             # current_site_settings에는 priority_label_setting_str이 포함됨 (__site_settings에서 설정)
-            
+
             data_from_search2 = self.search2(keyword, site_key_in_order, manual=manual)
             instance = self.site_map.get(site_key_in_order, None)
 
@@ -485,6 +489,7 @@ class ModuleJavCensored(PluginModuleBase):
         dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
         lowest_priority = len(priority_list)
 
+
         def get_priority_value_for_sort(item_to_sort):
             site_key_prio = item_to_sort.get('site_key')
             content_type_prio = item_to_sort.get('content_type')
@@ -495,6 +500,7 @@ class ModuleJavCensored(PluginModuleBase):
             if calculated_prio >= lowest_priority: 
                 calculated_prio = dynamic_priority_map.get(site_key_prio, lowest_priority)
             return calculated_prio
+
 
         def get_custom_sort_key_for_final(item_for_final_sort):
             # 1. 지정 레이블 우선 플래그 (True=0, False=1 -> True가 더 먼저 오도록)
@@ -570,6 +576,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
         return None
 
+
     # endregion SEARCH
     ################################################
 
@@ -577,7 +584,7 @@ class ModuleJavCensored(PluginModuleBase):
     ################################################
     # region INFO
 
-    def info(self, code, keyword=None):
+    def info(self, code, keyword=None, fp_meta_mode=False):
         if code[1] == "B":
             site = "javbus"
         elif code[1] == "D":
@@ -597,7 +604,7 @@ class ModuleJavCensored(PluginModuleBase):
             if keyword:
                 logger.debug(f"info: Found keyword '{keyword}' in cache for code '{code}'.")
 
-        ret = self.info2(code, site, keyword)
+        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode)
         if ret is None:
             logger.debug(f"info2 returned None for code: {code}")
             return ret
@@ -610,28 +617,34 @@ class ModuleJavCensored(PluginModuleBase):
 
         actors = ret.get("actor") or []
         actor_names_for_log = []
-        if actors:
+
+        if not fp_meta_mode:
+            if actors:
+                for item in actors:
+                    self.process_actor(item)
+                    actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
+
+            instance = self.site_map.get(site, None)
             for item in actors:
                 self.process_actor(item)
-                actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
-        instance = self.site_map.get(site, None)
-        for item in actors:
-            self.process_actor(item)
+                try:
+                    name_ja, name_ko = item.get("originalname"), item.get("name")
+                    if name_ja and name_ko:
+                        name_trans = instance.trans(name_ja)
+                        if name_trans != name_ko:
+                            if ret.get("plot"): 
+                                ret["plot"] = ret["plot"].replace(name_trans, name_ko)
+                            if ret.get("tagline"): 
+                                ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
+                            for extra in ret.get("extras") or []:
+                                if extra.get("title"): extra["title"] = extra["title"].replace(name_trans, name_ko)
+                except Exception:
+                    logger.exception("오역된 배우 이름이 들어간 항목 수정 중 예외:")
 
-            try:
-                name_ja, name_ko = item.get("originalname"), item.get("name")
-                if name_ja and name_ko:
-                    name_trans = instance.trans(name_ja)
-                    if name_trans != name_ko:
-                        if ret.get("plot"): 
-                            ret["plot"] = ret["plot"].replace(name_trans, name_ko)
-                        if ret.get("tagline"): 
-                            ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
-                        for extra in ret.get("extras") or []:
-                            if extra.get("title"): extra["title"] = extra["title"].replace(name_trans, name_ko)
-            except Exception:
-                logger.exception("오역된 배우 이름이 들어간 항목 수정 중 예외:")
+        else:
+            # logger.debug(f"FP Meta Mode: Skipping actor enrichment for {code}.")
+            pass
 
         # 타이틀 포맷 적용 전 원본 타이틀 임시 저장 (로그용)
         original_calculated_title = ret.get("title", "")
@@ -675,19 +688,20 @@ class ModuleJavCensored(PluginModuleBase):
                     if label is None or _ != label:
                         tmp.append(_)
                 ret["tag"] = tmp
-        
+
         return ret
 
-    def info2(self, code, site, keyword, ps_url=None):
+
+    def info2(self, code, site, keyword, ps_url=None, fp_meta_mode=False):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...")
+        logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode})")
         data = None
         try:
-            data = SiteClass.info(code)
+            data = SiteClass.info(code, fp_meta_mode=fp_meta_mode)
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None

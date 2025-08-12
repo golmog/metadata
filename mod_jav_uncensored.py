@@ -238,7 +238,7 @@ class ModuleJavUncensored(PluginModuleBase):
     ################################################
     # region INFO
 
-    def info(self, code):
+    def info(self, code, fp_meta_mode=False):
         censored_module = P.get_module('jav_censored')
         ret = None
 
@@ -250,7 +250,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 break
 
         if target_instance:
-            res = target_instance.info(code)
+            res = target_instance.info(code, fp_meta_mode=fp_meta_mode)
             if res and res['ret'] == 'success':
                 ret = res['data']
         else:
@@ -258,9 +258,13 @@ class ModuleJavUncensored(PluginModuleBase):
             return None # 해당 사이트 없음
 
         if ret is not None:
-            if ret.get('actor'):
-                for item in ret['actor']:
-                    censored_module.process_actor(item)
+            if not fp_meta_mode:
+                if ret.get('actor'):
+                    for item in ret['actor']:
+                        censored_module.process_actor(item)
+            else:
+                # logger.debug(f"FP Meta Mode: Skipping actor enrichment for {code}.")
+                pass
 
             try:
                 # 타이틀 포맷
