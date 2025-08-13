@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 from flask import send_from_directory
 from support_site import (
@@ -284,14 +285,26 @@ class ModuleJavCensored(PluginModuleBase):
         all_results = []
         original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
         
-        # --- 1. 현재 검색어의 대표 레이블 추출 ---
+        # --- 1. 현재 검색어의 대표 레이블 추출 및 특수 품번 처리 ---
         current_keyword_label = ""
-        if keyword and '-' in keyword:
-            current_keyword_label = keyword.split('-', 1)[0].upper()
-        elif keyword: 
-            match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
-            if match_kw_label: current_keyword_label = match_kw_label.group(1)
+        is_special_format = False
         
+        # 특수 품번 형식 (741h057-g01) 우선 확인
+        special_format_match = re.match(r'^(741[a-z]\d{3})-g\d{2,}$', keyword.lower())
+        if special_format_match:
+            is_special_format = True
+            # 레이블 부분을 정확히 추출 (예: 741h057)
+            current_keyword_label = special_format_match.group(1).upper()
+            # logger.debug(f"Special 품번 format detected. Label set to: '{current_keyword_label}'")
+
+        # 특수 품번이 아닐 경우, 기존의 일반적인 레이블 추출 로직 수행
+        if not is_special_format:
+            if keyword and '-' in keyword:
+                current_keyword_label = keyword.split('-', 1)[0].upper()
+            elif keyword: 
+                match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
+                if match_kw_label: current_keyword_label = match_kw_label.group(1)
+
         # --- is_keyword_potentially_priority_for_any_site 플래그 계산 ---
         is_keyword_potentially_priority_for_any_site = False
         if current_keyword_label: # 대표 레이블이 추출되었을 때만 확인
