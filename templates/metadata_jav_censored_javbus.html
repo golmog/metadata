@@ -16,7 +16,7 @@
 {{ macros.setting_input_textarea('jav_censored_javbus_small_image_to_poster', '포스터 예외처리 1', value=arg['jav_censored_javbus_small_image_to_poster'], row='5', desc=['설정된 레이블은 저화질 썸네일을 포스터로 사용', '구분자 ,']) }}
 {{ macros.setting_input_textarea('jav_censored_javbus_crop_mode', '포스터 예외처리 2', value=arg['jav_censored_javbus_crop_mode'], row='5', desc=['가로 이미지 크롭이 필요한 경우 그 위치를 수동 지정. 예) 레이블: 위치', '위치는 r=오른쪽 l=왼쪽 c=가운데 중 하나. 구분자 Enter']) }}
 {{ macros.m_hr() }}
-{{ macros.setting_input_textarea('jav_censored_javbus_maintain_series_number_labels', '시리즈 넘버 유지 레이블', value=arg.get('jav_censored_javbus_maintain_series_number_labels', ''), row='3', desc=['여기에 입력된 레이블은 품번, 제목, 파일명 등에 시리즈 넘버(숫자 Prefix)를 유지합니다. (예: 436ABF-021)', '주로 중복 레이블 구분용으로 입력합니다(이미지 서버 이용시 파일명에도 적용됨).', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: ABF, GOOD)']) }}
+{{ macros.setting_input_textarea('jav_censored_javbus_priority_search_labels', '지정 레이블 최우선 검색', value=arg['jav_censored_javbus_priority_search_labels'], row='3', desc=['여기에 입력된 레이블의 작품은 javbus 검색 결과를 다른 사이트보다 우선적으로 최상단에 표시하려고 시도합니다.', '쉼표(,)로 구분하여 여러 레이블 입력 가능. (예: DLDSS,LUXU)']) }}
 </div>
 </form>
 

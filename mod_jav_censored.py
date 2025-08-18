@@ -36,6 +36,41 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_actor_order": "avdbs",
             f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
 
+            # special 파서 규칙
+            f"{self.name}_special_parser_custom_rules": """# 3DSVR (예: [VCB] 13dsvr-039.mkv -> 3DSVR-039)
+.*?(3dsvr)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}|{1}
+
+# 741M...-G... (예: 741m683-g02.mp4 -> 741M683-G02)
+.*?(?<![a-z0-9])(741[a-z]\\d{3})[-_]?(g\\d{2,})(?=[^\\d]|\\b) => {0}|{1}
+
+# T28/T38 (예: [Subs] 1t28-635.mkv -> T28-635)
+.*?(?<![a-z])(t)[-_]?(28|38)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
+
+# ID 품번 형식 변경 (예: 55id16045 -> 16ID-045)
+.*?(\\d{2})?(id)[-_]?([1-9]\\d|\\d[1-9])(\\d{3})(?=[^\\d]|\\b) => {2}{1}|{3}
+
+# CPZ...-H... (예: [MyDir] 1cpz69h004 -> CPZ69-H004)
+.*?(?<![a-z])(cpz\\d{2})[-_]?([a-z]\\d+)(?=[^\\d]|\\b) => {0}|{1}
+
+# GAREA (예: G-AREA-123 -> GAREA-123)
+.*?(?<![a-z])(g)[-_](area)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
+
+# SCUTE (예: S-CUTE-1234 -> SCUTE-1234)
+.*?(?<![a-z])(s)[-_](cute)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
+
+# MBRXX (예: MBR-AA-123 -> MBRAA-123)
+.*?(?<![a-z])(mar|mbr|mmr)[-_]([a-z]{2})[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
+
+# TOKYO (예: TOKYO247-123 -> TOKYO-123)
+.*?(?<![a-z])(tokyo)247[-_]?(\\d+)(?=[^\\d]|\\b) => {0}|{1}
+
+# 레이블 앞 3자리 숫자 유지
+.*?(\\d{3})(ap|good|san|ten)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
+
+# 레이블 앞 2자리 숫자 유지
+.*?(\\d{2})(ap|id|ntrd|san|sora|sw|ten)[-_]?(\\d{3,4})(?=[^\\d]|\\b) => {0}{1}|{2}
+""",
+
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
             f"{self.name}_title_format": "[{title}] {tagline}",
@@ -75,11 +110,6 @@ class ModuleJavCensored(PluginModuleBase):
             # dmm
             f"{self.name}_dmm_use_proxy": "False",
             f"{self.name}_dmm_proxy_url": "",
-            f"{self.name}_dmm_parser_type0_rules": "^\\d(3dsvr)(\\d+)$=>1=>2",
-            f"{self.name}_dmm_parser_type1_labels": "AP, GOOD, SAN, TEN",
-            f"{self.name}_dmm_parser_type2_labels": "ID",
-            f"{self.name}_dmm_parser_type3_labels": "AP, ID, NTRD, SAN, SORA, SW, TEN",
-            f"{self.name}_dmm_parser_type4_labels": "",
             f"{self.name}_dmm_small_image_to_poster": "",
             f"{self.name}_dmm_crop_mode": "",
             f"{self.name}_dmm_priority_search_labels": "",
@@ -91,7 +121,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_mgstage_small_image_to_poster": "",
             f"{self.name}_mgstage_crop_mode": "",
             f"{self.name}_mgstage_priority_search_labels": "",
-            f"{self.name}_mgstage_maintain_series_number_labels": "GOOD, TEN",
             f"{self.name}_mgstage_test_code": "abf-010",
 
             # jav321
@@ -100,7 +129,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_jav321_small_image_to_poster": "",
             f"{self.name}_jav321_crop_mode": "",
             f"{self.name}_jav321_priority_search_labels": "",
-            f"{self.name}_jav321_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
             f"{self.name}_jav321_test_code": "abw-354",
 
             # javdb
@@ -109,7 +137,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javdb_small_image_to_poster": "",
             f"{self.name}_javdb_crop_mode": "",
             f"{self.name}_javdb_priority_search_labels": "",
-            f"{self.name}_javdb_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
             f"{self.name}_javdb_test_code": "JUFE-487",
 
             # javbus
@@ -118,7 +145,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_small_image_to_poster": "",
             f"{self.name}_javbus_crop_mode": "",
             f"{self.name}_javbus_priority_search_labels": "",
-            f"{self.name}_javbus_maintain_series_number_labels": "AP, GOOD, ID, NTRD, SAN, SORA, SW, TEN",
             f"{self.name}_javbus_test_code": "abw-354",
         }
 
@@ -173,6 +199,7 @@ class ModuleJavCensored(PluginModuleBase):
     def __set_site_setting(self, ins_list=None):
         if ins_list is None:
             ins_list = self.site_map.values()
+
         for ins in ins_list:
             try:
                 P.logger.debug(f"set_config site {ins.__name__} with settings.")
@@ -714,7 +741,7 @@ class ModuleJavCensored(PluginModuleBase):
         logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode})")
         data = None
         try:
-            data = SiteClass.info(code, fp_meta_mode=fp_meta_mode)
+            data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode)
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
