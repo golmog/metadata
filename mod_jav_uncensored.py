@@ -1,3 +1,5 @@
+import traceback
+
 from urllib.parse import urlparse
 from flask import send_from_directory
 from support_site import (
@@ -46,6 +48,11 @@ class ModuleJavUncensored(PluginModuleBase):
 
         self.db_default = {
             f"{self.name}_db_version": "1",
+
+            # special 파서 규칙 (Uncensored)
+            f"{self.name}_special_parser_custom_rules": """# 작성 필요
+""",
+
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
 
             f'{self.name}_1pondo_use_proxy' : 'False',
@@ -105,14 +112,17 @@ class ModuleJavUncensored(PluginModuleBase):
 
     def __set_site_setting(self, ins_list=None):
         if ins_list is None:
-            ins_list = self.site_map.values()
+            # plugin_load 시 모든 사이트 인스턴스 리스트 생성
+            ins_list = [v['instance'] for v in self.site_map.values()]
+
+        # 항상 인스턴스 리스트를 순회하도록 통일
         for ins in ins_list:
             try:
-                P.logger.debug(f"set_config site {ins['instance'].__name__} with settings.")
-                ins['instance'].set_config(P.ModelSetting)
+                P.logger.debug(f"set_config site {ins.__name__} with settings.")
+                ins.set_config(P.ModelSetting)
             except Exception as e:
-                P.logger.error(f"Error initializing site {ins}: {str(e)}")
-                #P.logger.error(traceback.format_exc())
+                P.logger.error(f"Error initializing site {ins.__name__}: {str(e)}")
+                P.logger.error(traceback.format_exc())
 
 
     def process_command(self, command, arg1, arg2, arg3, req):
@@ -257,38 +267,65 @@ class ModuleJavUncensored(PluginModuleBase):
             logger.error(f"No site found for site_char '{code[1]}' in code '{code}'")
             return None # 해당 사이트 없음
 
-        if ret is not None:
-            if not fp_meta_mode:
-                if ret.get('actor'):
-                    for item in ret['actor']:
-                        censored_module.process_actor(item)
-            else:
-                # logger.debug(f"FP Meta Mode: Skipping actor enrichment for {code}.")
-                pass
+        if ret is None:
+            return None
 
-            try:
-                # 타이틀 포맷
-                title_format = P.ModelSetting.get('jav_censored_title_format')
-                ret['title'] = title_format.format(
-                    originaltitle=ret.get('originaltitle', ''),
-                    plot=ret.get('plot', ''),
-                    title=ret.get('title', ''),
-                    sorttitle=ret.get('sorttitle', ''),
-                    country=', '.join(ret.get('country', [])),
-                    premiered=ret.get('premiered', ''),
-                    year=ret.get('year', ''),
-                    actor=ret['actor'][0]['name'] if ret.get('actor') and ret['actor'][0].get('name') else '',
-                    tagline=ret.get('tagline', '')
-                )
-            except Exception as e:
-                logger.error(f"Title formatting error in uncensored info: {e}")
+        ret["plex_is_proxy_preview"] = True
+        ret["plex_is_landscape_to_art"] = True
+        ret["plex_art_count"] = len(ret.get("fanart", []))
 
-            # 부가 영상 사용 여부
-            if not P.ModelSetting.get_bool('jav_censored_use_extras'):
-                ret['extras'] = []
+        actor_names_for_log = []
+        if not fp_meta_mode:
+            if ret.get('actor'):
+                for item in ret['actor']:
+                    censored_module.process_actor(item)
+                    actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
-            return ret
-        return None
+        original_calculated_title = ret.get("title", "")
+        try: # 타이틀 포맷팅 (jav_censored 모듈의 개선된 방식 적용)
+            title_format = P.ModelSetting.get('jav_censored_title_format')
+            format_dict = {
+                'originaltitle': ret.get("originaltitle", ""),
+                'plot': ret.get("plot", ""),
+                'title': original_calculated_title,
+                'sorttitle': ret.get("sorttitle", ""),
+                'runtime': ret.get("runtime", ""),
+                'country': ', '.join(ret.get("country", [])),
+                'premiered': ret.get("premiered", ""),
+                'year': ret.get("year", ""),
+                'actor': actor_names_for_log[0] if actor_names_for_log else "",
+                'tagline': ret.get("tagline", ""),
+            }
+            ret["title"] = title_format.format(**format_dict)
+        except KeyError as e:
+            logger.error(f"타이틀 포맷팅 오류: 키 '{e}' 없음. 포맷: '{title_format}', 데이터: {format_dict}")
+            ret["title"] = original_calculated_title
+        except Exception as e_fmt:
+            logger.exception(f"타이틀 포맷팅 중 예외 발생: {e_fmt}")
+            ret["title"] = original_calculated_title
+
+        # 태그 옵션 (jav_censored 모듈과 동일한 로직 적용)
+        if "tag" in ret:
+            tag_option = P.ModelSetting.get("jav_censored_tag_option")
+            if tag_option == "not_using":
+                ret["tag"] = []
+            elif tag_option == "label":
+                label = ret.get("originaltitle", "").split("-")[0] if ret.get("originaltitle") else None
+                if label: ret["tag"] = [label]
+                else: ret["tag"] = []
+            elif tag_option == "site":
+                tmp = []
+                label = ret.get("originaltitle", "").split("-")[0] if ret.get("originaltitle") else None
+                for _ in ret.get("tag", []):
+                    if label is None or _ != label:
+                        tmp.append(_)
+                ret["tag"] = tmp
+
+        # 부가 영상 사용 여부 (jav_censored 설정값 사용)
+        if not P.ModelSetting.get_bool('jav_censored_use_extras'):
+            ret['extras'] = []
+
+        return ret
 
 
     # endregion INFO
