@@ -50,7 +50,23 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_db_version": "1",
 
             # special 파서 규칙 (Uncensored)
-            f"{self.name}_special_parser_custom_rules": """# 작성 필요
+            f"{self.name}_special_parser_custom_rules": """# 1pondo
+.*?(?<![0-9])(1pon|1pondo)[-_\\s]?(\\d{6})[-_](\\d{2,3})(?=[^\\d]|\\b) => 1pon|{1}_{2}
+.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?(1pon|1pondo)\\b => 1pon|{0}_{1}
+
+# 10musume
+.*?(?<![0-9])(10mu|10musume)[-_\\s]?(\\d{6})[-_](\\d{2,3})(?=[^\\d]|\\b) => 10mu|{1}_{2}
+.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?(10mu|10musume)\\b => 10mu|{0}_{1}
+
+# Carib
+.*?(?<![a-z])carib(bean)?(com)?[-_\\s]?(\\d{6})[-_]?(\\d{2,3})(?=[^\\d]|\\b) => carib|{2}-{3}
+.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?carib(bean)?(com)?\\b => carib|{0}-{1}
+
+# FC2
+.*?(?<![a-z])fc2[-_\\s]?(ppv)?[-_\\s]?(\\d{5,7})(?=[^\\d]|\\b) => fc2|{1}
+
+# HEYZO
+.*?(?<![a-z])heyzo[-_\\s]?(\\d{4})(?=[^\\d]|\\b) => heyzo|{0}
 """,
 
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
