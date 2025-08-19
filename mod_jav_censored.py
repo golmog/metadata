@@ -74,6 +74,7 @@ class ModuleJavCensored(PluginModuleBase):
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
             f"{self.name}_title_format": "[{title}] {tagline}",
+            f"{self.name}_use_imagehash": "False",
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
