@@ -84,19 +84,13 @@ class ModuleJavUncensored(PluginModuleBase):
         ins_list = []
 
         # 공통 설정(jav_censored_)이 변경된 경우, 모든 Uncensored 사이트도 다시 로드
-        common_settings = [
-            'jav_censored_image_mode', 'jav_censored_trans_option', 
-            'jav_censored_use_extras', 'jav_censored_art_count',
-            'jav_censored_title_format' 
-        ]
-        if any(setting in change_list for setting in common_settings):
+        if any(key.startswith('jav_censored_') for key in change_list):
             ins_list = [v['instance'] for v in self.site_map.values()]
         else:
-            # 기존 로직을 유지하되, Uncensored 관련 설정만 처리하도록 명확화
             for key in change_list:
                 if key.endswith("_test_code"):
                     continue
-                if key.startswith(self.name): # jav_uncensored_ 로 시작하는 키만 확인
+                if key.startswith(self.name):
                     for site, site_info in self.site_map.items():
                         if site in key:
                             instance = site_info['instance']
@@ -112,8 +106,9 @@ class ModuleJavUncensored(PluginModuleBase):
             ins_list = [v['instance'] for v in self.site_map.values()]
 
         censored_module = P.get_module('jav_censored')
+        jav_settings = censored_module.get_jav_settings()
+        parsing_rules = jav_settings.get('jav_parsing_rules', {})
 
-        parsing_rules = censored_module.get_parsing_rules()
         SiteAvBase.set_parsing_rules(parsing_rules)
 
         for ins in ins_list:

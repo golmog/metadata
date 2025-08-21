@@ -45,6 +45,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
+            f"{self.name}_settings_filepath": os.path.join(path_data, 'db', 'metadata_jav_settings.yaml'),
 
             # 이미지 모드
             # 3개로 정리ff_proxy, discord_proxy, image_server
@@ -114,8 +115,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_crop_mode": "",
             f"{self.name}_javbus_priority_search_labels": "",
             f"{self.name}_javbus_test_code": "abw-354",
-
-            "jav_parsing_rules_filepath": os.path.join(path_data, 'db', 'metadata_jav_parsing_rules.yaml'),
         }
 
         try:
@@ -127,7 +126,7 @@ class ModuleJavCensored(PluginModuleBase):
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
-        self.create_default_parsing_rules_yaml()
+        self.create_default_settings_yaml()
         self._set_site_setting()
 
 
@@ -171,16 +170,19 @@ class ModuleJavCensored(PluginModuleBase):
         if ins_list is None:
             ins_list = self.site_map.values()
 
-        # 1. YAML에서 파싱 규칙을 로드
-        parsing_rules = self.get_parsing_rules() # (uncensored는 censored 모듈에서 가져옴)
-        
-        # 2. SiteAvBase 클래스에 파싱 규칙을 전역적으로 설정
+        # 1. 전체 설정 파일을 읽어옴
+        jav_settings = self.get_jav_settings()
+
+        # 2. 파싱 규칙 부분만 추출. 없으면 빈 딕셔너리.
+        parsing_rules = jav_settings.get('jav_parsing_rules', {})
+
+        # 3. 추출된 파싱 규칙을 SiteAvBase에 설정
         SiteAvBase.set_parsing_rules(parsing_rules)
 
         for ins in ins_list:
             try:
                 P.logger.debug(f"set_config site {ins.__name__} with settings.")
-                ins.set_config(P.ModelSetting)
+                ins.set_config(self.P.ModelSetting)
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")
 
@@ -218,7 +220,7 @@ class ModuleJavCensored(PluginModuleBase):
 
                 return jsonify(ret)
 
-            elif command == "reload_parsing_rules":
+            elif command == "reload_jav_settings":
                 logger.debug("수동으로 파싱 규칙을 새로고침합니다 (Censored & Uncensored).")
                 
                 # 1. Censored 모듈의 모든 사이트 설정 갱신
@@ -235,7 +237,7 @@ class ModuleJavCensored(PluginModuleBase):
                 except Exception as e:
                     logger.error(f"Uncensored 모듈의 설정을 새로고침하는 중 오류 발생: {e}")
 
-                ret['msg'] = "모든 JAV 파싱 규칙을 새로고침했습니다."
+                ret['msg'] = "모든 JAV 설정을 새로고침했습니다."
                 return jsonify(ret)
 
             elif command == "actor_test":
@@ -297,34 +299,29 @@ class ModuleJavCensored(PluginModuleBase):
         return None
 
 
-    def create_default_parsing_rules_yaml(self):
-        """통합 파싱 규칙 YAML 파일이 없으면 기본값으로 생성합니다."""
+    def create_default_settings_yaml(self):
+        """통합 설정 YAML 파일이 없으면 기본값으로 생성합니다."""
         try:
-            rules_filepath = self.P.ModelSetting.get("jav_parsing_rules_filepath")
-            if not os.path.exists(rules_filepath):
-                current_module_path = os.path.dirname(__file__)
-                template_path = os.path.join(current_module_path, 'files', 'jav_parsing_rules.yaml')
-
+            settings_filepath = self.P.ModelSetting.get(f"{self.name}_settings_filepath")
+            if not os.path.exists(settings_filepath):
+                template_path = os.path.join(PLUGIN_ROOT, 'files', 'jav_settings_sample.yaml')
                 if os.path.exists(template_path):
-                    os.makedirs(os.path.dirname(rules_filepath), exist_ok=True)
-                    shutil.copyfile(template_path, rules_filepath)
-                    logger.info(f"기본 통합 파싱 규칙 파일을 생성했습니다: {rules_filepath}")
-                else:
-                    logger.warning(f"기본 YAML 템플릿 파일을 찾을 수 없습니다: {template_path}")
+                    os.makedirs(os.path.dirname(settings_filepath), exist_ok=True)
+                    shutil.copyfile(template_path, settings_filepath)
+                    logger.info(f"기본 통합 설정 파일을 생성했습니다: {settings_filepath}")
         except Exception as e:
-            logger.error(f"통합 파싱 규칙 파일 생성 중 오류: {e}")
+            logger.error(f"통합 설정 파일 생성 중 오류: {e}")
 
 
-    def get_parsing_rules(self):
-        """YAML 파일에서 모든 파싱 규칙을 읽어 딕셔너리로 반환합니다."""
-        rules_filepath = self.P.ModelSetting.get("jav_parsing_rules_filepath")
-        if rules_filepath and os.path.exists(rules_filepath):
+    def get_jav_settings(self):
+        """YAML 파일에서 모든 JAV 설정을 읽어 딕셔너리로 반환합니다."""
+        settings_filepath = self.P.ModelSetting.get(f"{self.name}_settings_filepath")
+        if settings_filepath and os.path.exists(settings_filepath):
             try:
-                rules_data = SupportYaml.read_yaml(rules_filepath)
-                return rules_data
+                return SupportYaml.read_yaml(settings_filepath)
             except Exception as e:
-                logger.error(f"파싱 규칙 파일({rules_filepath})을 읽는 중 오류: {e}")
-        return {}
+                logger.error(f"설정 파일({settings_filepath})을 읽는 중 오류: {e}")
+        return {} # 실패 시 빈 딕셔너리 반환
 
 
     # endregion PluginModuleBase 메서드 오버라이드
