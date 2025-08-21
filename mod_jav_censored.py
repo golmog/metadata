@@ -1,7 +1,10 @@
+import os
 import re
+import shutil
 from urllib.parse import urlparse
 from flask import send_from_directory
 from support_site import (
+    SiteAvBase,
     SiteDmm,
     SiteAvdbs,
     #SiteHentaku,
@@ -14,8 +17,7 @@ from support_site import (
     DiscordUtil
 )
 from .setup import *
-from support import d
-
+from support import SupportYaml
 class ModuleJavCensored(PluginModuleBase):
     
     def __init__(self, P):
@@ -35,41 +37,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_order": "dmm, mgstage, jav321, javdb, javbus",
             f"{self.name}_actor_order": "avdbs",
             f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
-
-            # special 파서 규칙
-            f"{self.name}_special_parser_custom_rules": """# 3DSVR (예: [VCB] 13dsvr-039.mkv -> 3DSVR-039)
-.*?(3dsvr)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}|{1}
-
-# 741M...-G... (예: 741m683-g02.mp4 -> 741M683-G02)
-.*?(?<![a-z0-9])(741[a-z]\\d{3})[-_]?(g\\d{2,})(?=[^\\d]|\\b) => {0}|{1}
-
-# T28/T38 (예: [Subs] 1t28-635.mkv -> T28-635)
-.*?(?<![a-z])(t)[-_]?(28|38)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
-
-# ID 품번 형식 변경 (예: 55id16045 -> 16ID-045)
-.*?(\\d{2})?(id)[-_]?([1-9]\\d|\\d[1-9])(\\d{3})(?=[^\\d]|\\b) => {2}{1}|{3}
-
-# CPZ...-H... (예: [MyDir] 1cpz69h004 -> CPZ69-H004)
-.*?(?<![a-z])(cpz\\d{2})[-_]?([a-z]\\d+)(?=[^\\d]|\\b) => {0}|{1}
-
-# GAREA (예: G-AREA-123 -> GAREA-123)
-.*?(?<![a-z])(g)[-_](area)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
-
-# SCUTE (예: S-CUTE-1234 -> SCUTE-1234)
-.*?(?<![a-z])(s)[-_](cute)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
-
-# MBRXX (예: MBR-AA-123 -> MBRAA-123)
-.*?(?<![a-z])(mar|mbr|mmr)[-_]([a-z]{2})[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
-
-# TOKYO (예: TOKYO247-123 -> TOKYO-123)
-.*?(?<![a-z])(tokyo)247[-_]?(\\d+)(?=[^\\d]|\\b) => {0}|{1}
-
-# 레이블 앞 3자리 숫자 유지
-.*?(\\d{3})(ap|good|san|ten)[-_]?(\\d+)(?=[^\\d]|\\b) => {0}{1}|{2}
-
-# 레이블 앞 2자리 숫자 유지
-.*?(\\d{2})(ap|id|ntrd|san|sora|sw|ten)[-_]?(\\d{3,4})(?=[^\\d]|\\b) => {0}{1}|{2}
-""",
 
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
@@ -147,6 +114,8 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_crop_mode": "",
             f"{self.name}_javbus_priority_search_labels": "",
             f"{self.name}_javbus_test_code": "abw-354",
+
+            "jav_parsing_rules_filepath": os.path.join(path_data, 'db', 'metadata_jav_parsing_rules.yaml'),
         }
 
         try:
@@ -158,11 +127,12 @@ class ModuleJavCensored(PluginModuleBase):
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
-        self.__set_site_setting()
+        self.create_default_parsing_rules_yaml()
+        self._set_site_setting()
 
 
     def plugin_load_celery(self):
-        self.__set_site_setting()
+        self._set_site_setting()
 
 
     # 사이트 설정값이 바뀌면 config
@@ -194,12 +164,18 @@ class ModuleJavCensored(PluginModuleBase):
                         if ins not in ins_list:
                             ins_list.append(ins)
                             break
-        self.__set_site_setting(ins_list)
+        self._set_site_setting(ins_list)
 
 
-    def __set_site_setting(self, ins_list=None):
+    def _set_site_setting(self, ins_list=None):
         if ins_list is None:
             ins_list = self.site_map.values()
+
+        # 1. YAML에서 파싱 규칙을 로드
+        parsing_rules = self.get_parsing_rules() # (uncensored는 censored 모듈에서 가져옴)
+        
+        # 2. SiteAvBase 클래스에 파싱 규칙을 전역적으로 설정
+        SiteAvBase.set_parsing_rules(parsing_rules)
 
         for ins in ins_list:
             try:
@@ -207,7 +183,6 @@ class ModuleJavCensored(PluginModuleBase):
                 ins.set_config(P.ModelSetting)
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")
-                #P.logger.error(traceback.format_exc())
 
 
     def process_command(self, command, arg1, arg2, arg3, req):
@@ -242,6 +217,27 @@ class ModuleJavCensored(PluginModuleBase):
                 except Exception as e: pass
 
                 return jsonify(ret)
+
+            elif command == "reload_parsing_rules":
+                logger.debug("수동으로 파싱 규칙을 새로고침합니다 (Censored & Uncensored).")
+                
+                # 1. Censored 모듈의 모든 사이트 설정 갱신
+                self._set_site_setting() 
+                
+                # 2. Uncensored 모듈을 가져와서 설정 갱신 함수 호출
+                try:
+                    uncensored_module = P.get_module('jav_uncensored')
+                    if uncensored_module:
+                        uncensored_module._set_site_setting()
+                        # logger.debug("Uncensored 모듈의 파싱 규칙도 성공적으로 새로고침했습니다.")
+                    else:
+                        logger.warning("Uncensored 모듈을 찾을 수 없습니다.")
+                except Exception as e:
+                    logger.error(f"Uncensored 모듈의 설정을 새로고침하는 중 오류 발생: {e}")
+
+                ret['msg'] = "모든 JAV 파싱 규칙을 새로고침했습니다."
+                return jsonify(ret)
+
             elif command == "actor_test":
                 name = arg2
                 call = arg1 # 'avdbs' 또는 'hentaku'
@@ -254,6 +250,7 @@ class ModuleJavCensored(PluginModuleBase):
                 ret['title'] = f"{arg2} 검색결과"
                 ret['json'] = entity_actor
                 #return jsonify(entity_actor)
+
             elif command == "rcache_clear":
                 for instance in self.site_map.values():
                     try:
@@ -298,6 +295,36 @@ class ModuleJavCensored(PluginModuleBase):
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
         return None
+
+
+    def create_default_parsing_rules_yaml(self):
+        """통합 파싱 규칙 YAML 파일이 없으면 기본값으로 생성합니다."""
+        try:
+            rules_filepath = self.P.ModelSetting.get("jav_parsing_rules_filepath")
+            if not os.path.exists(rules_filepath):
+                current_module_path = os.path.dirname(__file__)
+                template_path = os.path.join(current_module_path, 'files', 'jav_parsing_rules.yaml')
+
+                if os.path.exists(template_path):
+                    os.makedirs(os.path.dirname(rules_filepath), exist_ok=True)
+                    shutil.copyfile(template_path, rules_filepath)
+                    logger.info(f"기본 통합 파싱 규칙 파일을 생성했습니다: {rules_filepath}")
+                else:
+                    logger.warning(f"기본 YAML 템플릿 파일을 찾을 수 없습니다: {template_path}")
+        except Exception as e:
+            logger.error(f"통합 파싱 규칙 파일 생성 중 오류: {e}")
+
+
+    def get_parsing_rules(self):
+        """YAML 파일에서 모든 파싱 규칙을 읽어 딕셔너리로 반환합니다."""
+        rules_filepath = self.P.ModelSetting.get("jav_parsing_rules_filepath")
+        if rules_filepath and os.path.exists(rules_filepath):
+            try:
+                rules_data = SupportYaml.read_yaml(rules_filepath)
+                return rules_data
+            except Exception as e:
+                logger.error(f"파싱 규칙 파일({rules_filepath})을 읽는 중 오류: {e}")
+        return {}
 
 
     # endregion PluginModuleBase 메서드 오버라이드
