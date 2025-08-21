@@ -3,6 +3,7 @@ import traceback
 from urllib.parse import urlparse
 from flask import send_from_directory
 from support_site import (
+    SiteAvBase,
     Site1PondoTv,
     Site10Musume,
     SiteCarib,
@@ -49,26 +50,6 @@ class ModuleJavUncensored(PluginModuleBase):
         self.db_default = {
             f"{self.name}_db_version": "1",
 
-            # special 파서 규칙 (Uncensored)
-            f"{self.name}_special_parser_custom_rules": """# 1pondo
-.*?(?<![0-9])(1pon|1pondo)[-_\\s]?(\\d{6})[-_](\\d{2,3})(?=[^\\d]|\\b) => 1pon|{1}_{2}
-.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?(1pon|1pondo)\\b => 1pon|{0}_{1}
-
-# 10musume
-.*?(?<![0-9])(10mu|10musume)[-_\\s]?(\\d{6})[-_](\\d{2,3})(?=[^\\d]|\\b) => 10mu|{1}_{2}
-.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?(10mu|10musume)\\b => 10mu|{0}_{1}
-
-# Carib
-.*?(?<![a-z])carib(bean)?(com)?[-_\\s]?(\\d{6})[-_]?(\\d{2,3})(?=[^\\d]|\\b) => carib|{2}-{3}
-.*?(?<![0-9])(\\d{6})[-_](\\d{2,3})[-_\\s]?carib(bean)?(com)?\\b => carib|{0}-{1}
-
-# FC2
-.*?(?<![a-z])fc2[-_\\s]?(ppv)?[-_\\s]?(\\d{5,7})(?=[^\\d]|\\b) => fc2|{1}
-
-# HEYZO
-.*?(?<![a-z])heyzo[-_\\s]?(\\d{4})(?=[^\\d]|\\b) => heyzo|{0}
-""",
-
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
 
             f'{self.name}_1pondo_use_proxy' : 'False',
@@ -93,29 +74,23 @@ class ModuleJavUncensored(PluginModuleBase):
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
-        self.__set_site_setting()
+        self._set_site_setting()
 
     def plugin_load_celery(self):
-        self.__set_site_setting()
+        self._set_site_setting()
 
     # 사이트 설정값이 바뀌면 config
     def setting_save_after(self, change_list):
         ins_list = []
 
         # 공통 설정(jav_censored_)이 변경된 경우, 모든 Uncensored 사이트도 다시 로드
-        common_settings = [
-            'jav_censored_image_mode', 'jav_censored_trans_option', 
-            'jav_censored_use_extras', 'jav_censored_art_count',
-            'jav_censored_title_format' 
-        ]
-        if any(setting in change_list for setting in common_settings):
+        if any(key.startswith('jav_censored_') for key in change_list):
             ins_list = [v['instance'] for v in self.site_map.values()]
         else:
-            # 기존 로직을 유지하되, Uncensored 관련 설정만 처리하도록 명확화
             for key in change_list:
                 if key.endswith("_test_code"):
                     continue
-                if key.startswith(self.name): # jav_uncensored_ 로 시작하는 키만 확인
+                if key.startswith(self.name):
                     for site, site_info in self.site_map.items():
                         if site in key:
                             instance = site_info['instance']
@@ -123,18 +98,23 @@ class ModuleJavUncensored(PluginModuleBase):
                                 ins_list.append(instance)
 
         if ins_list:
-            self.__set_site_setting(ins_list)
+            self._set_site_setting(ins_list)
 
 
-    def __set_site_setting(self, ins_list=None):
+    def _set_site_setting(self, ins_list=None):
         if ins_list is None:
-            # plugin_load 시 모든 사이트 인스턴스 리스트 생성
             ins_list = [v['instance'] for v in self.site_map.values()]
 
-        # 항상 인스턴스 리스트를 순회하도록 통일
+        censored_module = P.get_module('jav_censored')
+        jav_settings = censored_module.get_jav_settings()
+        parsing_rules = jav_settings.get('jav_parsing_rules', {})
+
+        SiteAvBase.set_parsing_rules(parsing_rules)
+
         for ins in ins_list:
             try:
                 P.logger.debug(f"set_config site {ins.__name__} with settings.")
+                # 읽어온 규칙을 set_config에 전달
                 ins.set_config(P.ModelSetting)
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins.__name__}: {str(e)}")
