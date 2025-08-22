@@ -45,7 +45,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
-            f"{self.name}_settings_filepath": os.path.join(path_data, 'db', 'metadata_jav_settings.yaml'),
+            "jav_settings_filepath": os.path.join(path_data, 'db', 'metadata_jav_settings.yaml'),
 
             # 이미지 모드
             # 3개로 정리ff_proxy, discord_proxy, image_server
@@ -302,7 +302,7 @@ class ModuleJavCensored(PluginModuleBase):
     def create_default_settings_yaml(self):
         """통합 설정 YAML 파일이 없으면 기본값으로 생성합니다."""
         try:
-            settings_filepath = self.P.ModelSetting.get(f"{self.name}_settings_filepath")
+            settings_filepath = self.P.ModelSetting.get("jav_settings_filepath")
             if not os.path.exists(settings_filepath):
                 template_path = os.path.join(PLUGIN_ROOT, 'files', 'jav_settings_sample.yaml')
                 if os.path.exists(template_path):
@@ -315,7 +315,7 @@ class ModuleJavCensored(PluginModuleBase):
 
     def get_jav_settings(self):
         """YAML 파일에서 모든 JAV 설정을 읽어 딕셔너리로 반환합니다."""
-        settings_filepath = self.P.ModelSetting.get(f"{self.name}_settings_filepath")
+        settings_filepath = self.P.ModelSetting.get("jav_settings_filepath")
         if settings_filepath and os.path.exists(settings_filepath):
             try:
                 return SupportYaml.read_yaml(settings_filepath)
