@@ -683,29 +683,28 @@ class ModuleJavCensored(PluginModuleBase):
         actors = ret.get("actor") or []
         actor_names_for_log = []
 
-        if not fp_meta_mode:
-            if actors:
-                for item in actors:
-                    self.process_actor(item)
-                    actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
-
-            instance = self.site_map.get(site, None)
+        if actors:
             for item in actors:
                 self.process_actor(item)
+                actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
-                try:
-                    name_ja, name_ko = item.get("originalname"), item.get("name")
-                    if name_ja and name_ko:
-                        name_trans = instance.trans(name_ja)
-                        if name_trans != name_ko:
-                            if ret.get("plot"): 
-                                ret["plot"] = ret["plot"].replace(name_trans, name_ko)
-                            if ret.get("tagline"): 
-                                ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
-                            for extra in ret.get("extras") or []:
-                                if extra.get("title"): extra["title"] = extra["title"].replace(name_trans, name_ko)
-                except Exception:
-                    logger.exception("오역된 배우 이름이 들어간 항목 수정 중 예외:")
+        if not fp_meta_mode:
+            instance = self.site_map.get(site, None)
+            if instance:
+                for item in actors:
+                    try:
+                        name_ja, name_ko = item.get("originalname"), item.get("name")
+                        if name_ja and name_ko:
+                            name_trans = instance.trans(name_ja)
+                            if name_trans != name_ko:
+                                if ret.get("plot"): 
+                                    ret["plot"] = ret["plot"].replace(name_trans, name_ko)
+                                if ret.get("tagline"): 
+                                    ret["tagline"] = ret["tagline"].replace(name_trans, name_ko)
+                                for extra in ret.get("extras") or []:
+                                    if extra.get("title"): extra["title"] = extra["title"].replace(name_trans, name_ko)
+                    except Exception:
+                        logger.exception("오역된 배우 이름이 들어간 항목 수정 중 예외:")
 
         else:
             # logger.debug(f"FP Meta Mode: Skipping actor enrichment for {code}.")
