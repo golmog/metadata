@@ -205,20 +205,22 @@ fp_filename_with_ffprobe:
 # 모듈: censored / uncensored / all(생략시 디폴트)
 # ex)
 # meta_custom_path:
-#   - 이름: Decensored
-#     모듈: censored
-#     경로: "/mnt/content/xv/jap/cen/decen"
-#     파일명패턴: |
-#       (
-#         (decen|uncen)|some-pattern
-#         other-pattern
-#       )
-#   - 이름: Maniac
-#     모듈: censored
-#     경로: "/mnt/content/jav/cen/maniac"
-#     레이블: |
-#       13sw 59ten 143ten 741h057
-#       abba abd abnomal acz aczd
+#   처리활성화: False
+#   규칙:
+#     - 이름: Decensored
+#       모듈: censored
+#       경로: "/mnt/content/xv/jap/cen/decen"
+#       파일명패턴: |
+#         (
+#           (decen|uncen)|some-pattern
+#           other-pattern
+#         )
+#     - 이름: Maniac
+#       모듈: censored
+#       경로: "/mnt/content/jav/cen/maniac"
+#       레이블: |
+#         13sw 59ten 143ten 741h057
+#         abba abd abnomal acz aczd
 
 
 # -------------------------------------------------------------------
