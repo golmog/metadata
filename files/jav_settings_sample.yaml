@@ -1,4 +1,4 @@
-# /data/db/metadata_jav_settings.yaml
+# /data/db/jav_custom_settings.yaml
 
 # JAV 메타데이터/파일처리 고급 설정
 # 이 파일에서 파싱 규칙 등 다양한 설정을 관리할 수 있습니다.
@@ -53,6 +53,9 @@ jav_parsing_rules:
 
     # TOKYO (예: TOKYO247-123 -> TOKYO-123)
     - '.*?(?<![a-z])(tokyo)247[-_]?(\d+)(?=[^\d]|\b) => {0}|{1}'
+
+    # WVR8
+    - '.*?\b(wvr8)[-_]?(\d+)(?=[^\d]|\b) => {0}|{1}'
 
     # 레이블 앞 3자리 숫자 유지
     - '.*?(\d{3})(ap|good|san|ten)[-_]?(\d+)(?=[^\d]|\b) => {0}{1}|{2}'
@@ -139,12 +142,8 @@ misc_settings:
 # -------------------------------------------------------------------
 # [고급] ffprobe를 이용한 파일명 포맷팅
 # -------------------------------------------------------------------
-fp_filename_with_ffprobe:
-  # 기능 활성화 여부입니다.
-  # true로 설정하고, 각 모듈(Censored/Uncensored)의 UI에서 
-  # "파일명에 미디어 정보 포함" 체크박스를 켜야 최종적으로 활성화됩니다.
-  enable: true
-
+# '미디어 정보 추가' 옵션의 세부 설정입니다.
+filename_with_media_info:
   # ffprobe 실행 파일의 절대 경로입니다.
   ffprobe_path: /usr/bin/ffprobe
 
@@ -200,27 +199,47 @@ fp_filename_with_ffprobe:
 # -------------------------------------------------------------------
 # 메타 검색 성공 시, 파일의 레이블이 아래 규칙과 일치하면
 # '메타매칭시이동폴더' 대신 여기에 지정된 '경로'로 파일을 이동시킵니다.
-# '폴더포맷'은 지정하지 않으면 기본 설정을 따릅니다.
-# 레이블과 파일명 패턴은 정규표현식을 사용하고, 동시에 사용할 수 있습니다.
-# 모듈: censored / uncensored / all(생략시 디폴트)
-# ex)
-# meta_custom_path:
-#   처리활성화: False
-#   규칙:
-#     - 이름: Decensored
-#       모듈: censored
-#       경로: "/mnt/content/xv/jap/cen/decen"
-#       파일명패턴: |
-#         (
-#           (decen|uncen)|some-pattern
-#           other-pattern
-#         )
-#     - 이름: Maniac
-#       모듈: censored
-#       경로: "/mnt/content/jav/cen/maniac"
-#       레이블: |
-#         13sw 59ten 143ten 741h057
-#         abba abd abnomal acz aczd
+# '경로'를 지정하지 않으면 기본 경로 설정을 따릅니다.
+# '폴더포맷'은 지정하지 않으면 기본 폴더 구조 설정을 따릅니다.
+# '레이블'과 '파일명패턴'은 정규표현식을 사용하고, 동시에 사용할 수 있습니다.
+# '모듈': censored / uncensored / all(생략시 디폴트)
+# '메타실패시강제적용': True/False (True로 설정시 실패경로가 아닌 타겟경로로 이동)
+# 규칙의 각 항목은 중복시 아래쪽에 있는 것을 우선으로 병합됩니다.
+# 개별 설정과 공통 설정을 별도로 작성할 수 있습니다.
+# 폴더 구조 템플릿:
+# {label_1}: 레이블 첫글자. 숫자의 경우 09 / {label}: 레이블 명 / {num_X_Y}: Y 자릿수 패딩 중 앞 3자리 숫자 폴더 생성
+# {year}: MMDDYY 품번 숫자에서 연도를 추출하여 20YY 폴더 생성 / {yymm}: MMDDYY 품번 숫자에서 연월 추출해 YYMM 생성. ex) 083125 -> 2508
+# {code}: 품번 / 기타: {year}, {studio}, {label_lower}, {code_lower}, {studio_lower}, {actor}, {actor_2}, {actor_3}
+meta_custom_path:
+  enable: True
+  규칙:
+    - 이름: uncen_year4
+      모듈: uncensored
+      레이블: '(1pon|10mu|carib)'  # 정규식 패턴
+      폴더포맷: '{label}/{year4}'  # 템플릿
+    - 이름: uncen_num_3_7
+      모듈: uncensored
+      레이블: '(fc2)'
+      폴더포맷: '{label}/{num_3_7}'
+    - 이름: uncen_num_2_4
+      모듈: uncensored
+      레이블: '(heyzo)'
+      폴더포맷: '{label}/{num_2_4}'
+    #- 이름: uncen_meta_path
+    #  모듈: uncensored
+    #  레이블: '(1pon|10mu|carib|fc2|heyzo)'
+    #  경로: '/PATH/TO/JAV/UNCEN/META'
+
+    # ex)
+    #- 이름: CenManiacLabel
+    #  모듈: censored
+    #  레이블: |
+    #    (
+    #      13sw|59ten|143ten|741h057|741m635|741m649|741p015|741p016|741p017|741p020|741p023|
+    #      abba|abd|abnomal|acz|aczd|add|advo|aed|aeg|agd|agr|ahshiro|aldn|alx|amtr|anb|annd|anz|aran|ast|atena|aukb|aukg|auks|aukt|av|avgl|avsa|awd|
+    #      ...
+    #    )
+    #  경로: '/PATH/TO/JAV/CEN/MANIAC'
 
 
 # -------------------------------------------------------------------
@@ -234,9 +253,9 @@ fp_filename_with_ffprobe:
 #   자막파일확장자: ass ssa idx sub sup smi srt ttml vtt
 #   내장자막키워드: 자막 korsub
 #   규칙:
-#     - 이름: Censored
+#     - 이름: cen_subbed
 #       모듈: censored
-#       경로: "/mnt/content/jav/cen/subbed"
-#     - 이름: Uncensored
+#       경로: "/PATH/TO/JAV/CEN/SUBBED"
+#     - 이름: uncen_subbed
 #       모듈: uncensored
-#       경로: "/mnt/content/jav/uncen/subbed"
+#       경로: "/PATH/TO/JAV/UNCEN/SUBBED"

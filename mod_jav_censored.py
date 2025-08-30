@@ -45,7 +45,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
-            "jav_settings_filepath": os.path.join(path_data, 'db', 'metadata_jav_settings.yaml'),
+            "jav_settings_filepath": os.path.join(path_data, 'db', 'jav_custom_settings.yaml'),
 
             # 이미지 모드
             # 3개로 정리ff_proxy, discord_proxy, image_server
