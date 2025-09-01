@@ -10,7 +10,7 @@ from support_site import (
     SiteHeyzo,
     SiteAvdbs,
     SiteUtil,
-    SiteFc2ppvdb
+    SiteFc2com
 )
 from .setup import *
 from support import d
@@ -40,16 +40,17 @@ class ModuleJavUncensored(PluginModuleBase):
                 "keyword": ["carib", "caribbeancom"],
                 "regex": r"(carib|caribbeancom)-(?P<code>\d{6}-\d{3})",
             },
-            "fc2": {
-                "instance": SiteFc2ppvdb,
+            "fc2com": {
+                "instance": SiteFc2com,
                 "keyword": ["fc2", "fc2-ppv"],
-                "regex": r"(fc2|fc2-ppv)-(?P<code>\d{6,7})",
+                "regex": r"(fc2|fc2-ppv)-(?P<code>\d{5,7})",
             },
         }
 
         self.db_default = {
             f"{self.name}_db_version": "1",
 
+            f"{self.name}_selenium_url": "",
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
 
             f'{self.name}_1pondo_use_proxy' : 'False',
@@ -64,9 +65,9 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_carib_use_proxy' : 'False',
             f'{self.name}_carib_proxy_url' : '',
             f'{self.name}_carib_test_code' : '062015-904',
-            f'{self.name}_fc2_use_proxy' : 'False',
-            f'{self.name}_fc2_proxy_url' : '',
-            f'{self.name}_fc2_test_code' : '3669846',
+            f'{self.name}_fc2com_use_proxy' : 'False',
+            f'{self.name}_fc2com_proxy_url' : '',
+            f'{self.name}_fc2com_test_code' : '3669846',
         }
 
 
