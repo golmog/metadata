@@ -36,7 +36,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_db_version": "1",
             f"{self.name}_order": "dmm, mgstage, jav321, javdb, javbus",
             f"{self.name}_actor_order": "avdbs",
-            f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_unknown, jav321, javdb, javbus",
+            f"{self.name}_result_priority_order": "dmm_videoa, mgstage, dmm_dvd, dmm_bluray, dmm_amateur, dmm_unknown, jav321, javdb, javbus",
 
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
