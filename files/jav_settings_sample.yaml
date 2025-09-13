@@ -67,6 +67,10 @@ jav_parsing_rules:
     # 레이블 앞 2자리 숫자 유지
     - '.*?(\d{2})(ap|id|ntrd|san|sora|sw|ten)[-_]?(\d{3,4})(?=[^\d]|\b) => {0}{1}|{2}'
 
+    # 앞에 숫자가 없이 1을 붙여 검색해야 하는 레이블
+    - '.*?(?<![0-9])(sw)[-_]?(\d+)(?=[^\d]|\b) => {0}|{1}|1{0}'
+
+
   # 3. Uncensored 전용 특수 규칙
   uncensored_special_rules:
     # 1pondo
@@ -259,6 +263,7 @@ meta_custom_path:
 #   규칙:
 #     - 이름: cen_subbed
 #       모듈: censored
+#       이동제외패턴: '(decen(sored)?|javplayer|mosaic|no[-_ ]?mask|uncen(sored)?|모자이크)'
 #       경로: "/PATH/TO/JAV/CEN/SUBBED"
 #     - 이름: uncen_subbed
 #       모듈: uncensored
