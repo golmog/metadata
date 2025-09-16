@@ -528,13 +528,24 @@ class ModuleJavCensored(PluginModuleBase):
                                         break
 
                                 if ps_url_hq and pl_url_hq:
-                                    
-                                    poster_pos_result = instance.has_hq_poster(ps_url_hq, pl_url_hq)
-                                    if poster_pos_result:
-                                        logger.debug(f"HQ Check PASSED for {code_for_hq_check} on {site_key_for_hq_check}.")
-                                        item_in_all_results_to_update['hq_poster_score_adj'] = 0
+                                    im_sm_obj_hq = instance.imopen(ps_url_hq)
+                                    im_lg_obj_hq = instance.imopen(pl_url_hq)
+
+                                    if im_sm_obj_hq and im_lg_obj_hq:
+                                        try:
+                                            sm_w, sm_h = im_sm_obj_hq.size
+                                            aspect_ratio_for_check = sm_h / sm_w if sm_w > 0 else 1.4225
+                                            poster_pos_result = instance.has_hq_poster(im_sm_obj_hq, im_lg_obj_hq, aspect_ratio=aspect_ratio_for_check)
+
+                                            if poster_pos_result:
+                                                item_in_all_results_to_update['hq_poster_score_adj'] = 0
+                                            else:
+                                                item_in_all_results_to_update['hq_poster_score_adj'] = -1
+                                        finally:
+                                            if im_sm_obj_hq: im_sm_obj_hq.close()
+                                            if im_lg_obj_hq: im_lg_obj_hq.close()
                                     else:
-                                        logger.debug(f"HQ Check FAILED (has_hq_poster returned None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
+                                        item_in_all_results_to_update['hq_poster_score_adj'] = -1
                                 else:
                                     logger.debug(f"HQ Check SKIPPED (ps_url or pl_url missing) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
                             else:
