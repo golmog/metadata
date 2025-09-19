@@ -468,6 +468,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
+        """
         # 2단계: HQ 포스터 검증 (manual=False 일 때)
         if not manual and all_results:
             logger.debug("--- Starting HQ Poster check ---")
@@ -552,11 +553,12 @@ class ModuleJavCensored(PluginModuleBase):
                                 logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
                         except Exception as e_info_hq_check:
                             logger.error(f"HQ Check Exception for {code_for_hq_check} on {site_key_for_hq_check}: {e_info_hq_check}")
-                            item_in_all_results_to_update['hq_poster_score_adj'] = -2 
+                            item_in_all_results_to_update['hq_poster_score_adj'] = -2
+        """
 
         # 3단계: 조정된 점수 계산
         for item_adj_score in all_results:
-            item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) + item_adj_score.get('hq_poster_score_adj', 0)
+            item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) # + item_adj_score.get('hq_poster_score_adj', 0)
 
         # 4단계: 사용자 정의 우선순위에 따른 정렬
         # logger.debug("--- Starting Custom Priority Sort ---")
@@ -579,15 +581,10 @@ class ModuleJavCensored(PluginModuleBase):
 
 
         def get_custom_sort_key_for_final(item_for_final_sort):
-            # 1. 지정 레이블 우선 플래그 (True=0, False=1 -> True가 더 먼저 오도록)
             label_prio_flag_sort_val = 0 if item_for_final_sort.get('is_priority_label_site') else 1
-
-            # 2. 조정된 점수 (내림차순)
+            # adj_score는 이제 original_score와 동일
             adj_score = -item_for_final_sort.get("adjusted_score", 0) 
-
-            # 3. 일반 우선순위 (jav_censored_result_priority_order 값, 오름차순)
-            prio_val = get_priority_value_for_sort(item_for_final_sort) # 기존 함수 호출
-
+            prio_val = get_priority_value_for_sort(item_for_final_sort)
             return (label_prio_flag_sort_val, adj_score, prio_val)
 
         # 5단계: 사용자 정의 우선순위에 따른 정렬
