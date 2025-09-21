@@ -107,10 +107,11 @@ class ModuleJavUncensored(PluginModuleBase):
             ins_list = [v['instance'] for v in self.site_map.values()]
 
         censored_module = P.get_module('jav_censored')
+        # 1. 전체 설정 파일을 읽어옴
         jav_settings = censored_module.get_jav_settings()
-        parsing_rules = jav_settings.get('jav_parsing_rules', {})
 
-        SiteAvBase.set_parsing_rules(parsing_rules)
+        # 2. YAML에서 읽어온 전체 설정을 SiteAvBase에 설정
+        SiteAvBase.set_yaml_settings(jav_settings)
 
         for ins in ins_list:
             try:
