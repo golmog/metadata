@@ -173,11 +173,8 @@ class ModuleJavCensored(PluginModuleBase):
         # 1. 전체 설정 파일을 읽어옴
         jav_settings = self.get_jav_settings()
 
-        # 2. 파싱 규칙 부분만 추출. 없으면 빈 딕셔너리.
-        parsing_rules = jav_settings.get('jav_parsing_rules', {})
-
-        # 3. 추출된 파싱 규칙을 SiteAvBase에 설정
-        SiteAvBase.set_parsing_rules(parsing_rules)
+        # 2. YAML에서 읽어온 전체 설정을 SiteAvBase에 설정
+        SiteAvBase.set_yaml_settings(jav_settings)
 
         for ins in ins_list:
             try:
