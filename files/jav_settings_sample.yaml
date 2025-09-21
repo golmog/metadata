@@ -114,9 +114,9 @@ jav_parsing_rules:
 jav_image_settings:
   # 이미지 해시 비교 시 사용되는 임계값 (낮을수록 엄격함)
   # - hq_poster_threshold_strict: 단순 비교(is_hq_poster) 시 사용. 텍스트까지 거의 일치해야 할 때. (기본값: 10)
-  # - hq_poster_threshold_normal: 확장 비교(has_hq_poster) 시 사용. 전처리 후 비교하므로 약간 관대함. (기본값: 24)
+  # - hq_poster_threshold_normal: 확장 비교(has_hq_poster) 시 사용. 전처리 후 비교하므로 약간 관대함. (기본값: 30)
   hq_poster_threshold_strict: 10
-  hq_poster_threshold_normal: 24
+  hq_poster_threshold_normal: 30
 
 
 # -------------------------------------------------------------------
