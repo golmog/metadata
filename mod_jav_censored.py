@@ -1,6 +1,8 @@
 import os
 import re
 import shutil
+import traceback
+
 from urllib.parse import urlparse
 from flask import send_from_directory
 from support_site import (
@@ -126,6 +128,17 @@ class ModuleJavCensored(PluginModuleBase):
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
+        try:
+            cache_filepath = os.path.join(path_data, 'db', 'av_cache.sqlite')
+
+            if os.path.exists(cache_filepath):
+                logger.debug(f"AV Cache file found at {cache_filepath}. Deleting for re-initialization.")
+                os.remove(cache_filepath)
+                logger.info("AV Cache file deleted successfully.")
+        except Exception as e:
+            logger.error(f"Failed to delete AV cache file: {e}")
+            logger.error(traceback.format_exc())
+
         self.create_default_settings_yaml()
         self._set_site_setting()
 
