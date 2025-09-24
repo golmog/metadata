@@ -51,6 +51,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_db_version": "1",
 
             f"{self.name}_selenium_url": "",
+            f"{self.name}_selenium_driver_type": "chrome",
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
 
             f'{self.name}_1pondo_use_proxy' : 'False',
