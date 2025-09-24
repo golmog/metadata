@@ -50,6 +50,7 @@
     value=arg['jav_uncensored_selenium_url'],
     desc=['FC2.com 사이트는 JavaScript 보호가 적용되어 Selenium이 필요합니다.', 'Docker Standalone 환경 예: http://selenium:4444/wd/hub 또는 http://localhost:4444/wd/hub', '이 주소가 비어있으면 FC2 사이트 검색 기능이 비활성화됩니다.']
 ) }}
+{{ macros.setting_radio_with_value('jav_uncensored_selenium_driver_type', 'Selenium Type', [['chrome', 'Chrome'], ['firefox', 'Firefox']], value=arg['jav_uncensored_selenium_driver_type'], desc=['Firefox는 proxy 사용시 유저 인증을 지원하지 않습니다.']) }}
 {{ macros.setting_checkbox('jav_uncensored_fc2com_use_proxy', 'fc2com Proxy 사용', value=arg['jav_uncensored_fc2com_use_proxy'], desc=None) }}
 <div id="jav_uncensored_fc2com_use_proxy_div" class="collapse">
 {{ macros.setting_input_text('jav_uncensored_fc2com_proxy_url', 'fc2com Proxy URL', value=arg['jav_uncensored_fc2com_proxy_url']) }}
