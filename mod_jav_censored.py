@@ -771,6 +771,11 @@ class ModuleJavCensored(PluginModuleBase):
                         tmp.append(_)
                 ret["tag"] = tmp
 
+        # 최종 반환 직전, fp_meta_mode에 따라 original 데이터 제거
+        if not fp_meta_mode:
+            if 'original' in ret:
+                del ret['original']
+
         return ret
 
 
