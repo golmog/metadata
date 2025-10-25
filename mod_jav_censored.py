@@ -444,7 +444,7 @@ class ModuleJavCensored(PluginModuleBase):
                     all_results.append(item_result_dict)
 
                     # --- 자동 검색 시 조기 종료 로직 ---
-                    if not manual and item_result_dict['original_score'] == 100:
+                    if not manual and item_result_dict['original_score'] >= 98:
                         current_item_site = item_result_dict.get('site_key')
                         current_item_type = item_result_dict.get('content_type')
                         is_this_item_priority_label_match = item_result_dict.get('is_priority_label_site', False)
@@ -455,19 +455,19 @@ class ModuleJavCensored(PluginModuleBase):
                         elif isinstance(site_early_exit_config, list) and current_item_type in site_early_exit_config: allow_general_early_exit = True
                         
                         if allow_general_early_exit:
-                            # 특별 우선 검색 대상 사이트에서 "지정 레이블" 매칭된 100점 결과가 나왔다면, 즉시 조기 종료.
+                            # 특별 우선 검색 대상 사이트에서 "지정 레이블" 매칭된 98점 이상 결과가 나왔다면, 즉시 조기 종료.
                             if current_item_site == special_priority_site and is_this_item_priority_label_match:
-                                logger.info(f"PRIORITY LABEL match (100-score) found on its designated priority site '{current_item_site}'. Activating early exit for '{keyword}'.")
+                                logger.info(f"PRIORITY LABEL match (score >= 98) found on its designated priority site '{current_item_site}'. Activating early exit for '{keyword}'.")
                                 early_exit_triggered = True
                                 break
-                            # 특별 우선 검색 대상 사이트가 아니거나, 또는 지정 레이블 매칭이 아닌 일반 100점일 경우,
+                            # 특별 우선 검색 대상 사이트가 아니거나, 또는 지정 레이블 매칭이 아닌 일반 98점 이상일 경우,
                             # 그리고 이 검색어 레이블이 다른 사이트에서 우선 지정되지 "않았을" 때만 조기 종료.
                             elif not is_keyword_potentially_priority_for_any_site:
-                                logger.info(f"General 100-score match from '{current_item_site}' (type: {current_item_type}). Activating early exit for '{keyword}'. (Keyword not a priority label for other sites)")
+                                logger.info(f"General high-score (>= 98) match from '{current_item_site}' (type: {current_item_type}). Activating early exit for '{keyword}'. (Keyword not a priority label for other sites)")
                                 early_exit_triggered = True
                                 break
                             elif is_keyword_potentially_priority_for_any_site and not is_this_item_priority_label_match:
-                                logger.info(f"General 100-score match from '{current_item_site}' (type: {current_item_type}). Keyword IS a priority for other sites. Continuing search.")
+                                logger.info(f"General high-score (>= 98) match from '{current_item_site}' (type: {current_item_type}). Keyword IS a priority for other sites. Continuing search.")
 
             if early_exit_triggered:
                 logger.debug("  Early exit triggered. Stopping further site searches.")
