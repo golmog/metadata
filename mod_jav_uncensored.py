@@ -8,9 +8,10 @@ from support_site import (
     Site10Musume,
     SiteCarib,
     SiteHeyzo,
+    SiteFc2com,
     SiteAvdbs,
     SiteUtil,
-    SiteFc2com
+    UtilNfo,
 )
 from .setup import *
 from support import d
@@ -192,6 +193,26 @@ class ModuleJavUncensored(PluginModuleBase):
             return jsonify({'ret': 'exception', 'msg': str(e)}), 500
 
 
+    def process_normal(self, sub, req):
+        if sub == "nfo_download":
+            keyword = req.args.get("code")
+            call = req.args.get("call")
+            if call in self.site_map:
+                db_prefix = f"{self.name}_{call}"
+                P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
+
+                search_results = self.search2(keyword, call)
+                if search_results:
+                    if not hasattr(self, 'keyword_cache'):
+                        self.keyword_cache = {} # 또는 F.get_cache 사용
+                    self.keyword_cache[search_results[0]['code']] = keyword
+                    
+                    info = self.info(search_results[0]["code"])
+                    if info:
+                        return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
+        return None
+
+
     # endregion PluginModuleBase 메서드 오버라이드
     ################################################     
 
@@ -223,12 +244,17 @@ class ModuleJavUncensored(PluginModuleBase):
 
 
     def search2(self, keyword, site, manual=False):
-        SiteClass = self.site_map.get(site, None)['instance']
+        site_info = self.site_map.get(site)
+        if not site_info:
+            logger.warning(f"search2: Site '{site}' not found in site_map.")
+            return None
+        
+        SiteClass = site_info.get('instance')
         if SiteClass is None:
             return None
 
         try:
-            data = SiteClass.search(keyword, do_trans=manual, manual=manual) 
+            data = SiteClass.search(keyword, manual=manual) 
 
             if data and data.get("ret") == "success" and data.get("data"):
                 if isinstance(data["data"], list) and data["data"]:
