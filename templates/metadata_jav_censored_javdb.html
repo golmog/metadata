@@ -6,7 +6,7 @@
 {{ macros.m_row_end() }}
 {{ macros.m_hr_black() }}
 <form id='setting' name='setting'>
-{{ macros.setting_input_text_and_buttons('jav_censored_javdb_test_code', '테스트', [['jav_censored_javdb_test_btn', '테스트']], value=arg['jav_censored_javdb_test_code'], desc=[]) }}
+{{ macros.setting_input_text_and_buttons('jav_censored_javdb_test_code', '테스트', [['jav_censored_javdb_test_btn', '테스트'], ['jav_censored_javdb_nfo_download_btn', 'NFO 다운로드']], value=arg['jav_censored_javdb_test_code'], desc=[]) }}
 {{ macros.setting_checkbox('jav_censored_javdb_use_proxy', 'Proxy 사용', value=arg['jav_censored_javdb_use_proxy'], desc=None) }}
 <div id="jav_censored_javdb_use_proxy_div" class="collapse">
 {{ macros.setting_input_text('jav_censored_javdb_proxy_url', 'Proxy URL', value=arg['jav_censored_javdb_proxy_url']) }}

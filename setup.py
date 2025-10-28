@@ -56,8 +56,8 @@ setting = {
                     {'uri': 'dmm', 'name': 'DMM'},
                     {'uri': 'mgstage', 'name': 'MGStage'},
                     {'uri': 'jav321', 'name': 'Jav321'},
-                    {'uri': 'javdb', 'name': 'JavDB'},
                     {'uri': 'javbus', 'name': 'Javbus'},
+                    {'uri': 'javdb', 'name': 'JavDB'},
                     {'uri': 'manual/files/jav_censored.md', 'name': '매뉴얼'},
                 ]
             },
