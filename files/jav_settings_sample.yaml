@@ -176,6 +176,11 @@ misc_settings:
   video_extensions: .mp4 .mkv .avi .ts .wmv .m2ts .mts .m4v .flv .asf .mpg .ogm .rmvb .mov .webm
   subtitle_extensions: .srt .smi .ass .ssa .idx .sub .sup .ttml .vtt
 
+  # Selenium 설정
+  # selenium_timeout: 요소를 기다리는 최대 시간입니다.(기본값: 10)
+  selenium_timeout: 10
+
+
 # -------------------------------------------------------------------
 # [고급] ffprobe를 이용한 파일명 포맷팅
 # -------------------------------------------------------------------
