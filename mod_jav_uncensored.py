@@ -72,6 +72,11 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2com_test_code' : '3669846',
         }
 
+        try:
+            self.keyword_cache = F.get_cache(f"{P.package_name}_{self.name}_keyword_cache")
+        except Exception as e:
+            self.keyword_cache = {}
+
 
     ################################################
     # region PluginModuleBase 메서드 오버라이드
@@ -210,6 +215,20 @@ class ModuleJavUncensored(PluginModuleBase):
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
+
+        elif sub == "yaml_download":
+            keyword = req.args.get("code")
+            call = req.args.get("call")
+            if call in self.site_map:
+                search_results = self.search2(keyword, call)
+                if search_results:
+                    if not hasattr(self, 'keyword_cache'):
+                        self.keyword_cache = {}
+                    self.keyword_cache[search_results[0]['code']] = keyword
+
+                    info = self.info(search_results[0]["code"])
+                    if info:
+                        return UtilNfo.make_yaml_movie(info, output="file", filename=f"{info['originaltitle'].upper()}.yaml")
         return None
 
 
