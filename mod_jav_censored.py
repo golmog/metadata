@@ -197,6 +197,38 @@ class ModuleJavCensored(PluginModuleBase):
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")
 
 
+    def _sort_search_results(self, search_results_raw, call_site=None):
+        """
+        검색 결과 리스트를 사용자 정의 우선순위에 따라 정렬합니다.
+        """
+        if not search_results_raw:
+            return []
+
+        priority_string = P.ModelSetting.get('jav_censored_result_priority_order')
+        priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
+        dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
+        lowest_priority = len(priority_list)
+
+        def get_priority_value(item_to_sort):
+            site_key = item_to_sort.get('site_key', call_site)
+            content_type = item_to_sort.get('content_type')
+            
+            # dmm_videoa 와 같은 복합 키를 먼저 시도
+            if site_key == 'dmm' and content_type:
+                type_specific_key = f"dmm_{content_type}"
+                if type_specific_key in dynamic_priority_map:
+                    return dynamic_priority_map[type_specific_key]
+            
+            # 사이트 키로 폴백
+            return dynamic_priority_map.get(site_key, lowest_priority)
+
+        def get_sort_key(item):
+            # 점수가 높을수록, 우선순위 값이 낮을수록(앞에 있을수록) 먼저 정렬
+            return (-item.get("score", 0), get_priority_value(item))
+
+        return sorted(search_results_raw, key=get_sort_key)
+
+
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             ret = {'ret': 'success'}
@@ -206,13 +238,17 @@ class ModuleJavCensored(PluginModuleBase):
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
-                search_results = self.search2(code, call, manual=True)
+                search_results_raw = self.search2(code, call, manual=True)
 
-                if not search_results:
+                if not search_results_raw:
                     ret['ret'] = "warning"
                     ret['msg'] = f"no results for '{code}'"
                     return jsonify(ret)
 
+                # 검색 결과 우선순위 정렬
+                search_results = self._sort_search_results(search_results_raw, call_site=call)
+
+                # 정렬된 결과의 첫 번째 아이템을 사용하여 info 조회
                 info_data = self.info(search_results[0]['code'], keyword=code)
                 ret['json'] = {
                     "search": search_results,
@@ -220,7 +256,6 @@ class ModuleJavCensored(PluginModuleBase):
                 }
 
                 # 2025.07.11 by soju6jan 임시 코드
-                # javdb poster pil 객체로 리턴됨.
                 try:
                     if call == "javdb":
                         if isinstance(ret['json']['info']['thumb'][0]
@@ -299,13 +334,27 @@ class ModuleJavCensored(PluginModuleBase):
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
 
-                # NFO 다운로드도 search -> info 흐름을 따름
-                search_results = self.search2(keyword, call)
-                if search_results:
-                    self.keyword_cache.set(search_results[0]['code'], keyword) # 수동 캐싱
+                search_results_raw = self.search2(keyword, call)
+                if search_results_raw:
+                    search_results = self._sort_search_results(search_results_raw, call_site=call)
+                    
+                    self.keyword_cache.set(search_results[0]['code'], keyword)
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
+
+        elif sub == "yaml_download":
+            keyword = req.args.get("code")
+            call = req.args.get("call")
+            if call in self.site_map:
+                search_results_raw = self.search2(keyword, call)
+                if search_results_raw:
+                    search_results = self._sort_search_results(search_results_raw, call_site=call)
+
+                    self.keyword_cache.set(search_results[0]['code'], keyword)
+                    info = self.info(search_results[0]["code"])
+                    if info:
+                        return UtilNfo.make_yaml_movie(info, output="file", filename=f"{info['originaltitle'].upper()}.yaml")
         return None
 
 

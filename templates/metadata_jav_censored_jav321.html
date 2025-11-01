@@ -8,7 +8,7 @@
 
 <form id='setting' name='setting'>
 <div class="tab-content mb-4" id="nav-tabContent">
-{{ macros.setting_input_text_and_buttons('jav_censored_jav321_test_code', '테스트', [['jav_censored_jav321_test_btn', '테스트'], ['jav_censored_jav321_nfo_download_btn', 'NFO 다운로드']], value=arg['jav_censored_jav321_test_code'], desc=None) }}
+{{ macros.setting_input_text_and_buttons('jav_censored_jav321_test_code', '테스트', [['jav_censored_jav321_test_btn', '테스트'], ['jav_censored_jav321_nfo_download_btn', 'NFO 다운로드'], ['jav_censored_jav321_yaml_download_btn', 'YAML 다운로드']], value=arg['jav_censored_jav321_test_code'], desc=None) }}
 {{ macros.setting_checkbox('jav_censored_jav321_use_proxy', 'Proxy 사용', value=arg['jav_censored_jav321_use_proxy'], desc=None) }}
 <div id="jav_censored_jav321_use_proxy_div" class="collapse">
 {{ macros.setting_input_text('jav_censored_jav321_proxy_url', 'Proxy URL', value=arg['jav_censored_jav321_proxy_url']) }}
@@ -44,6 +44,12 @@ $("body").on('click', '#jav_censored_jav321_nfo_download_btn', function(e){
   e.preventDefault();
   code = document.getElementById("jav_censored_jav321_test_code").value;
   window.location.href = '/metadata/normal/jav_censored/nfo_download?call=jav321&code=' + code;
+});
+
+$("body").on('click', '#jav_censored_jav321_yaml_download_btn', function(e){
+  e.preventDefault();
+  code = document.getElementById("jav_censored_jav321_test_code").value;
+  window.location.href = '/metadata/normal/jav_censored/yaml_download?call=jav321&code=' + code;
 });
 
 </script>    
