@@ -66,6 +66,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_image_server_rewrite": "True",
 
             # avdbs
+            f"{self.name}_avdbs_use_web_search": "False",
             f"{self.name}_avdbs_use_proxy": "False",
             f"{self.name}_avdbs_proxy_url": "",
             f"{self.name}_avdbs_use_local_db": "True",
