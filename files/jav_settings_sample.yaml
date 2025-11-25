@@ -160,9 +160,9 @@ misc_settings:
   allowed_numeric_labels: '^(741|1pon|10mu).*?'
 
   # PLEX MATE 스캔('On'일 때) 세부설정
-  # True: 메타 매칭 결과가 없어도 스캔
-  # False: 메타 매칭 결과가 없으면 스캔 생략
-  scan_with_no_meta: True
+  # True : 메타 매칭 실패 경로도 스캔
+  # False: 메타 매칭 실패 경로는 스캔 생략
+  scan_with_no_meta: False
 
   # 메타 검색에 사용할 사이트와 통과 기준 점수를 지정할 수 있습니다(Censored 전용 설정).
   # 이 설정이 없으면 설정 UI의 '정상 매칭 판단에 DMM+MGS만 사용' 옵션에 따르며, 통과 점수는 95점이 됩니다.
