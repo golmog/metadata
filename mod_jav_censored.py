@@ -47,6 +47,11 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
+
+            f"{self.name}_selenium_url": "", 
+            f"{self.name}_selenium_driver_type": "chrome",
+            f"{self.name}_flaresolverr_url": "",
+
             "jav_settings_filepath": os.path.join(path_data, 'db', 'jav_custom_settings.yaml'),
 
             # 이미지 모드
@@ -106,6 +111,8 @@ class ModuleJavCensored(PluginModuleBase):
             # javdb
             f"{self.name}_javdb_use_proxy": "False",
             f"{self.name}_javdb_proxy_url": "",
+            f"{self.name}_javdb_use_selenium": "False",
+            f"{self.name}_javdb_use_flaresolverr": "False",
             f"{self.name}_javdb_small_image_to_poster": "",
             f"{self.name}_javdb_crop_mode": "",
             f"{self.name}_javdb_priority_search_labels": "",

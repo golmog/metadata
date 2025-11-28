@@ -44,13 +44,7 @@
 {{ macros.m_hr() }}
 
 {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_test_code', 'fc2 테스트 품번', [['jav_uncensored_fc2com_test_btn', '테스트'], ['jav_uncensored_fc2com_nfo_download_btn', 'NFO 다운로드'], ['jav_uncensored_fc2com_yaml_download_btn', 'YAML 다운로드']], value=arg['jav_uncensored_fc2com_test_code'], desc=None) }}
-{{ macros.setting_input_text(
-    'jav_uncensored_selenium_url', 
-    'FC2용 Selenium 서버 주소', 
-    value=arg['jav_uncensored_selenium_url'],
-    desc=['FC2.com 사이트는 JavaScript 보호가 적용되어 Selenium이 필요합니다.', 'Docker Standalone 환경 예: http://selenium:4444/wd/hub 또는 http://localhost:4444/wd/hub', '이 주소가 비어있으면 FC2 사이트 검색 기능이 비활성화됩니다.']
-) }}
-{{ macros.setting_radio_with_value('jav_uncensored_selenium_driver_type', 'Selenium Type', [['chrome', 'Chrome'], ['firefox', 'Firefox']], value=arg['jav_uncensored_selenium_driver_type'], desc=['Firefox는 proxy 사용시 유저 인증을 지원하지 않습니다.']) }}
+{{ macros.info_text('Selenium 설정', 'fc2com Selenium', desc=['Selenium 설정은 Censored 플러그인의 전역 설정을 따릅니다.', '메타데이터 > JAV Censored > 설정 탭에서 Selenium URL을 설정하세요.']) }}
 {{ macros.setting_checkbox('jav_uncensored_fc2com_use_proxy', 'fc2com Proxy 사용', value=arg['jav_uncensored_fc2com_use_proxy'], desc=None) }}
 <div id="jav_uncensored_fc2com_use_proxy_div" class="collapse">
 {{ macros.setting_input_text('jav_uncensored_fc2com_proxy_url', 'fc2com Proxy URL', value=arg['jav_uncensored_fc2com_proxy_url']) }}
