@@ -40,25 +40,31 @@
   {{ macros.m_hr() }}
   {{ macros.setting_radio_with_value('jav_censored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_censored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용']) }}
 
-<div id="jav_censored_use_discord_proxy_div" class="collapse">
-  {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다.', '미사용시 일정시간 이후 url이 작동하지 않습니다.']) }}
+  <div id="jav_censored_use_discord_proxy_div" class="collapse">
+    {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다.', '미사용시 일정시간 이후 url이 작동하지 않습니다.']) }}
 
-  {{ macros.setting_input_text('jav_censored_discord_proxy_server_url', '디스코드 Proxy 서버(FF) 주소', value=arg['jav_censored_discord_proxy_server_url'], placeholder='예: https://ff.my-domain.com (끝에 / 없이 입력)') }}
+    {{ macros.setting_input_text('jav_censored_discord_proxy_server_url', '디스코드 Proxy 서버(FF) 주소', value=arg['jav_censored_discord_proxy_server_url'], placeholder='예: https://ff.my-domain.com (끝에 / 없이 입력)') }}
 
-  {{ macros.setting_checkbox('jav_censored_use_my_webhook', '본인 웹훅 사용', value=arg['jav_censored_use_my_webhook'], desc=['Off: FF 내장된 웹훅 사용']) }}
+    {{ macros.setting_checkbox('jav_censored_use_my_webhook', '본인 웹훅 사용', value=arg['jav_censored_use_my_webhook'], desc=['Off: FF 내장된 웹훅 사용']) }}
 
-  {{ macros.setting_input_textarea('jav_censored_my_webhook_list', '디스코드 웹훅', value=arg['jav_censored_my_webhook_list'], row='5', desc=['연령 제한 채널 설정 필수', '구분자 엔터']) }}
-</div>
+    {{ macros.setting_input_textarea('jav_censored_my_webhook_list', '디스코드 웹훅', value=arg['jav_censored_my_webhook_list'], row='5', desc=['연령 제한 채널 설정 필수', '구분자 엔터']) }}
+  </div>
 
-<div id="jav_censored_use_image_server_div" class="collapse">
-  {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com', desc=['FF DDNS/images URL은 /data/images 폴더를 라우팅합니다.']) }}
-  
-  {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
+  <div id="jav_censored_use_image_server_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://image.example.com', desc=['FF DDNS/images URL은 /data/images 폴더를 라우팅합니다.']) }}
+    
+    {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
 
-  {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
+    {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
 
-  {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일이 있어도 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
-</div>
+    {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일이 있어도 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
+  </div>
+
+  {{ macros.m_hr() }}
+  {{ macros.info_text('Selenium 설정', '') }}
+  {{ macros.setting_input_text('jav_censored_selenium_url', 'Selenium URL', value=arg['jav_censored_selenium_url'], desc=['Selenium 서버 URL (예: http://selenium:4444/wd/hub)']) }}
+  {{ macros.setting_radio_with_value('jav_censored_selenium_driver_type', 'Driver Type', [['chrome', 'Chrome'], ['firefox', 'Firefox']], value=arg['jav_censored_selenium_driver_type']) }}
+  {{ macros.setting_input_text('jav_censored_flaresolverr_url', 'FlareSolverr URL', value=arg['jav_censored_flaresolverr_url'], desc=['FlareSolverr API 주소 (예: http://flaresolverr:8191)', '설정 시 JavDB 등 Cloudflare 보호 사이트에 대해 Selenium보다 우선 사용됩니다.']) }}
 
   {{ macros.m_hr() }}
   {{ macros.setting_input_text_and_buttons(
