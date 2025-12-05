@@ -6,6 +6,7 @@ from support_site import (
     SiteAvBase,
     Site1PondoTv,
     Site10Musume,
+    SitePaco,
     SiteCarib,
     SiteHeyzo,
     SiteFc2com,
@@ -30,6 +31,11 @@ class ModuleJavUncensored(PluginModuleBase):
                 "instance": Site10Musume,
                 "keyword": ["10mu"],
                 "regex": r"10mu-(?P<code>\d{6}_\d{2})",
+            },
+            "paco": {
+                "instance": SitePaco,
+                "keyword": ["paco", "pacopacom", "pacopacomama"],
+                "regex": r"(paco|pacopacom|pacopacomama)-(?P<code>\d{6}_\d{3})",
             },
             "heyzo": {
                 "instance": SiteHeyzo,
@@ -58,15 +64,23 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_1pondo_use_proxy' : 'False',
             f'{self.name}_1pondo_proxy_url' : '',
             f'{self.name}_1pondo_test_code' : '092121_001',
+
             f'{self.name}_10musume_use_proxy' : 'False',
             f'{self.name}_10musume_proxy_url' : '',
             f'{self.name}_10musume_test_code' : '010620_01',
+
+            f'{self.name}_paco_use_proxy' : 'False',
+            f'{self.name}_paco_proxy_url' : '',
+            f'{self.name}_paco_test_code' : '111825_100',
+
             f'{self.name}_heyzo_use_proxy' : 'False',
             f'{self.name}_heyzo_proxy_url' : '',
             f'{self.name}_heyzo_test_code' : 'HEYZO-2681',
+
             f'{self.name}_carib_use_proxy' : 'False',
             f'{self.name}_carib_proxy_url' : '',
             f'{self.name}_carib_test_code' : '062015-904',
+
             f'{self.name}_fc2com_use_proxy' : 'False',
             f'{self.name}_fc2com_proxy_url' : '',
             f'{self.name}_fc2com_test_code' : '3669846',
@@ -209,8 +223,11 @@ class ModuleJavUncensored(PluginModuleBase):
                 search_results = self.search2(keyword, call)
                 if search_results:
                     if not hasattr(self, 'keyword_cache'):
-                        self.keyword_cache = {} # 또는 F.get_cache 사용
-                    self.keyword_cache[search_results[0]['code']] = keyword
+                        self.keyword_cache = {}
+                    try:
+                        self.keyword_cache.set(search_results[0]['code'], keyword)
+                    except AttributeError:
+                        self.keyword_cache[search_results[0]['code']] = keyword
                     
                     info = self.info(search_results[0]["code"])
                     if info:
@@ -224,7 +241,10 @@ class ModuleJavUncensored(PluginModuleBase):
                 if search_results:
                     if not hasattr(self, 'keyword_cache'):
                         self.keyword_cache = {}
-                    self.keyword_cache[search_results[0]['code']] = keyword
+                    try:
+                        self.keyword_cache.set(search_results[0]['code'], keyword)
+                    except AttributeError:
+                        self.keyword_cache[search_results[0]['code']] = keyword
 
                     info = self.info(search_results[0]["code"])
                     if info:
