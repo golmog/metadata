@@ -345,8 +345,11 @@ class ModuleJavCensored(PluginModuleBase):
                 search_results_raw = self.search2(keyword, call)
                 if search_results_raw:
                     search_results = self._sort_search_results(search_results_raw, call_site=call)
-                    
-                    self.keyword_cache.set(search_results[0]['code'], keyword)
+                    try:
+                        self.keyword_cache.set(search_results[0]['code'], keyword)
+                    except AttributeError:
+                        self.keyword_cache[search_results[0]['code']] = keyword
+
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_nfo_movie(info, output="file", filename=info["originaltitle"].upper() + ".nfo")
@@ -359,7 +362,10 @@ class ModuleJavCensored(PluginModuleBase):
                 if search_results_raw:
                     search_results = self._sort_search_results(search_results_raw, call_site=call)
 
-                    self.keyword_cache.set(search_results[0]['code'], keyword)
+                    try:
+                        self.keyword_cache.set(search_results[0]['code'], keyword)
+                    except AttributeError:
+                        self.keyword_cache[search_results[0]['code']] = keyword
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_yaml_movie(info, output="file", filename=f"{info['originaltitle'].upper()}.yaml")
