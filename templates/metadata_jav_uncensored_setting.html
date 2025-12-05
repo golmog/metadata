@@ -27,6 +27,14 @@
 
 {{ macros.m_hr() }}
 
+{{ macros.setting_input_text_and_buttons('jav_uncensored_paco_test_code', 'Paco 테스트 품번', [['jav_uncensored_paco_test_btn', '테스트'], ['jav_uncensored_paco_nfo_download_btn', 'NFO 다운로드'], ['jav_uncensored_paco_yaml_download_btn', 'YAML 다운로드']], value=arg['jav_uncensored_paco_test_code'], desc=None) }}
+{{ macros.setting_checkbox('jav_uncensored_paco_use_proxy', 'Paco Proxy 사용', value=arg['jav_uncensored_paco_use_proxy'], desc=None) }}
+<div id="jav_uncensored_paco_use_proxy_div" class="collapse">
+{{ macros.setting_input_text('jav_uncensored_paco_proxy_url', 'Paco Proxy URL', value=arg['jav_uncensored_paco_proxy_url']) }}
+</div>
+
+{{ macros.m_hr() }}
+
 {{ macros.setting_input_text_and_buttons('jav_uncensored_heyzo_test_code', 'heyzo 테스트 품번', [['jav_uncensored_heyzo_test_btn', '테스트'], ['jav_uncensored_heyzo_nfo_download_btn', 'NFO 다운로드'], ['jav_uncensored_heyzo_yaml_download_btn', 'YAML 다운로드']], value=arg['jav_uncensored_heyzo_test_code'], desc=None) }}
 {{ macros.setting_checkbox('jav_uncensored_heyzo_use_proxy', 'heyzo Proxy 사용', value=arg['jav_uncensored_heyzo_use_proxy'], desc=None) }}
 <div id="jav_uncensored_heyzo_use_proxy_div" class="collapse">
@@ -58,6 +66,7 @@
 $(document).ready(function(){
   use_collapse("jav_uncensored_1pondo_use_proxy");
   use_collapse("jav_uncensored_10musume_use_proxy");
+  use_collapse("jav_uncensored_paco_use_proxy");
   use_collapse("jav_uncensored_heyzo_use_proxy");
   use_collapse("jav_uncensored_carib_use_proxy");
   use_collapse("jav_uncensored_fc2com_use_proxy");
@@ -65,6 +74,7 @@ $(document).ready(function(){
 
 $('#jav_uncensored_1pondo_use_proxy').change(function() {use_collapse('jav_uncensored_1pondo_use_proxy');});
 $('#jav_uncensored_10musume_use_proxy').change(function() {use_collapse('jav_uncensored_10musume_use_proxy');});
+$('#jav_uncensored_paco_use_proxy').change(function() {use_collapse('jav_uncensored_paco_use_proxy');});
 $('#jav_uncensored_heyzo_use_proxy').change(function() {use_collapse('jav_uncensored_heyzo_use_proxy');});
 $('#jav_uncensored_carib_use_proxy').change(function() {use_collapse('jav_uncensored_carib_use_proxy');});
 $('#jav_uncensored_fc2com_use_proxy').change(function() {use_collapse('jav_uncensored_fc2com_use_proxy');});
@@ -111,6 +121,28 @@ $("body").on('click', '#jav_uncensored_10musume_yaml_download_btn', function(e){
   e.preventDefault();
   code = document.getElementById("jav_uncensored_10musume_test_code").value;
   window.location.href = '/metadata/normal/jav_uncensored/yaml_download?call=10musume&code=' + code;
+});
+
+$("body").on('click', '#jav_uncensored_paco_test_btn', function(e){
+  e.preventDefault();
+  code = $('#jav_uncensored_paco_test_code').val();
+  if (!code || !code.trim()) {
+    notify('테스트 코드 입력', 'warning');
+    return
+  }
+  globalSendCommand('test', 'paco', code);
+});
+
+$("body").on('click', '#jav_uncensored_paco_nfo_download_btn', function(e){
+  e.preventDefault();
+  code = document.getElementById("jav_uncensored_paco_test_code").value;
+  window.location.href = '/metadata/normal/jav_uncensored/nfo_download?call=paco&code=' + code;
+});
+
+$("body").on('click', '#jav_uncensored_paco_yaml_download_btn', function(e){
+  e.preventDefault();
+  code = document.getElementById("jav_uncensored_paco_test_code").value;
+  window.location.href = '/metadata/normal/jav_uncensored/yaml_download?call=paco&code=' + code;
 });
 
 $("body").on('click', '#jav_uncensored_heyzo_test_btn', function(e){
