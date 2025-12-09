@@ -125,6 +125,17 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_crop_mode": "",
             f"{self.name}_javbus_priority_search_labels": "",
             f"{self.name}_javbus_test_code": "abw-354",
+
+            # Smart Crop (AI 얼굴 인식)
+            f"{self.name}_use_smart_crop": "False",
+            f"{self.name}_smart_crop_proto_path": f"{PLUGIN_ROOT}/files/deploy.prototxt",
+            f"{self.name}_smart_crop_model_path": f"{PLUGIN_ROOT}/files/res10_300x300_ssd_iter_140000.caffemodel",
+
+            # Smart Crop (Body/YOLO) - 추가
+            f"{self.name}_use_yolo_crop": "False",
+            f"{self.name}_yolo_cfg_path": f"{path_data}/db/yolov4-tiny.cfg",
+            f"{self.name}_yolo_weights_path": f"{path_data}/db/yolov4-tiny.weights",
+            f"{self.name}_yolo_names_path": f"{path_data}/db/coco.names",
         }
 
         try:
@@ -405,7 +416,7 @@ class ModuleJavCensored(PluginModuleBase):
     # region SEARCH
 
     def search(self, keyword, manual=False):
-        logger.debug(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
+        logger.info(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         #self.keyword_cache = {}
         all_results = []
         original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
@@ -886,8 +897,6 @@ class ModuleJavCensored(PluginModuleBase):
                 entity_actor["name"] = entity_actor.get("originalname")
 
 
-
-
     def process_actor2(self, entity_actor, site, is_avdbs=False) -> bool:
         originalname = entity_actor.get("originalname")
         if not originalname: 
@@ -917,7 +926,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.info(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 성공. Name: {updated_name}, Thumb: {bool(updated_thumb)}")
             return True
         else:
-            # logger.debug(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
+            logger.debug(f"process_actor2: 사이트 '{site}'에서 '{originalname}' 정보 조회 실패 또는 정보 없음.")
             return False
 
 

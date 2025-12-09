@@ -78,12 +78,36 @@
     desc=['파싱 규칙 등 JAV 관련 고급 설정을 YAML 파일에서 직접 관리합니다.', '파일 수정 후, 새로고침 버튼을 눌러 변경사항을 즉시 적용하세요.']
   ) }}
 
+  {{ macros.m_hr() }}
+  {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop 사용', value=arg['jav_censored_use_smart_crop'], desc=['OpenCV 얼굴 인식을 사용하여 Uncensored 등에서 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리가 필요합니다. (pip install opencv-python-headless)']) }}
+  <div id="jav_censored_use_smart_crop_div" class="collapse">
+  {{ macros.setting_input_text('jav_censored_smart_crop_proto_path', 'Proto 파일 경로', value=arg['jav_censored_smart_crop_proto_path'], desc=['deploy.prototxt 파일의 절대 경로']) }}
+  {{ macros.setting_input_text('jav_censored_smart_crop_model_path', 'Model 파일 경로', value=arg['jav_censored_smart_crop_model_path'], desc=['res10_300x300_ssd_iter_140000.caffemodel 파일의 절대 경로']) }}
+  </div>
+
+  {{ macros.setting_checkbox('jav_censored_use_yolo_crop', 'YOLO(Body) Crop 사용', value=arg['jav_censored_use_yolo_crop'], desc=['얼굴 인식 실패 시, YOLO 모델을 사용하여 사람(Person)을 감지하고 크롭합니다.', 'Face Detector가 얼굴을 찾지 못한 경우(뒷모습, 얼굴 가림 등), YOLOv4-tiny 모델을 사용하여 사람의 몸통을 인식합니다.', 'CPU 자원을 얼굴 인식보다 더 많이 사용하므로, 필요한 경우에만 활성화하세요.', '사용자가 직접 모델 파일을 다운로드하고 경로를 지정해야 합니다.']) }}
+  <div id="jav_censored_use_yolo_crop_div" class="collapse">
+  {{ macros.setting_input_text('jav_censored_yolo_cfg_path', 'YOLO Config 경로', value=arg['jav_censored_yolo_cfg_path'], desc=['.cfg 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg']) }}
+  {{ macros.setting_input_text('jav_censored_yolo_weights_path', 'YOLO Weights 경로', value=arg['jav_censored_yolo_weights_path'], desc=['.weights 파일 절대 경로. 다운로드: https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights']) }}
+  {{ macros.setting_input_text('jav_censored_yolo_names_path', 'YOLO Names 경로', value=arg['jav_censored_yolo_names_path'], desc=['coco.names 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names']) }}
+  </div>
 </form>
 
 
 <script type="text/javascript">
 $(document).ready(function(){
   use_image_server("{{arg['jav_censored_image_mode']}}");
+
+  use_collapse("jav_censored_use_smart_crop");
+  use_collapse("jav_censored_use_yolo_crop");
+});
+
+$('#jav_censored_use_smart_crop').change(function() {
+  use_collapse('jav_censored_use_smart_crop');
+});
+
+$('#jav_censored_use_yolo_crop').change(function() {
+  use_collapse('jav_censored_use_yolo_crop');
 });
 
 $('input[type=radio][name=jav_censored_image_mode]').change(function() {

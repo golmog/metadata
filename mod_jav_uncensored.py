@@ -260,7 +260,7 @@ class ModuleJavUncensored(PluginModuleBase):
     # region SEARCH
 
     def search(self, keyword, manual=False):
-        logger.debug('uncensored search - keyword:[%s] manual:[%s]', keyword, manual)
+        logger.info('======= jav uncensored search START - keyword:[%s] manual:[%s] =======', keyword, manual)
 
         for site_name, site_info in self.site_map.items():
             if any(k in keyword.lower() for k in site_info['keyword']):
@@ -307,6 +307,15 @@ class ModuleJavUncensored(PluginModuleBase):
 
     # endregion SEARCH
     ################################################
+
+
+    def process_actor(self, entity_actor):
+        censored_module = P.get_module('jav_censored')
+        if censored_module:
+            censored_module.process_actor(entity_actor)
+        else:
+            if not entity_actor.get("name") and entity_actor.get("originalname"):
+                entity_actor["name"] = entity_actor.get("originalname")
 
 
     ################################################
