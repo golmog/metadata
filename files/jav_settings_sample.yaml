@@ -143,6 +143,24 @@ jav_image_settings:
   hq_poster_threshold_strict: 10
   hq_poster_threshold_normal: 30
 
+  # [Smart Crop AI 임계값 설정]
+  # 얼굴 인식 기본 임계값 (0.0 ~ 1.0). 높을수록 엄격합니다. 오탐지(무릎, 가슴 등) 방지를 위해 약간 높게 설정.
+  smart_crop_face_threshold: 0.6
+  
+  # 바디(사람) 인식 임계값.
+  smart_crop_body_threshold: 0.3
+  
+  # Face Rescue 임계값. 바디가 검출된 영역 안에서 얼굴을 다시 찾을 때 사용. 
+  # 구도가 확보된 상태이므로 낮게 설정하여 흐릿하거나 기울어진 얼굴을 잡습니다.
+  smart_crop_face_rescue_threshold: 0.3
+
+  # [Smart Crop 가중치 설정]
+  # 얼굴과 바디 중심을 섞을 때 얼굴의 비중(0.0 ~ 1.0).
+  # 바디가 가로로 길어질수록(비율/2) 얼굴 비중이 높아지며, 아래 설정된 최소/최대값 사이에서 자동 결정됩니다.
+  
+  smart_crop_face_weight_min: 0.6  # 기본값 (세로/정사각형)
+  smart_crop_face_weight_max: 0.9  # 최대값 (완전 가로형일 때 얼굴 비중 상한선)
+
 
 # -------------------------------------------------------------------
 # [고급] 기타 설정
@@ -313,18 +331,18 @@ meta_custom_path:
 # 기본 라이브러리 외 경로에 따로 자막 영상을 관리하는 경우 이용할 수 있는 기능입니다.
 # 이동 라이브러리와 매칭되는 폴더구조에서 해당 품번에 자막파일이 있을 경우 그 폴더로 이동합니다.
 # 파일명 내에 내장자막키워드가 포함된 경우에도 자막관리 경로로 이동합니다
-# subbed_path:
-#   처리활성화: False
-#   자막파일확장자: ass ssa idx sub sup smi srt ttml vtt
-#   내장자막키워드: 자막 korsub
-#   규칙:
-#     - 이름: cen_subbed
-#       모듈: censored
-#       이동제외패턴: '(decen(sored)?|javplayer|mosaic|no[-_ ]?mask|uncen(sored)?|모자이크)'
-#       경로: "/PATH/TO/JAV/CEN/SUBBED"
-#     - 이름: uncen_subbed
-#       모듈: uncensored
-#       경로: "/PATH/TO/JAV/UNCEN/SUBBED"
+#subbed_path:
+  #처리활성화: False
+  #자막파일확장자: ass ssa idx sub sup smi srt ttml vtt
+  #내장자막키워드: 자막 korsub
+  #규칙:
+    #- 이름: cen_subbed
+    #  모듈: censored
+    #  이동제외패턴: '(decen(sored)?|javplayer|mosaic|no[-_ ]?mask|uncen(sored)?|모자이크)'
+    #  경로: "/PATH/TO/JAV/CEN/SUBBED"
+    #- 이름: uncen_subbed
+    #  모듈: uncensored
+    #  경로: "/PATH/TO/JAV/UNCEN/SUBBED"
 
 
 # -------------------------------------------------------------------
@@ -332,7 +350,7 @@ meta_custom_path:
 # -------------------------------------------------------------------
 # 영상파일과 같은 이름의 자막이 있을 때(동반자막) 처리할 옵션입니다.(기본값: False)
 #동반자막처리:
-#  처리활성화: True
+  #처리활성화: True
 
   # 메타 성공/실패에 따라 다른 경로 지정
   #경로_메타성공시: "/path/to/companion/meta_success"
@@ -340,14 +358,14 @@ meta_custom_path:
   
   # 위 두 값이 없으면 이 경로를 사용 (기존과의 호환성 유지)
   #경로: "/path/to/companion/default"
-#  폴더포맷: "{label_1}/{label}/{code} [SUB]" 
+  #폴더포맷: "{label_1}/{label}/{code} [SUB]" 
 
   # --- 한국어 자막 판별 및 처리 ---
   # 한국어 자막 판별을 사용할 경우 'chardet' 라이브러리가 필요합니다(미설치시 자동 설치 시도).
-#  한국어자막판별: True # True로 설정 시 아래 '외국어자막' 옵션이 활성화됩니다.(기본값: False)
-#  언어코드추가: False # 기본값: True
+  #한국어자막판별: True # True로 설정 시 아래 '외국어자막' 옵션이 활성화됩니다.(기본값: False)
+  #언어코드추가: False # 기본값: True
 
   # --- 외국어 자막 처리 (한국어자막판별: True 일 때만 동작) ---
   # [선택사항] 판별 결과 외국어 자막일 경우 이동할 경로.
   # 이 경로가 비어있으면, '처리실패이동폴더' 아래 [FOREIGN_SUBS]로 이동합니다.
-#  외국어자막이동경로: "/path/to/foreign_subs"
+  #외국어자막이동경로: "/path/to/foreign_subs"
