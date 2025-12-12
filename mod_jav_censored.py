@@ -128,8 +128,7 @@ class ModuleJavCensored(PluginModuleBase):
 
             # Smart Crop (AI 얼굴 인식)
             f"{self.name}_use_smart_crop": "False",
-            f"{self.name}_smart_crop_proto_path": f"{PLUGIN_ROOT}/files/deploy.prototxt",
-            f"{self.name}_smart_crop_model_path": f"{PLUGIN_ROOT}/files/res10_300x300_ssd_iter_140000.caffemodel",
+            f"{self.name}_smart_crop_yunet_model_path": f"{PLUGIN_ROOT}/files/face_detection_yunet_2023mar.onnx",
 
             # Smart Crop (Body/YOLO) - 추가
             f"{self.name}_use_yolo_crop": "False",
