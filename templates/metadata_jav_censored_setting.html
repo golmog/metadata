@@ -79,16 +79,14 @@
   ) }}
 
   {{ macros.m_hr() }}
-  {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop: 얼굴 인식 사용', value=arg['jav_censored_use_smart_crop'], desc=['OpenCV 얼굴 인식을 사용하여 Uncensored 등에서 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리가 필요합니다. (pip install opencv-python-headless)']) }}
+  {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop: 얼굴 인식 사용', value=arg['jav_censored_use_smart_crop'], desc=['OpenCV(YuNet) 얼굴 인식을 사용하여 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리(v4.5.4+)가 필요합니다. (pip install opencv-python-headless)', '현재는 Uncensored에서만 사용됩니다.']) }}
+  
   <div id="jav_censored_use_smart_crop_div" class="collapse">
-  {{ macros.setting_input_text('jav_censored_smart_crop_proto_path', 'Proto 파일 경로', value=arg['jav_censored_smart_crop_proto_path'], desc=['deploy.prototxt 파일의 절대 경로']) }}
-  {{ macros.setting_input_text('jav_censored_smart_crop_model_path', 'Model 파일 경로', value=arg['jav_censored_smart_crop_model_path'], desc=['res10_300x300_ssd_iter_140000.caffemodel 파일의 절대 경로']) }}
-
-  {{ macros.setting_checkbox('jav_censored_use_yolo_crop', 'Smart Crop: YOLO(Body) 사용', value=arg['jav_censored_use_yolo_crop'], desc=['YOLO 모델을 사용하여 사람(Person)을 감지합니다.', 'Face Detector와 연동하여 더 정확하고 자연스러운 구도로 크롭할 수 있습니다.', 'CPU 자원을 얼굴 인식보다 더 많이 사용하므로, 필요한 경우에만 활성화하세요.', '사용자가 직접 모델 파일을 다운로드하고 경로를 지정해야 합니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_use_yolo_crop', 'Smart Crop: YOLO(Body) 사용', value=arg['jav_censored_use_yolo_crop'], desc=['YOLO 모델을 사용하여 사람(Person)을 감지합니다.', 'Face Detector와 연동하여 더 정확하고 자연스러운 구도로 크롭할 수 있습니다.', 'CPU 자원을 얼굴 인식보다 더 많이 사용하므로, 필요한 경우에만 활성화하세요.', '사용자가 직접 모델 파일을 다운로드하고 경로를 지정해야 합니다.']) }}
     <div id="jav_censored_use_yolo_crop_div" class="collapse">
-    {{ macros.setting_input_text('jav_censored_yolo_cfg_path', 'YOLO Config 경로', value=arg['jav_censored_yolo_cfg_path'], desc=['.cfg 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg']) }}
-    {{ macros.setting_input_text('jav_censored_yolo_weights_path', 'YOLO Weights 경로', value=arg['jav_censored_yolo_weights_path'], desc=['.weights 파일 절대 경로. 다운로드: https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights']) }}
-    {{ macros.setting_input_text('jav_censored_yolo_names_path', 'YOLO Names 경로', value=arg['jav_censored_yolo_names_path'], desc=['coco.names 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names']) }}
+      {{ macros.setting_input_text('jav_censored_yolo_cfg_path', 'YOLO Config 경로', value=arg['jav_censored_yolo_cfg_path'], desc=['.cfg 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg']) }}
+      {{ macros.setting_input_text('jav_censored_yolo_weights_path', 'YOLO Weights 경로', value=arg['jav_censored_yolo_weights_path'], desc=['.weights 파일 절대 경로. 다운로드: https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights']) }}
+      {{ macros.setting_input_text('jav_censored_yolo_names_path', 'YOLO Names 경로', value=arg['jav_censored_yolo_names_path'], desc=['coco.names 파일 절대 경로. 다운로드: https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names']) }}
     </div>
   </div>
 </form>
