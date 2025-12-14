@@ -130,11 +130,9 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_use_smart_crop": "False",
             f"{self.name}_smart_crop_yunet_model_path": f"{PLUGIN_ROOT}/files/face_detection_yunet_2023mar.onnx",
 
-            # Smart Crop (Body/YOLO) - 추가
-            f"{self.name}_use_yolo_crop": "False",
-            f"{self.name}_yolo_cfg_path": f"{path_data}/db/yolov4-tiny.cfg",
-            f"{self.name}_yolo_weights_path": f"{path_data}/db/yolov4-tiny.weights",
-            f"{self.name}_yolo_names_path": f"{path_data}/db/coco.names",
+            # Smart Crop (Body)
+            f"{self.name}_use_body_crop": "False",
+            f"{self.name}_mediapipe_complexity": "1",
         }
 
         try:
