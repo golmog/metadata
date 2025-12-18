@@ -144,13 +144,12 @@ jav_image_settings:
   hq_poster_threshold_normal: 30
 
   # [Smart Crop AI 임계값 설정]
-  # 얼굴 인식 기본 임계값 (0.0 ~ 1.0). 높을수록 엄격합니다. 
-  # YuNet 사용 시 오탐지(가슴, 무릎 등) 방지를 위해 높게 설정하는 것을 권장합니다. (기본값: 0.7)
-  smart_crop_face_threshold: 0.7
+  # 얼굴 인식 기본 임계값 (0.0 ~ 1.0). 높을수록 엄격합니다. (기본값: 0.5)
+  smart_crop_face_threshold: 0.5
 
   # Face Rescue 임계값. 바디가 검출된 영역 안에서 얼굴을 다시 찾을 때 사용. 
-  # 구도가 확보된 상태이므로 낮게 설정하여 흐릿하거나 기울어진 얼굴을 잡습니다. (기본값: 0.5)
-  smart_crop_face_rescue_threshold: 0.5
+  # 구도가 확보된 상태이므로 낮게 설정하여 흐릿하거나 기울어진 얼굴을 잡습니다. (기본값: 0.3)
+  smart_crop_face_rescue_threshold: 0.3
 
   # 바디(사람) 인식 임계값. (기본값: 0.5)
   smart_crop_body_threshold: 0.5
@@ -161,8 +160,8 @@ jav_image_settings:
   # 아래 설정된 최소/최대값 사이에서 자동 결정됩니다.
   # 얼굴 비중 최소값 (기본값: 0.3)
   smart_crop_face_weight_min: 0.3
-  # 얼굴 비중 최대값 (기본값: 0.9)
-  smart_crop_face_weight_max: 0.9
+  # 얼굴 비중 최대값 (기본값: 0.8)
+  smart_crop_face_weight_max: 0.8
 
 
 # -------------------------------------------------------------------

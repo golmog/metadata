@@ -79,13 +79,35 @@
   ) }}
 
   {{ macros.m_hr() }}
-  {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop: 얼굴 인식 사용', value=arg['jav_censored_use_smart_crop'], desc=['OpenCV(YuNet) 얼굴 인식을 사용하여 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리(v4.5.4+)가 필요합니다. (pip install opencv-python-headless)']) }}
+  {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop: 얼굴 인식 사용', value=arg['jav_censored_use_smart_crop'], desc=['Google MediaPipe Face Landmarker로 얼굴 인식을 사용하여 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리가 필요합니다. (pip install opencv-python-headless)']) }}
   
   <div id="jav_censored_use_smart_crop_div" class="collapse">
-    {{ macros.setting_checkbox('jav_censored_use_body_crop', 'Smart Crop: 바디 인식(MediaPipe) 사용', value=arg['jav_censored_use_body_crop'], desc=['얼굴 인식만으로는 부족한 구도(기울어짐, 잘림 등)를 보정하기 위해 바디 인식을 추가로 사용합니다.', 'MediaPipe: 구글의 자세 추정 라이브러리. 설치 필요(pip install mediapipe).']) }}
+    {{ macros.setting_input_text(
+      'jav_censored_face_landmarker_model_path', 
+      'Face Landmarker 모델 경로', 
+      value=arg['jav_censored_face_landmarker_model_path'], 
+      desc=[
+        '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않으며 직접 다운로드해서 사용하시기 바랍니다.',
+        '- URL  : https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
+      ]
+    ) }}
 
-    <div id="jav_censored_use_body_crop_div" class="collapse">
-      {{ macros.setting_radio_with_value('jav_censored_mediapipe_complexity', '모델 복잡도 (정확도 vs 속도)', [['0', 'Lite (빠름/NAS추천)'], ['1', 'Full (균형/기본)'], ['2', 'Heavy (정확/고사양)']], value=arg['jav_censored_mediapipe_complexity'], desc=['Lite: 가장 빠르지만 정확도가 낮음. 저사양 NAS용.', 'Full: 속도와 정확도의 균형. 일반적인 사용.', 'Heavy: 가장 정확하지만 CPU 사용량이 높음. 고품질 크롭용.', '※ 라이브러리에 모델이 포함되어 있어 별도 파일 설정은 필요 없습니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_use_pose_landmarker', 'Smart Crop: 바디 인식(MediaPipe) 사용', value=arg['jav_censored_use_pose_landmarker'], desc=['Google MediaPipe Pose Landmarker 추가 이용으로 인식률과 크롭 퀄리티를 높입니다.', 'MediaPipe: 구글의 자세 추정 라이브러리. 설치 필요(pip install mediapipe).']) }}
+
+    <div id="jav_censored_use_pose_landmarker_div" class="collapse">
+      {{ macros.setting_input_text(
+        'jav_censored_pose_landmarker_model_path', 
+        'Pose Landmarker 모델 경로', 
+        value=arg['jav_censored_pose_landmarker_model_path'], 
+        desc=[
+          '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않으며 직접 다운로드해서 사용하시기 바랍니다.',
+          'Lite(경량) / Full(일반) / Heavy(고급) 모델 중 선택 가능합니다.',
+          '- Lite : https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',
+          '- Full : https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task',
+          '- Heavy: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
+          '※ 오라클 A1 기준으로 Heavy 모델도 충분히 빠르게 동작합니다.'
+        ]
+      ) }}
     </div>
   </div>
 </div>
@@ -96,15 +118,15 @@
 $(document).ready(function(){
   use_image_server("{{arg['jav_censored_image_mode']}}");
   use_collapse("jav_censored_use_smart_crop");
-  use_collapse("jav_censored_use_body_crop");
+  use_collapse("jav_censored_use_pose_landmarker");
 });
 
 $('#jav_censored_use_smart_crop').change(function() {
   use_collapse('jav_censored_use_smart_crop');
 });
 
-$('#jav_censored_use_body_crop').change(function() {
-  use_collapse('jav_censored_use_body_crop');
+$('#jav_censored_use_pose_landmarker').change(function() {
+  use_collapse('jav_censored_use_pose_landmarker');
 });
 
 $('input[type=radio][name=jav_censored_image_mode]').change(function() {
