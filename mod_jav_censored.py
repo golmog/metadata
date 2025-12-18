@@ -126,13 +126,16 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_javbus_priority_search_labels": "",
             f"{self.name}_javbus_test_code": "abw-354",
 
-            # Smart Crop (AI 얼굴 인식)
+            # Smart Crop (AI 얼굴 인식: MediaPipe Face Landmarker)
             f"{self.name}_use_smart_crop": "False",
-            f"{self.name}_smart_crop_yunet_model_path": f"{PLUGIN_ROOT}/files/face_detection_yunet_2023mar.onnx",
+            f"{self.name}_face_landmarker_model_path": f"{path_data}/db/face_landmarker.task",
 
-            # Smart Crop (Body)
-            f"{self.name}_use_body_crop": "False",
-            f"{self.name}_mediapipe_complexity": "1",
+            # Smart Crop (AI 바디 인식: MediaPipe Pose Landmarker)
+            f"{self.name}_use_pose_landmarker": "False",
+            f"{self.name}_pose_landmarker_model_path": f"{path_data}/db/pose_landmarker_heavy.task",
+
+            # Smart Crop (AI 얼굴 인식 Fallback: YuNet)
+            f"{self.name}_smart_crop_yunet_model_path": f"{PLUGIN_ROOT}/files/face_detection_yunet_2023mar.onnx",
         }
 
         try:
