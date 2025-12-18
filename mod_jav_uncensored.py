@@ -25,12 +25,12 @@ class ModuleJavUncensored(PluginModuleBase):
             "1pondo": {
                 "instance": Site1PondoTv,
                 "keyword": ["1pon"],
-                "regex": r"1pon-(?P<code>\d{6}_\d{2,3})",
+                "regex": r"(1pon|1pondo)-(?P<code>\d{6}_\d{2,3})",
             },
             "10musume": {
                 "instance": Site10Musume,
                 "keyword": ["10mu"],
-                "regex": r"10mu-(?P<code>\d{6}_\d{2})",
+                "regex": r"(10mu|10musume)-(?P<code>\d{6}_\d{2})",
             },
             "paco": {
                 "instance": SitePaco,
@@ -40,7 +40,7 @@ class ModuleJavUncensored(PluginModuleBase):
             "heyzo": {
                 "instance": SiteHeyzo,
                 "keyword": ["heyzo"],
-                "regex": r"(?P<code>heyzo-\d{4})",
+                "regex": r"heyzo-(?P<code>\d{4})",
             },
             "carib": {
                 "instance": SiteCarib,
@@ -75,7 +75,7 @@ class ModuleJavUncensored(PluginModuleBase):
 
             f'{self.name}_heyzo_use_proxy' : 'False',
             f'{self.name}_heyzo_proxy_url' : '',
-            f'{self.name}_heyzo_test_code' : 'HEYZO-2681',
+            f'{self.name}_heyzo_test_code' : '2681',
 
             f'{self.name}_carib_use_proxy' : 'False',
             f'{self.name}_carib_proxy_url' : '',
@@ -153,15 +153,29 @@ class ModuleJavUncensored(PluginModuleBase):
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
-                # 1. 해당 사이트의 인스턴스를 가져온다.
-                site_instance = self.site_map.get(call, {}).get('instance')
-                if not site_instance:
+                # 1. 해당 사이트의 정보를 가져온다.
+                site_info = self.site_map.get(call)
+                if not site_info:
                     ret['ret'] = 'error'
                     ret['msg'] = f"Site '{call}' not found."
                     return jsonify(ret)
 
+                site_instance = site_info.get('instance')
+                if not site_instance:
+                    ret['ret'] = 'error'
+                    ret['msg'] = f"Instance for '{call}' not found."
+                    return jsonify(ret)
+
+                # 테스트 시 숫자만 입력된 경우 접두어 자동 추가 (UI 로그 개선용)
+                search_code = code
+                if site_info.get('keyword'):
+                    prefix = site_info['keyword'][0]
+                    # 입력값에 해당 사이트의 키워드가 포함되어 있지 않으면 접두어 추가
+                    if not any(k in code.lower() for k in site_info['keyword']):
+                        search_code = f"{prefix}-{code}"
+
                 # manual=True는 번역을 하지 않고, 프록시 이미지 URL을 생성하는 등의 역할을 한다.
-                search_result_dict = site_instance.search(code, manual=True)
+                search_result_dict = site_instance.search(search_code, manual=True)
 
                 if not search_result_dict or search_result_dict['ret'] != 'success' or not search_result_dict.get('data'):
                     ret['ret'] = "warning"
@@ -268,17 +282,13 @@ class ModuleJavUncensored(PluginModuleBase):
                 match = re.search(site_info['regex'], keyword.lower())
 
                 search_code = keyword
-                if match:
-                    try:
-                        code = match.group('code')
-                        if code: search_code = code
-                    except IndexError: pass
 
                 data = instance.search(search_code, manual=manual)
 
                 if data and data.get('ret') == 'success' and data.get('data'):
                     return sorted(data['data'], key=lambda k: k.get('score', 0), reverse=True)
 
+        logger.info(f'======= jav uncensored search END - NOT FOUND: {keyword} =======')
         return []
 
 
@@ -292,8 +302,15 @@ class ModuleJavUncensored(PluginModuleBase):
         if SiteClass is None:
             return None
 
+        search_keyword = keyword
+        if site_info.get('keyword'):
+            prefix = site_info['keyword'][0] 
+            if not any(k in keyword.lower() for k in site_info['keyword']):
+                search_keyword = f"{prefix}-{keyword}"
+                logger.debug(f"search2: Modified keyword for test '{keyword}' -> '{search_keyword}'")
+
         try:
-            data = SiteClass.search(keyword, manual=manual) 
+            data = SiteClass.search(search_keyword, manual=manual) 
 
             if data and data.get("ret") == "success" and data.get("data"):
                 if isinstance(data["data"], list) and data["data"]:
@@ -338,7 +355,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 ret = res['data']
         else:
             logger.error(f"No site found for site_char '{code[1]}' in code '{code}'")
-            return None # 해당 사이트 없음
+            return None
 
         if ret is None:
             return None
@@ -355,7 +372,7 @@ class ModuleJavUncensored(PluginModuleBase):
                     actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
         original_calculated_title = ret.get("title", "")
-        try: # 타이틀 포맷팅 (jav_censored 모듈의 개선된 방식 적용)
+        try:
             title_format = P.ModelSetting.get('jav_censored_title_format')
             format_dict = {
                 'originaltitle': ret.get("originaltitle", ""),
@@ -377,7 +394,7 @@ class ModuleJavUncensored(PluginModuleBase):
             logger.exception(f"타이틀 포맷팅 중 예외 발생: {e_fmt}")
             ret["title"] = original_calculated_title
 
-        # 태그 옵션 (jav_censored 모듈과 동일한 로직 적용)
+        # 태그 옵션
         if "tag" in ret:
             tag_option = P.ModelSetting.get("jav_censored_tag_option")
             if tag_option == "not_using":
