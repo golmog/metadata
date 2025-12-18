@@ -92,7 +92,7 @@
       ]
     ) }}
 
-    {{ macros.setting_checkbox('jav_censored_use_pose_landmarker', 'Smart Crop: 바디 인식(MediaPipe) 사용', value=arg['jav_censored_use_pose_landmarker'], desc=['Google MediaPipe Pose Landmarker 추가 이용으로 인식률과 크롭 퀄리티를 높입니다.', 'MediaPipe: 구글의 자세 추정 라이브러리. 설치 필요(pip install mediapipe).']) }}
+    {{ macros.setting_checkbox('jav_censored_use_pose_landmarker', 'Smart Crop: 바디 인식 사용', value=arg['jav_censored_use_pose_landmarker'], desc=['Google MediaPipe Pose Landmarker 추가 이용으로 인식률과 크롭 퀄리티를 높입니다.', 'MediaPipe: 구글의 자세 추정 라이브러리. 설치 필요(pip install mediapipe).']) }}
 
     <div id="jav_censored_use_pose_landmarker_div" class="collapse">
       {{ macros.setting_input_text(
