@@ -82,12 +82,14 @@
   {{ macros.setting_checkbox('jav_censored_use_smart_crop', 'Smart Crop: 얼굴 인식 사용', value=arg['jav_censored_use_smart_crop'], desc=['Google MediaPipe Face Landmarker로 얼굴 인식을 사용하여 가로 포스터를 인물 중심으로 최적화하여 세로로 자릅니다.', '사용 시 OpenCV 라이브러리가 필요합니다. (pip install opencv-python-headless)']) }}
   
   <div id="jav_censored_use_smart_crop_div" class="collapse">
-    {{ macros.setting_input_text(
+    {{ macros.setting_input_text_and_buttons(
       'jav_censored_face_landmarker_model_path', 
-      'Face Landmarker 모델 경로', 
+      'Face Landmarker 모델', 
+      [['btn_face_model_download', '모델 다운로드']], 
       value=arg['jav_censored_face_landmarker_model_path'], 
       desc=[
-        '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않으며 직접 다운로드해서 사용하시기 바랍니다.',
+        '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않습니다.',
+        '다운로드 버튼을 누르면 자동으로 설치됩니다. (경로: /data/db/face_landmarker.task)',
         '- URL  : https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
       ]
     ) }}
@@ -95,13 +97,15 @@
     {{ macros.setting_checkbox('jav_censored_use_pose_landmarker', 'Smart Crop: 바디 인식 사용', value=arg['jav_censored_use_pose_landmarker'], desc=['Google MediaPipe Pose Landmarker 추가 이용으로 인식률과 크롭 퀄리티를 높입니다.', 'MediaPipe: 구글의 자세 추정 라이브러리. 설치 필요(pip install mediapipe).']) }}
 
     <div id="jav_censored_use_pose_landmarker_div" class="collapse">
-      {{ macros.setting_input_text(
+      {{ macros.setting_input_text_and_buttons(
         'jav_censored_pose_landmarker_model_path', 
-        'Pose Landmarker 모델 경로', 
+        'Pose Landmarker 모델', 
+        [['btn_pose_model_download', '모델 다운로드 (Heavy)']], 
         value=arg['jav_censored_pose_landmarker_model_path'], 
         desc=[
-          '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않으며 직접 다운로드해서 사용하시기 바랍니다.',
-          'Lite(경량) / Full(일반) / Heavy(고급) 모델 중 선택 가능합니다.',
+          '플러그인 경량화를 위해 모델 번들은 포함되어 있지 않습니다.',
+          '다운로드 버튼을 누르면 자동으로 설치됩니다. (경로: /data/db/pose_landmarker_heavy.task)',
+          'Lite(경량) / Full(일반) / Heavy(고급) 모델 중 선택 가능합니다. (자동 다운로드는 Heavy 모델)',
           '- Lite : https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',
           '- Full : https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task',
           '- Heavy: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
@@ -167,6 +171,34 @@ $("body").on('click', '#jav_censored_rcache_clear_btn', function(e){
   e.preventDefault();
   globalSendCommand('rcache_clear');
 });
+
+
+$("body").on('click', '#btn_face_model_download', function(e){
+  e.preventDefault();
+  performModelDownload('face');
+});
+
+$("body").on('click', '#btn_pose_model_download', function(e){
+  e.preventDefault();
+  performModelDownload('pose');
+});
+
+function performModelDownload(type) {
+    var btn = $('#btn_' + type + '_model_download');
+    var originalText = btn.html();
+    btn.html('다운로드 중...').prop('disabled', true);
+    
+    globalSendCommand('model_action', 'download', type, null, function(ret){
+        btn.html(originalText).prop('disabled', false);
+        if (ret.ret == 'success' && ret.filepath) {
+            if (type == 'face') {
+                $('input[name="jav_censored_face_landmarker_model_path"]').val(ret.filepath);
+            } else if (type == 'pose') {
+                $('input[name="jav_censored_pose_landmarker_model_path"]').val(ret.filepath);
+            }
+        }
+    });
+}
 
 </script>
 {% endblock %}

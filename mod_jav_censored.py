@@ -328,7 +328,51 @@ class ModuleJavCensored(PluginModuleBase):
                     except Exception as e:
                         pass
                 return jsonify({"msg": "초기화 성공"})
+
+            elif command == 'model_action':
+                action = arg1 # 'download'
+                model_type = arg2 # 'face' or 'pose'
+                
+                import os
+                import requests
+                from .setup import path_data
+                
+                # DB 폴더 확보
+                db_dir = os.path.join(path_data, 'db')
+                if not os.path.exists(db_dir):
+                    os.makedirs(db_dir)
+                
+                if model_type == 'face':
+                    filename = 'face_landmarker.task'
+                    url = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
+                    setting_key = 'jav_censored_face_landmarker_model_path'
+                elif model_type == 'pose':
+                    filename = 'pose_landmarker_heavy.task'
+                    url = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task'
+                    setting_key = 'jav_censored_pose_landmarker_model_path'
+                else:
+                    return jsonify({'ret':'error', 'msg':'Unknown model type'})
+                
+                filepath = os.path.join(db_dir, filename)
+                
+                if action == 'download':
+                    try:
+                        response = requests.get(url, stream=True)
+                        response.raise_for_status()
+                        with open(filepath, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        
+                        P.ModelSetting.set(setting_key, filepath)
+                        
+                        return jsonify({'ret':'success', 'msg':f'{filename} 다운로드 완료', 'filepath': filepath})
+                    except Exception as e:
+                        return jsonify({'ret':'error', 'msg':f'다운로드 실패: {str(e)}'})
+                
+                return jsonify({'ret':'error', 'msg':'Unknown action'})
+
             return jsonify(ret)
+
         except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
