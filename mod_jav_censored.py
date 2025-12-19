@@ -20,6 +20,10 @@ from support_site import (
 )
 from .setup import *
 from support import SupportYaml
+
+from flask import send_file
+from io import BytesIO
+
 class ModuleJavCensored(PluginModuleBase):
     
     def __init__(self, P):
@@ -380,6 +384,65 @@ class ModuleJavCensored(PluginModuleBase):
                     info = self.info(search_results[0]["code"])
                     if info:
                         return UtilNfo.make_yaml_movie(info, output="file", filename=f"{info['originaltitle'].upper()}.yaml")
+
+        elif sub == "image_download":
+            try:
+                keyword = req.args.get("code")
+                call = req.args.get("call")
+                image_type = req.args.get("type") # 'p' (poster/vertical) or 'pl' (landscape/original)
+                
+                if call in self.site_map:
+                    db_prefix = f"{self.name}_{call}"
+                    P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
+                    
+                    search_results_raw = self.search2(keyword, call)
+                    if not search_results_raw:
+                        return "Search failed", 404
+                    
+                    search_results = self._sort_search_results(search_results_raw, call_site=call)
+                    real_code = search_results[0]['code']
+
+                    try: self.keyword_cache.set(real_code, keyword)
+                    except AttributeError: self.keyword_cache[real_code] = keyword
+
+                    info = self.info(real_code)
+                    if not info:
+                        return "Info failed", 404
+
+                    target_url = None
+                    target_aspect = 'poster' if image_type == 'p' else 'landscape'
+                    
+                    for thumb in info.get('thumb', []):
+                        if thumb.get('aspect') == target_aspect:
+                            target_url = thumb.get('value')
+                            break
+                    
+                    # PL 요청인데 Landscape가 없으면 팬아트 첫번째 사용
+                    if not target_url and image_type == 'pl' and info.get('fanart'):
+                        target_url = info['fanart'][0]
+                    
+                    if not target_url:
+                        return f"Image type '{image_type}' not found in metadata", 404
+
+                    try:
+                        img_res = requests.get(target_url, verify=False, timeout=30)
+                        if img_res.status_code != 200:
+                            return f"Failed to download image from {target_url} (Status: {img_res.status_code})", 500
+                    except Exception as e_req:
+                        return f"Request error for {target_url}: {e_req}", 500
+
+                    filename = f"{info['originaltitle'].lower()}_{image_type}.jpg"
+                    return send_file(
+                        BytesIO(img_res.content),
+                        as_attachment=True,
+                        download_name=filename,
+                        mimetype='image/jpeg'
+                    )
+            except Exception as e:
+                logger.error(f"Image download error: {e}")
+                logger.error(traceback.format_exc())
+                return f"Error: {e}", 500
+
         return None
 
 
