@@ -1,3 +1,4 @@
+import os
 import traceback
 
 from urllib.parse import urlparse
@@ -87,6 +88,12 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2com_use_proxy' : 'False',
             f'{self.name}_fc2com_proxy_url' : '',
             f'{self.name}_fc2com_test_code' : '3669846',
+            
+            f'{self.name}_fc2com_use_javten_db': 'False',
+            f'{self.name}_fc2com_javten_db_gds_path': '/mnt/gds/DATA/기타/GDS DB/AV/javten.db',
+            f'{self.name}_fc2com_local_image_path': '',
+            f'{self.name}_fc2com_use_image_server_url': 'False',
+            f'{self.name}_fc2com_local_image_url': '',
         }
 
         try:
@@ -156,7 +163,6 @@ class ModuleJavUncensored(PluginModuleBase):
                 db_prefix = f"{self.name}_{call}"
                 P.ModelSetting.set(f"{db_prefix}_test_code", code)
 
-                # 1. 해당 사이트의 정보를 가져온다.
                 site_info = self.site_map.get(call)
                 if not site_info:
                     ret['ret'] = 'error'
@@ -169,15 +175,12 @@ class ModuleJavUncensored(PluginModuleBase):
                     ret['msg'] = f"Instance for '{call}' not found."
                     return jsonify(ret)
 
-                # 테스트 시 숫자만 입력된 경우 접두어 자동 추가 (UI 로그 개선용)
                 search_code = code
                 if site_info.get('keyword'):
                     prefix = site_info['keyword'][0]
-                    # 입력값에 해당 사이트의 키워드가 포함되어 있지 않으면 접두어 추가
                     if not any(k in code.lower() for k in site_info['keyword']):
                         search_code = f"{prefix}-{code}"
 
-                # manual=True는 번역을 하지 않고, 프록시 이미지 URL을 생성하는 등의 역할을 한다.
                 search_result_dict = site_instance.search(search_code, manual=True)
 
                 if not search_result_dict or search_result_dict['ret'] != 'success' or not search_result_dict.get('data'):
@@ -187,15 +190,94 @@ class ModuleJavUncensored(PluginModuleBase):
 
                 search_results = search_result_dict['data']
 
-                # 3. 새로운 시그니처에 맞게 info 함수를 호출한다.
-                # info 함수는 이제 code만 인자로 받는다.
                 info_data = self.info(search_results[0]['code'])
 
                 ret['json'] = {
                     "search": search_results,
                     "info": info_data if info_data else {}
                 }
-            return jsonify(ret)
+                return jsonify(ret)
+
+            if command == "refresh_gds_path":
+                target_path = arg1
+                if not target_path:
+                    return jsonify({'ret': 'warning', 'msg': '경로가 입력되지 않았습니다.'})
+
+                scan_target = os.path.dirname(target_path)
+                ddns = F.SystemModelSetting.get('ddns')
+                apikey = F.SystemModelSetting.get('apikey')
+                
+                url = f"{ddns}/plex_mate/api/scan/vfs_refresh"
+                data = {'target': scan_target, 'apikey': apikey}
+                
+                try:
+                    res = requests.post(url, data=data, timeout=10)
+                    
+                    if res.status_code == 200:
+                        # [수정] 성공 시 notify용 메시지 반환
+                        return jsonify({'ret': 'success', 'msg': 'VFS Refresh 요청 성공. 잠시 후 DB 버전을 확인하세요.'})
+                    else:
+                        return jsonify({'ret': 'warning', 'msg': f'VFS Refresh 실패: {res.status_code}'})
+                        
+                except Exception as e:
+                    return jsonify({'ret': 'error', 'msg': f"오류 발생: {str(e)}"})
+
+            if command == "check_javten_db_version":
+                source_db_path = arg1
+                source_yaml_path = os.path.splitext(source_db_path)[0] + '.yaml'
+                
+                target_dir = os.path.join(path_data, 'db')
+                target_yaml_path = os.path.join(target_dir, 'javten.yaml')
+                
+                def get_yaml_info(path):
+                    if not os.path.exists(path):
+                        return "파일 없음"
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            data = yaml.safe_load(f)
+                            info = []
+                            if 'updated_at' in data: info.append(f"업데이트: {data['updated_at']}")
+                            if 'record_count' in data: info.append(f"레코드 수: {data['record_count']}")
+                            if 'file_size_mb' in data: info.append(f"크기: {data['file_size_mb']} MB")
+                            return "<br>".join(info) if info else "정보 없음"
+                    except Exception as e:
+                        return f"읽기 오류: {str(e)}"
+
+                source_info = get_yaml_info(source_yaml_path)
+                local_info = get_yaml_info(target_yaml_path)
+                
+                msg = f"<b>[GDS 원본 DB 정보]</b><br>{source_info}<hr><b>[로컬 DB 정보]</b><br>{local_info}"
+                
+                return jsonify({'title': 'Javten DB 버전 정보', 'modal': msg})
+
+            elif command == "copy_javten_db":
+                source_db_path = arg1
+                source_yaml_path = os.path.splitext(source_db_path)[0] + '.yaml'
+                
+                target_dir = os.path.join(path_data, 'db')
+                if not os.path.exists(target_dir): os.makedirs(target_dir)
+                
+                target_db_path = os.path.join(target_dir, 'javten.db')
+                target_yaml_path = os.path.join(target_dir, 'javten.yaml')
+
+                if os.path.exists(source_db_path):
+                    try:
+                        shutil.copyfile(source_db_path, target_db_path)
+                        msg = f"DB 복사 완료"
+                        
+                        if os.path.exists(source_yaml_path):
+                            shutil.copyfile(source_yaml_path, target_yaml_path)
+                            msg += " 및 메타데이터 갱신"
+                        
+                        ret['msg'] = msg
+                    except Exception as e:
+                        ret['ret'] = 'error'
+                        ret['msg'] = f"복사 실패: {str(e)}"
+                else:
+                    ret['ret'] = 'error'
+                    ret['msg'] = f"파일을 찾을 수 없습니다: {source_db_path}"
+                return jsonify(ret)
+
         except Exception as e:
             P.logger.error(f"Exception:{str(e)}")
             P.logger.error(traceback.format_exc())
