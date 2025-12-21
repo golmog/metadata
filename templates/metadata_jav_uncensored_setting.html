@@ -58,7 +58,7 @@
       {{ macros.setting_input_text('jav_uncensored_fc2com_proxy_url', 'fc2com Proxy URL', value=arg['jav_uncensored_fc2com_proxy_url']) }}
     </div>
 
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_db', 'Javten(fc2hub) DB 사용', value=arg['jav_uncensored_fc2com_use_javten_db'], desc=['fc2.com 사이트 검색 전, 미리 크롤링된 javten.com DB에서 메타 정보를 찾습니다.']) }}
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_db', 'Javten DB 사용', value=arg['jav_uncensored_fc2com_use_javten_db'], desc=['fc2.com 검색 실패시, 미리 크롤링된 javten.com(구 fc2hub) DB에서 메타 정보를 찾습니다.']) }}
     <div id="jav_uncensored_fc2com_use_javten_db_div" class="collapse">
       {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_javten_db_gds_path', 'javten DB 원본 경로(GDS)', [['btn_refresh_gds_path', 'VFS Refresh'], ['btn_check_javten_db_version', 'DB 버전 확인'], ['btn_copy_javten_db', 'DB 복사']], value=arg['jav_uncensored_fc2com_javten_db_gds_path'], placeholder='/mnt/gds/DATA/기타/GDS DB/AV/javten.db', desc=['GDS에 있는 javten.db의 마운트 절대 경로를 입력하고 복사 버튼을 눌러 DB 파일을 로컬로 복사하세요.', 'VFS Refresh(Plex Mate) > DB 버전 확인 > DB 복사 (/data/db/javten.db 덮어씀)', 'DB는 용량이 크기 때문에 복사(다운로드)에 시간이 걸립니다. (주기적 업데이트 > 용량 증가)']) }}
       
