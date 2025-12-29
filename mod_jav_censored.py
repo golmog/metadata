@@ -640,7 +640,7 @@ class ModuleJavCensored(PluginModuleBase):
                                 break
                     
                     if has_perfect_match:
-                        logger.info(f"순차 검색: '{site_key}'에서 적합한 100점 결과 발견. 검색 조기 종료.")
+                        logger.debug(f"순차 검색: '{site_key}'에서 적합한 100점 결과 발견. 검색 조기 종료.")
                         early_exit_triggered = True
                         break
 
