@@ -85,12 +85,18 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_carib_proxy_url' : '',
             f'{self.name}_carib_test_code' : '062015-904',
 
+            f'{self.name}_fc2com_use_fc2_com': 'True',
             f'{self.name}_fc2com_use_proxy' : 'False',
             f'{self.name}_fc2com_proxy_url' : '',
             f'{self.name}_fc2com_test_code' : '3669846',
             
+            f'{self.name}_fc2com_use_javten_web': 'False',
+            f'{self.name}_fc2com_use_javten_proxy' : 'False',
+            f'{self.name}_fc2com_javten_proxy_url': '',
+
             f'{self.name}_fc2com_use_javten_db': 'False',
             f'{self.name}_fc2com_javten_db_gds_path': '/mnt/gds/DATA/기타/GDS DB/AV/javten.db',
+
             f'{self.name}_fc2com_local_image_path': '',
             f'{self.name}_fc2com_use_image_server_url': 'False',
             f'{self.name}_fc2com_local_image_url': '',
