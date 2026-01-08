@@ -18,7 +18,6 @@
     </div>
 
     {{ macros.m_hr() }}
-
     {{ macros.setting_input_text_and_buttons('jav_uncensored_10musume_test_code', '10musume 테스트 품번', [['jav_uncensored_10musume_test_btn', '테스트'], ['jav_uncensored_10musume_nfo_download_btn', 'NFO'], ['jav_uncensored_10musume_yaml_download_btn', 'YAML'], ['jav_uncensored_10musume_pl_download_btn', '포스터(원본)'], ['jav_uncensored_10musume_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_10musume_test_code'], desc=None) }}
     {{ macros.setting_checkbox('jav_uncensored_10musume_use_proxy', '10musume Proxy 사용', value=arg['jav_uncensored_10musume_use_proxy'], desc=None) }}
     <div id="jav_uncensored_10musume_use_proxy_div" class="collapse">
@@ -26,7 +25,6 @@
     </div>
 
     {{ macros.m_hr() }}
-
     {{ macros.setting_input_text_and_buttons('jav_uncensored_paco_test_code', 'Paco 테스트 품번', [['jav_uncensored_paco_test_btn', '테스트'], ['jav_uncensored_paco_nfo_download_btn', 'NFO'], ['jav_uncensored_paco_yaml_download_btn', 'YAML'], ['jav_uncensored_paco_pl_download_btn', '포스터(원본)'], ['jav_uncensored_paco_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_paco_test_code'], desc=None) }}
     {{ macros.setting_checkbox('jav_uncensored_paco_use_proxy', 'Paco Proxy 사용', value=arg['jav_uncensored_paco_use_proxy'], desc=None) }}
     <div id="jav_uncensored_paco_use_proxy_div" class="collapse">
@@ -34,7 +32,6 @@
     </div>
 
     {{ macros.m_hr() }}
-
     {{ macros.setting_input_text_and_buttons('jav_uncensored_heyzo_test_code', 'heyzo 테스트 품번', [['jav_uncensored_heyzo_test_btn', '테스트'], ['jav_uncensored_heyzo_nfo_download_btn', 'NFO'], ['jav_uncensored_heyzo_yaml_download_btn', 'YAML'], ['jav_uncensored_heyzo_pl_download_btn', '포스터(원본)'], ['jav_uncensored_heyzo_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_heyzo_test_code'], desc=None) }}
     {{ macros.setting_checkbox('jav_uncensored_heyzo_use_proxy', 'heyzo Proxy 사용', value=arg['jav_uncensored_heyzo_use_proxy'], desc=None) }}
     <div id="jav_uncensored_heyzo_use_proxy_div" class="collapse">
@@ -42,7 +39,6 @@
     </div>
 
     {{ macros.m_hr() }}
-
     {{ macros.setting_input_text_and_buttons('jav_uncensored_carib_test_code', 'carib 테스트 품번', [['jav_uncensored_carib_test_btn', '테스트'], ['jav_uncensored_carib_nfo_download_btn', 'NFO'], ['jav_uncensored_carib_yaml_download_btn', 'YAML'], ['jav_uncensored_carib_pl_download_btn', '포스터(원본)'], ['jav_uncensored_carib_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_carib_test_code'], desc=None) }}
     {{ macros.setting_checkbox('jav_uncensored_carib_use_proxy', 'carib Proxy 사용', value=arg['jav_uncensored_carib_use_proxy'], desc=None) }}
     <div id="jav_uncensored_carib_use_proxy_div" class="collapse">
@@ -50,15 +46,25 @@
     </div>
 
     {{ macros.m_hr() }}
-
     {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_test_code', 'fc2 테스트 품번', [['jav_uncensored_fc2com_test_btn', '테스트'], ['jav_uncensored_fc2com_nfo_download_btn', 'NFO'], ['jav_uncensored_fc2com_yaml_download_btn', 'YAML'], ['jav_uncensored_fc2com_pl_download_btn', '포스터(원본)'], ['jav_uncensored_fc2com_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_fc2com_test_code'], desc=None) }}
-    {{ macros.info_text('Selenium 설정', 'fc2com Selenium', desc=['Selenium 설정은 Censored 플러그인의 전역 설정을 따릅니다.', '메타데이터 > JAV Censored > 설정 탭에서 Selenium URL을 설정하세요.']) }}
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_proxy', 'fc2com Proxy 사용', value=arg['jav_uncensored_fc2com_use_proxy'], desc=None) }}
-    <div id="jav_uncensored_fc2com_use_proxy_div" class="collapse">
-      {{ macros.setting_input_text('jav_uncensored_fc2com_proxy_url', 'fc2com Proxy URL', value=arg['jav_uncensored_fc2com_proxy_url']) }}
+
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_fc2_com', 'fc2.com 사이트 검색 사용', value=arg['jav_uncensored_fc2com_use_fc2_com'], desc=['공식 사이트를 Selenium으로 검색합니다. Selenium 설정이 필수입니다.']) }}
+    <div id="jav_uncensored_fc2com_use_fc2_com_div" class="collapse">
+      {{ macros.setting_checkbox('jav_uncensored_fc2com_use_proxy', 'fc2com Proxy 사용(공통)', value=arg['jav_uncensored_fc2com_use_proxy'], desc=None) }}
+      <div id="jav_uncensored_fc2com_use_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_uncensored_fc2com_proxy_url', 'fc2.com Proxy URL', value=arg['jav_uncensored_fc2com_proxy_url']) }}
+      </div>
     </div>
 
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_db', 'Javten DB 사용', value=arg['jav_uncensored_fc2com_use_javten_db'], desc=['fc2.com 검색 실패시, 미리 크롤링된 javten.com(구 fc2hub) DB에서 메타 정보를 찾습니다.']) }}
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_web', 'javten.com 사이트 검색 사용', value=arg['jav_uncensored_fc2com_use_javten_web'], desc=['fc2.com 사이트 검색 실패/미사용 시, javten.com 사이트를 실시간으로 검색합니다.']) }}
+    <div id="jav_uncensored_fc2com_use_javten_web_div" class="collapse">
+      {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_proxy', 'javten.com 전용 Proxy 사용', value=arg['jav_uncensored_fc2com_use_javten_proxy'], desc=['Javten 접속 시에만 사용할 별도의 Proxy를 설정합니다.', '해제 시 fc2com Proxy(공통) 설정을 따릅니다.']) }}
+      <div id="jav_uncensored_fc2com_use_javten_proxy_div" class="collapse">
+        {{ macros.setting_input_text('jav_uncensored_fc2com_javten_proxy_url', 'javten.com Proxy URL', value=arg['jav_uncensored_fc2com_javten_proxy_url'], desc=None) }}
+      </div>
+    </div>
+
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_db', 'Javten DB 사용', value=arg['jav_uncensored_fc2com_use_javten_db'], desc=['fc2.com, javten 웹 검색 실패/미사용시, 미리 크롤링된 javten.com(구 fc2hub) DB에서 메타 정보를 찾습니다.']) }}
     <div id="jav_uncensored_fc2com_use_javten_db_div" class="collapse">
       {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_javten_db_gds_path', 'javten DB 원본 경로(GDS)', [['btn_refresh_gds_path', 'VFS Refresh'], ['btn_check_javten_db_version', 'DB 버전 확인'], ['btn_copy_javten_db', 'DB 복사']], value=arg['jav_uncensored_fc2com_javten_db_gds_path'], placeholder='/mnt/gds/DATA/기타/GDS DB/AV/javten.db', desc=['GDS에 있는 javten.db의 마운트 절대 경로를 입력하고 복사 버튼을 눌러 DB 파일을 로컬로 복사하세요.', 'VFS Refresh(Plex Mate) > DB 버전 확인 > DB 복사 (/data/db/javten.db 덮어씀)', 'DB는 용량이 크기 때문에 복사(다운로드)에 시간이 걸립니다. (주기적 업데이트 > 용량 증가)']) }}
       
@@ -85,6 +91,9 @@ $(document).ready(function(){
     });
   });
 
+  use_collapse("jav_uncensored_fc2com_use_fc2_com");
+  use_collapse('jav_uncensored_fc2com_use_javten_web');
+  use_collapse("jav_uncensored_fc2com_use_javten_proxy");
   use_collapse("jav_uncensored_fc2com_use_javten_db");
   use_collapse("jav_uncensored_fc2com_use_image_server_url");
 });
@@ -130,6 +139,17 @@ $('input[id$="_test_code"]').on('keypress', function(e) {
   }
 });
 
+$('#jav_uncensored_fc2com_use_fc2_com').change(function() {
+  use_collapse('jav_uncensored_fc2com_use_fc2_com');
+});
+
+$('#jav_uncensored_fc2com_use_javten_web').change(function() {
+  use_collapse('jav_uncensored_fc2com_use_javten_web');
+});
+
+$('#jav_uncensored_fc2com_use_javten_proxy').change(function() {
+  use_collapse('jav_uncensored_fc2com_use_javten_proxy');
+});
 
 $('#jav_uncensored_fc2com_use_javten_db').change(function() {
   use_collapse('jav_uncensored_fc2com_use_javten_db');
