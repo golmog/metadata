@@ -48,7 +48,7 @@
     {{ macros.m_hr() }}
     {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_test_code', 'fc2 테스트 품번', [['jav_uncensored_fc2com_test_btn', '테스트'], ['jav_uncensored_fc2com_nfo_download_btn', 'NFO'], ['jav_uncensored_fc2com_yaml_download_btn', 'YAML'], ['jav_uncensored_fc2com_pl_download_btn', '포스터(원본)'], ['jav_uncensored_fc2com_p_download_btn', '포스터(세로)']], value=arg['jav_uncensored_fc2com_test_code'], desc=None) }}
 
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_fc2_com', 'fc2.com 사이트 검색 사용', value=arg['jav_uncensored_fc2com_use_fc2_com'], desc=['공식 사이트를 Selenium으로 검색합니다. Selenium 설정이 필수입니다.']) }}
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_fc2_com', 'fc2.com 검색 사용', value=arg['jav_uncensored_fc2com_use_fc2_com'], desc=['공식 사이트에서 검색합니다.']) }}
     <div id="jav_uncensored_fc2com_use_fc2_com_div" class="collapse">
       {{ macros.setting_checkbox('jav_uncensored_fc2com_use_proxy', 'fc2com Proxy 사용(공통)', value=arg['jav_uncensored_fc2com_use_proxy'], desc=None) }}
       <div id="jav_uncensored_fc2com_use_proxy_div" class="collapse">
@@ -56,23 +56,11 @@
       </div>
     </div>
 
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_web', 'javten.com 사이트 검색 사용', value=arg['jav_uncensored_fc2com_use_javten_web'], desc=['fc2.com 사이트 검색 실패/미사용 시, javten.com 사이트를 실시간으로 검색합니다.']) }}
+    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_web', 'javten.com 검색 사용', value=arg['jav_uncensored_fc2com_use_javten_web'], desc=['fc2.com 사이트 검색 실패/미사용 시, javten.com을 검색합니다.']) }}
     <div id="jav_uncensored_fc2com_use_javten_web_div" class="collapse">
       {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_proxy', 'javten.com 전용 Proxy 사용', value=arg['jav_uncensored_fc2com_use_javten_proxy'], desc=['Javten 접속 시에만 사용할 별도의 Proxy를 설정합니다.', '해제 시 fc2com Proxy(공통) 설정을 따릅니다.']) }}
       <div id="jav_uncensored_fc2com_use_javten_proxy_div" class="collapse">
         {{ macros.setting_input_text('jav_uncensored_fc2com_javten_proxy_url', 'javten.com Proxy URL', value=arg['jav_uncensored_fc2com_javten_proxy_url'], desc=None) }}
-      </div>
-    </div>
-
-    {{ macros.setting_checkbox('jav_uncensored_fc2com_use_javten_db', 'Javten DB 사용', value=arg['jav_uncensored_fc2com_use_javten_db'], desc=['fc2.com, javten 웹 검색 실패/미사용시, 미리 크롤링된 javten.com(구 fc2hub) DB에서 메타 정보를 찾습니다.']) }}
-    <div id="jav_uncensored_fc2com_use_javten_db_div" class="collapse">
-      {{ macros.setting_input_text_and_buttons('jav_uncensored_fc2com_javten_db_gds_path', 'javten DB 원본 경로(GDS)', [['btn_refresh_gds_path', 'VFS Refresh'], ['btn_check_javten_db_version', 'DB 버전 확인'], ['btn_copy_javten_db', 'DB 복사']], value=arg['jav_uncensored_fc2com_javten_db_gds_path'], placeholder='/mnt/gds/DATA/기타/GDS DB/AV/javten.db', desc=['GDS에 있는 javten.db의 마운트 절대 경로를 입력하고 복사 버튼을 눌러 DB 파일을 로컬로 복사하세요.', 'VFS Refresh(Plex Mate) > DB 버전 확인 > DB 복사 (/data/db/javten.db 덮어씀)', 'DB는 용량이 크기 때문에 복사(다운로드)에 시간이 걸립니다. (주기적 업데이트 > 용량 증가)']) }}
-      
-      {{ macros.setting_checkbox('jav_uncensored_fc2com_use_image_server_url', '로컬 이미지 사용(이미지 서버)', value=arg['jav_uncensored_fc2com_use_image_server_url'], desc=['로컬에 저장된 이미지를 이미지 서버 설정을 통해 매칭에 이용합니다. (해제 시 fc2.com 이미지 url만 사용)', '이미지 서버 세팅/설정이 필요합니다.', '※ 전체 이미지 용량이 매우 크기 때문에 공유는 숙고중입니다.(현재는 테스트 버전)']) }}
-      <div id="jav_uncensored_fc2com_use_image_server_url_div" class="collapse">
-        {{ macros.setting_input_text('jav_uncensored_fc2com_local_image_path', '로컬 이미지 경로 루트', value=arg['jav_uncensored_fc2com_local_image_path'], desc=['로컬 이미지 절대 경로를 입력합니다. (예: /data/images/javten)']) }}
-        
-        {{ macros.setting_input_text('jav_uncensored_fc2com_local_image_url', '로컬 이미지 웹 URL', value=arg['jav_uncensored_fc2com_local_image_url'], placeholder='예: https://image.example.com/javten', desc=['로컬 이미지를 외부에서 접근하기 위한 웹 서버 URL Prefix입니다.', '입력하지 않으면 메인 설정의 이미지 서버 URL에 "/javten"을 붙여 사용합니다.']) }}
       </div>
     </div>
 

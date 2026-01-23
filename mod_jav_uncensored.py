@@ -90,16 +90,9 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2com_proxy_url' : '',
             f'{self.name}_fc2com_test_code' : '3669846',
             
-            f'{self.name}_fc2com_use_javten_web': 'False',
+            f'{self.name}_fc2com_use_javten_web': 'True',
             f'{self.name}_fc2com_use_javten_proxy' : 'False',
             f'{self.name}_fc2com_javten_proxy_url': '',
-
-            f'{self.name}_fc2com_use_javten_db': 'False',
-            f'{self.name}_fc2com_javten_db_gds_path': '/mnt/gds/DATA/기타/GDS DB/AV/javten.db',
-
-            f'{self.name}_fc2com_local_image_path': '',
-            f'{self.name}_fc2com_use_image_server_url': 'False',
-            f'{self.name}_fc2com_local_image_url': '',
         }
 
         try:
@@ -565,6 +558,11 @@ class ModuleJavUncensored(PluginModuleBase):
         # 부가 영상 사용 여부 (jav_censored 설정값 사용)
         if not P.ModelSetting.get_bool('jav_censored_use_extras'):
             ret['extras'] = []
+
+        if ret:
+            title_log = ret.get('title', 'No Title')
+            year_log = ret.get('year', '????')
+            logger.info(f"[{target_instance.site_name.upper()} Success] Code: {code}, Title: {title_log} ({year_log})")
 
         return ret
 
