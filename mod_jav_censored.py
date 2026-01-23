@@ -72,6 +72,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
             f"{self.name}_image_server_local_path": "/data/images",
             f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
+            f"{self.name}_image_server_actor_path": "/jav/actors",
             f"{self.name}_image_server_rewrite": "True",
 
             # avdbs
@@ -80,7 +81,6 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_avdbs_proxy_url": "",
             f"{self.name}_avdbs_use_local_db": "True",
             f"{self.name}_avdbs_local_db_path": f"{PLUGIN_ROOT}/files/jav_actors2.db",
-            "jav_actor_img_url_prefix": "",
             f"{self.name}_avdbs_test_name": "",
 
             # hentaku
@@ -984,6 +984,14 @@ class ModuleJavCensored(PluginModuleBase):
             if 'original' in ret:
                 del ret['original']
 
+        if ret:
+            title_log = ret.get('title', 'No Title')
+            year_log = ret.get('year', '????')
+            # poster_count = len([t for t in ret.get('thumb', []) if t.get('aspect') == 'poster'])
+            # fanart_count = len(ret.get('fanart', []))
+            
+            logger.info(f"[{site.upper()} Success] Code: {code}, Title: {title_log} ({year_log})")
+
         return ret
 
 
@@ -1011,6 +1019,103 @@ class ModuleJavCensored(PluginModuleBase):
             has_data_field = bool(data.get('data')) if data and data.get('ret') == 'success' else False
             logger.warning(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 실패. Response ret='{response_ret}', Has data field='{has_data_field}'")
             return None
+
+
+    @classmethod
+    def save_actor_image(cls, entity_actor):
+        """
+        배우 이미지를 로컬에 저장하고 entity_actor.thumb를 업데이트합니다.
+        """
+        if not entity_actor.thumb: return
+
+        # 설정 가져오기
+        root_path = cls.MetadataSetting.get('jav_censored_image_server_local_path')
+        actor_sub_path = cls.MetadataSetting.get('jav_censored_image_server_actor_path') or '/jav/actor'
+        server_url = cls.MetadataSetting.get('jav_censored_image_server_url')
+        rewrite = cls.MetadataSetting.get_bool('jav_censored_image_server_rewrite')
+
+        if not root_path or not server_url: return
+
+        # 1. 파일명 생성
+        # 규칙: 한국어_이름_(일본어_이름)_A{actor_idx}.jpg
+        actor_idx = getattr(entity_actor, 'actor_idx', '')
+        if not actor_idx:
+            return 
+
+        kor_name = entity_actor.name
+        jpn_name = entity_actor.originalname or ""
+        
+        # 공백 정리 및 _ 변환
+        def clean_name(n):
+            return re.sub(r'\s+', '_', n.strip())
+        
+        filename_base = f"{clean_name(kor_name)}"
+        if jpn_name:
+            filename_base += f"_({clean_name(jpn_name)})"
+        filename_base += f"_A{actor_idx}.jpg"
+
+        # 2. 폴더 분류 (초성/알파벳)
+        first_char = kor_name[0]
+        sub_folder = cls._get_actor_folder_name(first_char)
+        
+        # 3. 전체 경로
+        relative_path = f"{actor_sub_path.strip('/')}/{sub_folder}/{filename_base}"
+        full_path = os.path.join(root_path, relative_path)
+        
+        # 4. 저장 (rewrite 확인)
+        if rewrite or not os.path.exists(full_path):
+            try:
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                
+                # 이미지 다운로드 (jav_image 활용하거나 직접 requests)
+                # entity_actor.thumb는 http URL임
+                res = cls.get_response(entity_actor.thumb)
+                if res and res.status_code == 200:
+                    if not cls._save_image_as_jpeg(BytesIO(res.content), full_path):
+                        with open(full_path, 'wb') as f: f.write(res.content)
+            except Exception as e:
+                logger.error(f"Failed to save actor image: {e}")
+                return
+
+        # 5. URL 업데이트
+        entity_actor.thumb = f"{server_url.rstrip('/')}/{relative_path}"
+
+
+    @staticmethod
+    def _get_actor_folder_name(char):
+        """한글 초성 또는 알파벳에 따라 폴더명을 반환합니다."""
+        if '가' <= char <= '힣':
+            char_code = ord(char) - ord('가')
+            cho_index = char_code // 588
+            
+            # 초성 인덱스: 0(ㄱ), 1(ㄲ), 2(ㄴ), 3(ㄷ), 4(ㄸ), 5(ㄹ), 6(ㅁ), 7(ㅂ), 8(ㅃ), 9(ㅅ), 
+            #             10(ㅆ), 11(ㅇ), 12(ㅈ), 13(ㅉ), 14(ㅊ), 15(ㅋ), 16(ㅌ), 17(ㅍ), 18(ㅎ)
+            
+            # 폴더명 매핑 (된소리는 예사소리 폴더로, ㅋㅌㅍㅎ은 그대로)
+            mapping = {
+                0: '가', 1: '가',  # ㄱ, ㄲ -> 가
+                2: '나',          # ㄴ -> 나
+                3: '다', 4: '다',  # ㄷ, ㄸ -> 다
+                5: '라',          # ㄹ -> 라
+                6: '마',          # ㅁ -> 마
+                7: '바', 8: '바',  # ㅂ, ㅃ -> 바
+                9: '사', 10: '사', # ㅅ, ㅆ -> 사
+                11: '아',         # ㅇ -> 아
+                12: '자', 13: '자', # ㅈ, ㅉ -> 자
+                14: '차',         # ㅊ -> 차
+                15: '카',         # ㅋ -> 카
+                16: '타',         # ㅌ -> 타
+                17: '파',         # ㅍ -> 파
+                18: '하'          # ㅎ -> 하
+            }
+            return mapping.get(cho_index, '기타')
+            
+        elif 'A' <= char.upper() <= 'Z':
+            return "AZ"
+        elif '0' <= char <= '9':
+            return "#"
+        else:
+            return "#"
 
 
     # endregion INFO
@@ -1046,10 +1151,18 @@ class ModuleJavCensored(PluginModuleBase):
         try:
             if SiteClass in [SiteAvdbs]:
                 get_info_success = SiteClass.get_actor_info(entity_actor)
+                
+                if get_info_success and entity_actor.get('site') == 'avdbs_web':
+                    image_mode = P.ModelSetting.get('jav_censored_image_mode')
+                    if image_mode == 'image_server':
+                        try:
+                            SiteClass.save_actor_image(entity_actor)
+                        except Exception as e:
+                            logger.error(f"배우 이미지 저장 실패: {e}")
+
             else:
-                # hentaku 동작하지 않음.
+                # hentaku 등
                 pass
-                #get_info_success = SiteClass.get_actor_info(entity_actor, **sett)
         except Exception as e_getinfo:
             logger.exception(f"process_actor2: 사이트 '{site}'에서 배우 '{originalname}' 정보 조회 중 오류 발생: {e_getinfo}")
             get_info_success = False
@@ -1066,16 +1179,4 @@ class ModuleJavCensored(PluginModuleBase):
 
     # endregion ACTOR
     ################################################
-
-
-    
-
-@app.route('/images')
-@app.route('/images/<path:filename>')
-def metadata_images(filename='index.html'):
-    dist_path = os.path.join(F.path_data, 'images')
-    file_path = os.path.join(dist_path, filename)
-    if not os.path.exists(file_path) or os.path.isdir(file_path):
-        return send_from_directory(dist_path, 'index.html')
-    return send_from_directory(dist_path, filename)
 

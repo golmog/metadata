@@ -13,11 +13,9 @@
   {{ macros.setting_checkbox('jav_censored_avdbs_use_local_db', '로컬 DB 사용', value=arg['jav_censored_avdbs_use_local_db'], desc=['Avdbs 데이터를 로컬 SQLite DB에서 먼저 조회합니다.'] )}}
   <div id="jav_censored_avdbs_use_local_db_div" class="collapse">
   {{ macros.setting_input_text('jav_censored_avdbs_local_db_path', '로컬 DB 경로', value=arg['jav_censored_avdbs_local_db_path']) }}
-  {{ macros.m_hr() }}
-  {{ macros.setting_input_text('jav_actor_img_url_prefix', '배우 이미지 서버 URL Prefix', value=arg['jav_actor_img_url_prefix'], desc=['GDS에 이미지 파일이 없을 떄 사용합니다. (현재 설정 불필요)', '', '로컬 DB의 배우 이미지 경로와 조합될 URL 접두사입니다.', '예: https://my.images.com/actor_images', '이 값을 설정하면 DB의 상대 경로와 합쳐 최종 이미지 URL을 만듭니다.'], placeholder='예: https://my.server.com/actor_images') }}
   </div>
   {{ macros.m_hr() }}
-  {{ macros.setting_checkbox('jav_censored_avdbs_use_web_search', '사이트 검색 사용 (Fallback)', value=arg['jav_censored_avdbs_use_web_search'], desc=['로컬 DB에서 배우를 찾지 못했을 경우, Avdbs.com 사이트에 직접 접속하여 검색합니다.', '사이트 정책으로 대부분의 경우 거의 즉시 차단됩니다.'] )}}
+  {{ macros.setting_checkbox('jav_censored_avdbs_use_web_search', '사이트 검색 사용 (Fallback)', value=arg['jav_censored_avdbs_use_web_search'], desc=['로컬 DB에서 배우를 찾지 못했을 경우, Avdbs.com 사이트에 직접 접속하여 검색합니다.'] )}}
   <div id="jav_censored_avdbs_use_web_search_div" class="collapse">
     {{ macros.setting_checkbox('jav_censored_avdbs_use_proxy', 'Proxy 사용', value=arg['jav_censored_avdbs_use_proxy']) }}
     <div id="jav_censored_avdbs_use_proxy_div" class="collapse">

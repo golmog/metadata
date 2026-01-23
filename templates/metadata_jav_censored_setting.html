@@ -55,16 +55,12 @@
     
     {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
 
-    {{ macros.setting_input_text('jav_censored_image_server_save_format', '파일 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
+    {{ macros.setting_input_text('jav_censored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
+
+    {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 경로를 설정합니다. (예: /jav/actors)']) }}
 
     {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일이 있어도 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
   </div>
-
-  {{ macros.m_hr() }}
-  {{ macros.info_text('Selenium 설정', '') }}
-  {{ macros.setting_input_text('jav_censored_selenium_url', 'Selenium URL', value=arg['jav_censored_selenium_url'], desc=['Selenium 서버 URL (예: http://selenium:4444/wd/hub)']) }}
-  {{ macros.setting_radio_with_value('jav_censored_selenium_driver_type', 'Driver Type', [['chrome', 'Chrome'], ['firefox', 'Firefox']], value=arg['jav_censored_selenium_driver_type']) }}
-  {{ macros.setting_input_text('jav_censored_flaresolverr_url', 'FlareSolverr URL', value=arg['jav_censored_flaresolverr_url'], desc=['FlareSolverr API 주소 (예: http://flaresolverr:8191)', '설정 시 JavDB 등 Cloudflare 보호 사이트에 대해 Selenium보다 우선 사용됩니다.']) }}
 
   {{ macros.m_hr() }}
   {{ macros.setting_input_text_and_buttons(
