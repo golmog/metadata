@@ -681,7 +681,7 @@ class ModuleJavCensored(PluginModuleBase):
                                         pass
 
         # --- 5. 결과 정렬 및 반환 ---
-        logger.debug(f"--- All site searches completed. Total results: {len(all_results)} ---")
+        logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
         if not all_results:
             logger.debug("======= jav censored search END - No results found. =======")
             return []
@@ -840,11 +840,11 @@ class ModuleJavCensored(PluginModuleBase):
         final_results_to_return = sorted_results_after_priority
 
         if final_results_to_return: # 변수명 변경에 따른 로깅 수정
-            logger.debug("Top results after final scoring:")
+            logger.info("최종 결과(우선순위 점수 반영):")
             for i, item_log_final_list in enumerate(final_results_to_return):
-                logger.debug(f"  {i+1}. Final Score={item_log_final_list.get('score')}, AdjScore={item_log_final_list.get('adjusted_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioLabel={item_log_final_list.get('is_priority_label_site', False)}, Code={item_log_final_list.get('code')}")
+                logger.info(f"  {i+1}. 최종점수={item_log_final_list.get('score')}, 품번점수={item_log_final_list.get('adjusted_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioLabel={item_log_final_list.get('is_priority_label_site', False)}, Code={item_log_final_list.get('code')}")
 
-        logger.debug(f"======= jav censored search END - Returning {len(final_results_to_return)} results. =======")
+        logger.info(f"======= jav censored search END - Returning {len(final_results_to_return)} results. =======")
         return final_results_to_return
 
 
@@ -1001,7 +1001,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode})")
+        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode})")
         data = None
         try:
             data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode)
@@ -1011,7 +1011,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         if data and data.get("ret") == "success" and data.get("data"):
             ret = data["data"]
-            logger.debug(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
+            logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
 
             return ret
         else:
