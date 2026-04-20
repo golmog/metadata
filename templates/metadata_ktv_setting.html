@@ -5,6 +5,7 @@
 {{ macros.m_row_end() }}
 {{ macros.m_hr() }}
 <form id="setting">
+{{ macros.setting_input_text('ktv_search_order', '검색 순서', value=arg['ktv_search_order'], desc=['가능한 값: daum, tving, wavve, watcha']) }}
 {{ macros.setting_checkbox('ktv_use_tmdb', 'TMDB 이미지 사용', value=arg['ktv_use_tmdb'], desc=['On : TMDB 매칭시 TMDB 배우 이미지 사용']) }}
 {{ macros.setting_checkbox('ktv_use_kakaotv', '작품별 부가영상 사용', value=arg['ktv_use_kakaotv'], desc=['On : 최근 영상 20개를 부가영상 항목에 포함']) }}
 {{ macros.setting_checkbox('ktv_use_kakaotv_episode', '에피소드별 부가영상 사용', value=arg['ktv_use_kakaotv_episode'], desc=['On : 에피소드별 부가영상 포함. 현재는 안드로이드 앱에서만 재생 지원']) }}

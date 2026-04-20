@@ -25,6 +25,7 @@ class ModuleKtv(PluginModuleBase):
         'ktv_total_test_info' : '',
         'ktv_watcha_test_seatch' : '',
         'ktv_watcha_test_info' : '',
+        'ktv_search_order': 'daum,tving,wavve,watcha',
     }
 
     module_map = {'daum':SiteDaumTv, 'tving':SiteTvingTv, 'wavve':SiteWavveTv, 'tmdb':SiteTmdbTv, 'watcha':SiteWatchaKTv}
@@ -131,7 +132,7 @@ class ModuleKtv(PluginModuleBase):
 
     def search(self, keyword, manual=False):
         ret = {}
-        site_list = ['daum', 'tving', 'wavve', 'watcha']
+        site_list = P.ModelSetting.get_list('ktv_search_order', ',') or []
         for idx, site in enumerate(site_list):
             site_data = self.module_map[site].search(keyword)
             if site_data['ret'] == 'success':
