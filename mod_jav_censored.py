@@ -645,7 +645,6 @@ class ModuleJavCensored(PluginModuleBase):
                         break
 
         else:
-            # [기존 로직 (동시 검색 개념 + 기존 조기 종료 로직)]
             priority_sites_for_general_early_exit = { "dmm": ["videoa",], "mgstage": True }
 
             for site_key in site_list_for_current_search:

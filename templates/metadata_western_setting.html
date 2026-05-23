@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+{{ macros.m_hr_black() }}
+
+<form id='setting' name='setting'>
+<div class="tab-content" id="nav-tabContent">
+
+  {{ macros.info_text('ThePornDB (Western)', 'TPDB 설정', desc=['서양 AV 메타데이터를 검색합니다.', '사용을 위해서는 ThePornDB의 API Token(Bearer)이 필요합니다. (https://metadataapi.net/)']) }}
+  
+  {{ macros.setting_input_text_and_buttons('western_tpdb_test_code', 'TPDB 검색 테스트', [['western_tpdb_test_btn', '테스트'], ['western_tpdb_nfo_download_btn', 'NFO'], ['western_tpdb_yaml_download_btn', 'YAML'], ['western_tpdb_pl_download_btn', '포스터(원본)'], ['western_tpdb_p_download_btn', '포스터(세로)']], value=arg['western_tpdb_test_code'], placeholder='예: Brazzers 23 05 10 Angela White', desc=['서양 영상은 파일명 원본을 그대로 입력하는 것이 가장 정확합니다. (스튜디오 + 날짜 + 배우명 등)']) }}
+  
+  {{ macros.setting_input_text('western_tpdb_api_token', 'API Token', value=arg['western_tpdb_api_token'], desc=['ThePornDB 사이트에서 발급받은 API Token을 입력하세요.']) }}
+
+  {{ macros.m_hr() }}
+  
+  {{ macros.setting_input_textarea('western_search_regex_removal', '검색어 불필요 문자열 제거 정규식 (1차)', value=arg['western_search_regex_removal'], row='3', desc=['검색 시 파일명에서 불필요한 패턴을 순차적으로 제거합니다.', '정규식 문법을 사용하며, 줄바꿈(Enter)으로 구분하여 여러 개를 입력할 수 있습니다.', '대소문자는 무시(Case-Insensitive)되어 적용됩니다.']) }}
+
+  {{ macros.setting_input_textarea('western_search_regex_removal_2nd', '검색어 불필요 문자열 제거 정규식 (2차)', value=arg['western_search_regex_removal_2nd'], row='3', desc=['1차 정제가 끝난 결과물에서 특정 단어나 패턴(예: (solo|vr)$)을 한 번 더 제거합니다.']) }}
+
+  {{ macros.setting_checkbox('western_trust_single_result', '단일 검색 결과 무조건 신뢰 (100점)', value=arg['western_trust_single_result'], desc=['검색 결과가 단 1개만 나왔을 경우, 텍스트 일치도 검증을 무시하고 강제로 100점을 부여합니다.', 'TPDB 자체 검색의 정확도를 신뢰할 때 켜두면 매칭 성공률이 크게 올라갑니다.']) }}
+  
+  {{ macros.m_hr() }}
+  
+  {{ macros.setting_checkbox('western_use_proxy', 'API 프록시 사용', value=arg['western_use_proxy'], desc=['ON으로 설정하면 TPDB API 통신 및 이미지 다운로드 시 프록시를 경유합니다.']) }}
+  
+  {{ macros.setting_checkbox('western_use_trailer_proxy', '트레일러(예고편) 프록시 사용', value=arg['western_use_trailer_proxy'], desc=['ON: 트레일러 영상을 FF의 내장 프록시 라우터를 통해 재생합니다.', 'OFF: 트레일러 원본 다이렉트 URL을 그대로 사용합니다.']) }}
+  
+  <div id="western_use_proxy_div" class="collapse">
+    {{ macros.setting_input_text('western_proxy_url', '프록시 URL', value=arg['western_proxy_url'], placeholder='예: http://127.0.0.1:1080', desc=['사용할 프록시 주소를 입력하세요.']) }}
+  </div>
+
+  {{ macros.setting_checkbox('western_trust_single_result', '단일 검색결과 무조건 신뢰 (100점)', value=arg['western_trust_single_result'], desc=['검색 결과가 단 1개일 경우, 문자열 불일치 페널티를 무시하고 무조건 100점을 부여합니다.', 'TPDB의 자체 검색 능력을 신뢰할 때 매칭 실패를 방지할 수 있습니다.']) }}
+
+  {{ macros.setting_input_text('western_title_format', '타이틀 포맷 (Scene)', value=arg['western_title_format'], desc=['씬(Scene) 검색 결과에 적용할 타이틀 포맷입니다.', '사용가능: {studio}, {title}, {year}, {actor}', '추천: [{studio}] {actor} - {title}']) }}
+  
+  {{ macros.setting_checkbox('western_use_movie_title_format', '영화(Movie) 타입 제목 별도 포맷 사용', value=arg['western_use_movie_title_format'], desc=['체크 시 영화(Movie) 검색 결과의 타이틀을 씬(Scene)과 다르게 지정할 수 있습니다.']) }}
+  
+  <div id="western_use_movie_title_format_div" class="collapse">
+    {{ macros.setting_input_text('western_movie_title_format', '타이틀 포맷 (Movie)', value=arg['western_movie_title_format'], desc=['영화(Movie) 검색 결과에 적용할 타이틀 포맷입니다.', '사용가능: {studio}, {title}, {year}, {actor}', '추천: [{studio}] {title}']) }}
+  </div>
+
+  {{ macros.setting_radio_with_value('western_tag_option', '태그(컬렉션) 옵션', [['not_using','사용안함'], ['studio', 'Studio (스튜디오)'], ['network', 'Network (네트워크)'], ['studio_network', 'Studio + Network']], value=arg['western_tag_option'], desc=['Plex/Kodi에서 컬렉션으로 묶일 태그 기준을 선택합니다.']) }}
+
+  {{ macros.m_hr() }}
+
+  {{ macros.setting_checkbox('western_use_smart_crop', 'Smart Crop: AI 포스터 자동 생성', value=arg['western_use_smart_crop'], desc=['ThePornDB의 세로 포스터 품질이 낮을 경우, 가로 원본(Background) 이미지를 AI가 분석하여 인물 중심으로 세로 포스터를 자동 크롭합니다.', '※ 이 기능을 사용하려면 [JAV 검열] 설정 탭에서 Face/Pose 모델 다운로드가 선행되어야 합니다.']) }}
+
+  <div id="western_use_smart_crop_div" class="collapse">
+    {{ macros.setting_input_textarea('western_poster_force_studios', '원본 세로 포스터 강제 사용 스튜디오', value=arg['western_poster_force_studios'], row='3', desc=['[Smart Crop] 옵션이 켜져 있더라도 무시하고 원본 포스터(Poster)를 우선 사용할 스튜디오를 등록합니다.', '여러 개일 경우 엔터(줄바꿈)나 쉼표(,)로 구분합니다. (대소문자 무시)']) }}
+  </div>
+
+  {{ macros.m_hr() }}
+
+  {{ macros.setting_radio_with_value('western_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['image_server', '이미지 서버']], value=arg['western_image_mode']) }}
+
+  <div id="western_use_image_server_div" class="collapse">
+    {{ macros.setting_input_text('western_image_server_url', '이미지 서버 URL', value=arg['western_image_server_url'], placeholder='예: https://image.example.com') }}
+    {{ macros.setting_input_text('western_image_server_local_path', '로컬 저장 경로 Root', value=arg['western_image_server_local_path'], desc='예: /data/images') }}
+    {{ macros.setting_input_text('western_image_server_save_format', '파일 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['ex: /western/{studio}', 'studio = 스튜디오']) }}
+  </div>
+
+</div>
+</form>
+
+<script type="text/javascript">
+$(document).ready(function(){
+  use_image_server("{{arg['western_image_mode']}}");
+  use_collapse("western_use_movie_title_format");
+  use_collapse("western_use_proxy");
+  use_collapse("western_use_smart_crop");
+});
+
+$('input[type=radio][name=western_image_mode]').change(function() {
+  use_image_server(this.value);
+});
+
+$('#western_use_movie_title_format').change(function() {
+  use_collapse('western_use_movie_title_format');
+});
+
+$('#western_use_proxy').change(function() {
+  use_collapse('western_use_proxy');
+});
+
+$('#western_use_smart_crop').change(function() {
+  use_collapse('western_use_smart_crop');
+});
+
+function use_image_server(value) {
+  if (value == 'image_server') {
+    $('#western_use_image_server_div').collapse('show');
+  } else {
+    $('#western_use_image_server_div').collapse('hide');
+  }
+}
+
+$("body").on('click', 'button[id^="western_"][id$="_btn"]', function(e){
+    e.preventDefault();
+    const btnId = $(this).attr('id');
+    const parts = btnId.split('_'); 
+    
+    const site = parts[1]; // tpdb
+    const actionParts = parts.slice(2, -1); 
+    const action = actionParts.join('_');
+
+    const codeInputId = "western_" + site + "_test_code";
+    const code = document.getElementById(codeInputId).value;
+
+    if (!code || !code.trim()) { notify('검색어를 입력하세요.', 'warning'); return; }
+
+    if (action === 'test') {
+        globalSendCommand('test', site, code);
+    } 
+    else if (action === 'nfo_download') {
+        window.location.href = '/metadata/normal/western/nfo_download?call=' + site + '&code=' + code;
+    }
+    else if (action === 'yaml_download') {
+        window.location.href = '/metadata/normal/western/yaml_download?call=' + site + '&code=' + code;
+    }
+    else if (action === 'pl_download') {
+        window.location.href = '/metadata/normal/western/image_download?call=' + site + '&type=pl&code=' + code;
+    }
+    else if (action === 'p_download') {
+        window.location.href = '/metadata/normal/western/image_download?call=' + site + '&type=p&code=' + code;
+    }
+});
+
+$('input[id$="_test_code"]').on('keypress', function(e) {
+  if (e.which === 13) {
+    e.preventDefault();
+    var siteName = $(this).attr('id').split('_')[1];
+    var buttonId = '#western_' + siteName + '_test_btn';
+    $(buttonId).click();
+  }
+});
+</script>
+{% endblock %}
