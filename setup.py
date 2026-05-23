@@ -69,6 +69,13 @@ setting = {
                 ]
             },
             {
+                'uri': 'western',
+                'name': '서양 AV (TPDB)',
+                'list': [
+                    {'uri': 'setting', 'name': '설정'},
+                ]
+            },
+            {
                 'uri': 'manual',
                 'name': '매뉴얼',
                 'list': [
@@ -99,7 +106,8 @@ try:
     from .mod_route import ModuleRoute
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_uncensored import ModuleJavUncensored
-    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored,ModuleJavUncensored])
+    from .mod_western import ModuleWestern
+    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored,ModuleJavUncensored, ModuleWestern])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())

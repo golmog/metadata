@@ -180,6 +180,8 @@ class ModuleRoute(PluginModuleBase):
                 site = request.args.get("site")
                 if mode: 
                     mode = unquote_plus(mode)
+                if site == 'tpdb':
+                    return P.get_module("western").site_map[site].jav_image(image_url, mode=mode)
                 return P.get_module("jav_censored").site_map[site].jav_image(image_url, mode=mode)
             elif sub == "jav_video":
                 image_url = unquote_plus(request.args.get("url"))
@@ -197,6 +199,8 @@ class ModuleRoute(PluginModuleBase):
             elif sub == "jav_video_un":
                 image_url = unquote_plus(request.args.get("url"))
                 site = request.args.get("site")
+                if site == 'tpdb':
+                    return P.get_module("western").site_map[site].jav_image(image_url)
                 return P.get_module("jav_uncensored").site_map[site]['instance'].jav_video(image_url)
 
         except Exception as e: 
