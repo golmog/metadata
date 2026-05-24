@@ -48,7 +48,7 @@
 
   {{ macros.m_hr() }}
 
-  {{ macros.setting_checkbox('western_use_smart_crop', 'Smart Crop: AI 포스터 자동 생성', value=arg['western_use_smart_crop'], desc=['ThePornDB의 세로 포스터 품질이 낮을 경우, 가로 원본(Background) 이미지를 AI가 분석하여 인물 중심으로 세로 포스터를 자동 크롭합니다.', '※ 이 기능을 사용하려면 [JAV 검열] 설정 탭에서 Face/Pose 모델 다운로드가 선행되어야 합니다.']) }}
+  {{ macros.setting_checkbox('western_use_smart_crop', 'Smart Crop 사용', value=arg['western_use_smart_crop'], desc=['ThePornDB의 세로 포스터 품질이 낮을 경우, 가로 원본(Background) 이미지를 인물 중심으로 자동 크롭합니다.', '※ [JAV Censored] 설정에서 Face/Pose 모델 다운로드가 선행되어야 합니다.']) }}
 
   <div id="western_use_smart_crop_div" class="collapse">
     {{ macros.setting_input_textarea('western_poster_force_studios', '원본 세로 포스터 강제 사용 스튜디오', value=arg['western_poster_force_studios'], row='3', desc=['[Smart Crop] 옵션이 켜져 있더라도 무시하고 원본 포스터(Poster)를 우선 사용할 스튜디오를 등록합니다.', '여러 개일 경우 엔터(줄바꿈)나 쉼표(,)로 구분합니다. (대소문자 무시)']) }}
