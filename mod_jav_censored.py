@@ -44,6 +44,8 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_actor_order": "avdbs",
             f"{self.name}_result_priority_order": "dmm_videoa, dmm_dvd, mgstage, dmm_bluray, dmm_amateur, dmm_unknown, jav321, javbus, javdb",
 
+            f"{self.name}_mgs_label_priority": "False",
+
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
             f"{self.name}_title_format": "[{title}] {tagline}",
@@ -84,9 +86,9 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_avdbs_test_name": "",
 
             # hentaku
-            f"{self.name}_hentaku_use_proxy": "False",
-            f"{self.name}_hentaku_proxy_url": "",
-            f"{self.name}_hentaku_test_name": "",
+            #f"{self.name}_hentaku_use_proxy": "False",
+            #f"{self.name}_hentaku_proxy_url": "",
+            #f"{self.name}_hentaku_test_name": "",
 
             # dmm
             f"{self.name}_dmm_use_proxy": "False",
@@ -553,12 +555,24 @@ class ModuleJavCensored(PluginModuleBase):
                 match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
                 if match_kw_label: current_keyword_label = match_kw_label.group(1)
 
+        # MGS 레이블 강제 우선 처리 체크
+        is_mgs_forced_priority = False
+        if current_keyword_label and P.ModelSetting.get_bool(f"{self.name}_mgs_label_priority"):
+            try:
+                from support_site.constants import MGS_LABEL_MAP
+                if current_keyword_label.upper() in MGS_LABEL_MAP:
+                    is_mgs_forced_priority = True
+                    logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in MGS_LABEL_MAP. Forcing MGStage as highest priority.")
+            except Exception as e_mgs_prio:
+                logger.error(f"Error loading MGS_LABEL_MAP for dynamic priority check: {e_mgs_prio}")
+
         # --- is_keyword_potentially_priority_for_any_site 플래그 계산 ---
         is_keyword_potentially_priority_for_any_site = False
-        if current_keyword_label: # 대표 레이블이 추출되었을 때만 확인
-            # 모든 사이트의 "지정 레이블 최우선" 설정을 순회
-            for site_key_for_potential_check in self.site_map.keys(): # site_map에 등록된 모든 사이트
-                # 실제로는 original_site_order_list를 순회하는 것이 더 효율적일 수 있으나, 모든 가능성을 보려면 site_map 사용
+        if is_mgs_forced_priority:
+            # MGS 강제 최우선인 경우 해당 플래그를 참으로 만들어 조기 종료 연동을 보호합니다.
+            is_keyword_potentially_priority_for_any_site = True
+        elif current_keyword_label: # 대표 레이블이 추출되었을 때만 확인
+            for site_key_for_potential_check in self.site_map.keys():
                 db_prefix_potential = f"{self.name}_{site_key_for_potential_check}"
                 priority_labels_str_potential = P.ModelSetting.get(f"{db_prefix_potential}_priority_search_labels")
                 if priority_labels_str_potential:
@@ -566,14 +580,16 @@ class ModuleJavCensored(PluginModuleBase):
                     if current_keyword_label in site_priority_labels_set_potential:
                         is_keyword_potentially_priority_for_any_site = True
                         logger.debug(f"  Potential Priority: Keyword label '{current_keyword_label}' is a priority for site '{site_key_for_potential_check}'.")
-                        break # 하나라도 찾으면 더 이상 확인할 필요 없음
+                        break
             if is_keyword_potentially_priority_for_any_site:
                 logger.debug(f"Keyword label '{current_keyword_label}' is potentially a priority label for at least one site. 조기 종료 조건이 이에 따라 조정됩니다.")
 
         special_priority_site = None # 이 검색어에 대해 특별히 우선 검색할 사이트
-        if current_keyword_label:
+        if is_mgs_forced_priority:
+            # 1순위: MGS 강제 우선인 경우
+            special_priority_site = 'mgstage'
+        elif current_keyword_label:
             logger.debug(f"Search keyword: '{keyword}', Extracted keyword label: '{current_keyword_label}' for dynamic site ordering.")
-            # original_site_order_list 순서대로 각 사이트의 우선 레이블 설정을 확인
             for site_key_check_priority in original_site_order_list:
                 if site_key_check_priority not in self.site_map: continue
                 
@@ -584,7 +600,7 @@ class ModuleJavCensored(PluginModuleBase):
                     if current_keyword_label in site_priority_labels_set:
                         special_priority_site = site_key_check_priority
                         logger.debug(f"Keyword label '{current_keyword_label}' is a priority for site '{special_priority_site}'. This site will be searched first.")
-                        break # 첫 번째로 매칭되는 우선 지정 사이트를 찾으면 중단
+                        break
 
         # --- 3. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
@@ -609,7 +625,13 @@ class ModuleJavCensored(PluginModuleBase):
                     item['original_score'] = item.get("score", 0)
                     item['site_key'] = item.get("site_key", site_key)
                     item['hq_poster_passed'] = False
-                    if 'is_priority_label_site' not in item: item['is_priority_label_site'] = False
+                    
+                    # MGS 강제 최우선 상태에서 MGStage 결과물일 경우 강제로 정렬 가중치(is_priority_label_site) 부여
+                    if is_mgs_forced_priority and site_key == 'mgstage':
+                        item['is_priority_label_site'] = True
+                    elif 'is_priority_label_site' not in item: 
+                        item['is_priority_label_site'] = False
+                        
                     if 'code' in item: self.keyword_cache.set(item['code'], keyword)
                     results.append(item)
             return results
