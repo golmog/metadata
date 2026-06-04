@@ -45,6 +45,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_result_priority_order": "dmm_videoa, dmm_dvd, mgstage, dmm_bluray, dmm_amateur, dmm_unknown, jav321, javbus, javdb",
 
             f"{self.name}_mgs_label_priority": "False",
+            f"{self.name}_mgs_label_priority_exclude": "",
 
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
@@ -558,13 +559,21 @@ class ModuleJavCensored(PluginModuleBase):
         # MGS 레이블 강제 우선 처리 체크
         is_mgs_forced_priority = False
         if current_keyword_label and P.ModelSetting.get_bool(f"{self.name}_mgs_label_priority"):
-            try:
-                from support_site.constants import MGS_LABEL_MAP
-                if current_keyword_label.upper() in MGS_LABEL_MAP:
-                    is_mgs_forced_priority = True
-                    logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in MGS_LABEL_MAP. Forcing MGStage as highest priority.")
-            except Exception as e_mgs_prio:
-                logger.error(f"Error loading MGS_LABEL_MAP for dynamic priority check: {e_mgs_prio}")
+            exclude_raw_str = P.ModelSetting.get(f"{self.name}_mgs_label_priority_exclude")
+            exclude_labels_set = set()
+            if exclude_raw_str:
+                exclude_labels_set = {x.strip().upper() for x in re.split(r'[\s,\n]', exclude_raw_str) if x.strip()}
+            
+            if current_keyword_label.upper() not in exclude_labels_set:
+                try:
+                    from support_site.constants import MGS_LABEL_MAP
+                    if current_keyword_label.upper() in MGS_LABEL_MAP:
+                        is_mgs_forced_priority = True
+                        logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in MGS_LABEL_MAP. Forcing MGStage priority.")
+                except Exception as e_mgs_prio:
+                    logger.error(f"Error loading MGS_LABEL_MAP for priority check: {e_mgs_prio}")
+            else:
+                logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in EXCLUDE list. Bypassing forced priority.")
 
         # --- is_keyword_potentially_priority_for_any_site 플래그 계산 ---
         is_keyword_potentially_priority_for_any_site = False
