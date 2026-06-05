@@ -411,6 +411,21 @@ class ModuleWestern(PluginModuleBase):
                     title_format = "[{studio}] {actor} - {title}"
             
             final_title = title_format.format(**format_dict)
+            
+            # 타이틀 자동 치유(Auto-Healer) 정규식 로직
+            # Case A: "[Studio]  - Title" -> "[Studio] Title" (스튜디오 대괄호 뒤에 홀로 남은 대시 치료)
+            final_title = re.sub(r'\[([^\]]+)\]\s*-\s*', r'[\1] ', final_title)
+            
+            # Case B: "[Studio] Title -  " -> "[Studio] Title" (문장 끝자락에 홀로 남은 대시 치료)
+            final_title = re.sub(r'\s*-\s*$', '', final_title)
+            
+            # Case C: "  - Title" -> "Title" (문장 맨 앞에 홀로 남은 대시 치료)
+            final_title = re.sub(r'^\s*-\s*', '', final_title)
+            
+            # Case D: 연속된 대시(" - - ") 및 다중 공백 정리
+            final_title = re.sub(r'(\s*-\s*){2,}', ' - ', final_title)
+            final_title = re.sub(r'\s+', ' ', final_title).strip()
+            
             ret["title"] = final_title
             
             clean_sort_title = re.sub(r'[\[\]\-_]', ' ', final_title)
