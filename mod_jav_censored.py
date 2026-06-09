@@ -575,12 +575,10 @@ class ModuleJavCensored(PluginModuleBase):
             else:
                 logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in EXCLUDE list. Bypassing forced priority.")
 
-        # --- is_keyword_potentially_priority_for_any_site 플래그 계산 ---
+        # is_keyword_potentially_priority_for_any_site 플래그 계산
         is_keyword_potentially_priority_for_any_site = False
-        if is_mgs_forced_priority:
-            # MGS 강제 최우선인 경우 해당 플래그를 참으로 만들어 조기 종료 연동을 보호합니다.
-            is_keyword_potentially_priority_for_any_site = True
-        elif current_keyword_label: # 대표 레이블이 추출되었을 때만 확인
+        if current_keyword_label:
+            # 사용자가 직접 지정한 '지정 레이블 최우선' 조건이 하나라도 있는지 먼저 확인
             for site_key_for_potential_check in self.site_map.keys():
                 db_prefix_potential = f"{self.name}_{site_key_for_potential_check}"
                 priority_labels_str_potential = P.ModelSetting.get(f"{db_prefix_potential}_priority_search_labels")
@@ -588,17 +586,21 @@ class ModuleJavCensored(PluginModuleBase):
                     site_priority_labels_set_potential = {lbl.strip().upper() for lbl in priority_labels_str_potential.split(',') if lbl.strip()}
                     if current_keyword_label in site_priority_labels_set_potential:
                         is_keyword_potentially_priority_for_any_site = True
-                        logger.debug(f"  Potential Priority: Keyword label '{current_keyword_label}' is a priority for site '{site_key_for_potential_check}'.")
+                        logger.debug(f"  Potential Priority: Keyword label '{current_keyword_label}' is a user-specified priority for site '{site_key_for_potential_check}'.")
                         break
-            if is_keyword_potentially_priority_for_any_site:
-                logger.debug(f"Keyword label '{current_keyword_label}' is potentially a priority label for at least one site. 조기 종료 조건이 이에 따라 조정됩니다.")
+                        
+        # 사용자의 직접 지정이 없고, MGS 자동 최우선 조건에 매칭되는 경우
+        if not is_keyword_potentially_priority_for_any_site and is_mgs_forced_priority:
+            is_keyword_potentially_priority_for_any_site = True
+            logger.debug(f"  Potential Priority: Keyword label '{current_keyword_label}' falls back to automatic MGS Forced Priority.")
 
-        special_priority_site = None # 이 검색어에 대해 특별히 우선 검색할 사이트
-        if is_mgs_forced_priority:
-            # 1순위: MGS 강제 우선인 경우
-            special_priority_site = 'mgstage'
-        elif current_keyword_label:
-            logger.debug(f"Search keyword: '{keyword}', Extracted keyword label: '{current_keyword_label}' for dynamic site ordering.")
+        if is_keyword_potentially_priority_for_any_site:
+            logger.debug(f"Keyword label '{current_keyword_label}' is potentially a priority label. 조기 종료 조건이 이에 따라 조정됩니다.")
+
+        special_priority_site = None 
+        
+        # [1순위] 사용자가 각 사이트 설정창에 직접 명시해 둔 '지정 레이블 최우선 검색' 대조
+        if current_keyword_label:
             for site_key_check_priority in original_site_order_list:
                 if site_key_check_priority not in self.site_map: continue
                 
@@ -608,8 +610,14 @@ class ModuleJavCensored(PluginModuleBase):
                     site_priority_labels_set = {lbl.strip().upper() for lbl in priority_labels_str.split(',') if lbl.strip()}
                     if current_keyword_label in site_priority_labels_set:
                         special_priority_site = site_key_check_priority
-                        logger.debug(f"Keyword label '{current_keyword_label}' is a priority for site '{special_priority_site}'. This site will be searched first.")
+                        logger.debug(f"User Specified Priority: Label '{current_keyword_label}' is assigned to '{special_priority_site}' by user.")
                         break
+
+        # [2순위] 사용자가 명시한 우선권이 없고, MGS 자동 맵핑 최우선 조건에 매칭되는 경우
+        if not special_priority_site and is_mgs_forced_priority:
+            special_priority_site = 'mgstage'
+            logger.debug(f"Automatic Priority: Label '{current_keyword_label}' is automatically assigned to 'mgstage'.")
+
 
         # --- 3. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
@@ -635,11 +643,11 @@ class ModuleJavCensored(PluginModuleBase):
                     item['site_key'] = item.get("site_key", site_key)
                     item['hq_poster_passed'] = False
                     
-                    # MGS 강제 최우선 상태에서 MGStage 결과물일 경우 강제로 정렬 가중치(is_priority_label_site) 부여
-                    if is_mgs_forced_priority and site_key == 'mgstage':
+                    if special_priority_site and site_key == special_priority_site:
                         item['is_priority_label_site'] = True
                     elif 'is_priority_label_site' not in item: 
                         item['is_priority_label_site'] = False
+                    # =========================================================================
                         
                     if 'code' in item: self.keyword_cache.set(item['code'], keyword)
                     results.append(item)
@@ -658,15 +666,11 @@ class ModuleJavCensored(PluginModuleBase):
                     has_perfect_match = False
                     for item in site_results:
                         if item.get('score') == 100:
-                            # 100점이라도 다른 사이트의 우선 레이블일 수 있으니 체크
                             if is_keyword_potentially_priority_for_any_site:
-                                # 현재 사이트가 그 '우선 사이트'이거나, 현재 아이템이 '우선 레이블 매칭'된 경우라면 종료 OK
                                 if site_key == special_priority_site or item.get('is_priority_label_site'):
                                     has_perfect_match = True
                                     break
-                                # 아니라면(다른 사이트가 우선인데 여기서 100점 나옴), 계속 검색
                             else:
-                                # 우선 레이블 이슈 없으면 100점에서 종료
                                 has_perfect_match = True
                                 break
                     
@@ -685,7 +689,7 @@ class ModuleJavCensored(PluginModuleBase):
                 if site_results:
                     all_results.extend(site_results)
                     
-                    # 기존 자동 검색 시 조기 종료 로직
+                    # 자동 검색 시 조기 종료 로직
                     if not manual:
                         for item in site_results:
                             if item['original_score'] >= 98:
