@@ -527,6 +527,17 @@ class ModuleJavCensored(PluginModuleBase):
 
     def search(self, keyword, manual=False):
         logger.info(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
+        
+        # 직접 상세 페이지 주소(URL) 입력 감지 훅
+        if keyword.startswith('http://') or keyword.startswith('https://'):
+            logger.info(f"[{self.name}] Direct URL matching triggered for: '{keyword}'")
+            direct_item = self._process_direct_url(keyword)
+            if direct_item:
+                return [direct_item]
+            else:
+                logger.warning(f"[{self.name}] Failed to parse direct URL: '{keyword}'")
+                return []
+
         all_results = []
         original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
         
@@ -647,7 +658,6 @@ class ModuleJavCensored(PluginModuleBase):
                         item['is_priority_label_site'] = True
                     elif 'is_priority_label_site' not in item: 
                         item['is_priority_label_site'] = False
-                    # =========================================================================
                         
                     if 'code' in item: self.keyword_cache.set(item['code'], keyword)
                     results.append(item)
@@ -665,9 +675,13 @@ class ModuleJavCensored(PluginModuleBase):
                     
                     has_perfect_match = False
                     for item in site_results:
-                        if item.get('score') == 100:
+                        if item.get('original_score', 0) >= 100:
                             if is_keyword_potentially_priority_for_any_site:
                                 if site_key == special_priority_site or item.get('is_priority_label_site'):
+                                    has_perfect_match = True
+                                    break
+                                else:
+                                    logger.info(f"Sequential Early Exit: Priority site failed. Accepting high-score fallback match on '{site_key}'.")
                                     has_perfect_match = True
                                     break
                             else:
@@ -675,12 +689,12 @@ class ModuleJavCensored(PluginModuleBase):
                                 break
                     
                     if has_perfect_match:
-                        logger.debug(f"순차 검색: '{site_key}'에서 적합한 100점 결과 발견. 검색 조기 종료.")
+                        logger.debug(f"순차 검색: '{site_key}'에서 적합한 결과 발견. 검색 조기 종료.")
                         early_exit_triggered = True
                         break
 
         else:
-            priority_sites_for_general_early_exit = { "dmm": ["videoa",], "mgstage": True }
+            priority_sites_for_general_early_exit = { "dmm": ["videoa", "dvd"], "mgstage": True }
 
             for site_key in site_list_for_current_search:
                 if early_exit_triggered: break
@@ -692,7 +706,7 @@ class ModuleJavCensored(PluginModuleBase):
                     # 자동 검색 시 조기 종료 로직
                     if not manual:
                         for item in site_results:
-                            if item['original_score'] >= 98:
+                            if item.get('original_score', 0) >= 100:
                                 current_item_site = item.get('site_key')
                                 current_item_type = item.get('content_type')
                                 is_prio_match = item.get('is_priority_label_site', False)
@@ -703,16 +717,25 @@ class ModuleJavCensored(PluginModuleBase):
                                 elif isinstance(site_conf, list) and current_item_type in site_conf: allow_exit = True
                                 
                                 if allow_exit:
-                                    if current_item_site == special_priority_site and is_prio_match:
-                                        logger.info(f"Early Exit: Priority Label match on Priority Site '{current_item_site}'.")
-                                        early_exit_triggered = True
-                                        break
-                                    elif not is_keyword_potentially_priority_for_any_site:
+                                    # 1. 우선순위 레이블이 없는 일반 품번인 경우
+                                    if not is_keyword_potentially_priority_for_any_site:
                                         logger.info(f"Early Exit: General high-score match on '{current_item_site}'.")
                                         early_exit_triggered = True
                                         break
-                                    elif is_keyword_potentially_priority_for_any_site and not is_prio_match:
-                                        pass
+                                        
+                                    # 2. 우선순위 레이블이 지정된 경우
+                                    else:
+                                        # 2-A. 그 우선순위의 주인공 사이트에서 매칭된 거라면 즉시 종료
+                                        if current_item_site == special_priority_site and is_prio_match:
+                                            logger.info(f"Early Exit: Priority Label match on Priority Site '{current_item_site}'.")
+                                            early_exit_triggered = True
+                                            break
+                                            
+                                        # 2-B. 우선순위 사이트가 아닌 다른 사이트(폴백 사이트)에서 매칭된 경우
+                                        else:
+                                            logger.info(f"Early Exit: Priority site failed. Accepting high-score fallback match on '{current_item_site}'.")
+                                            early_exit_triggered = True
+                                            break
 
         # --- 5. 결과 정렬 및 반환 ---
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
@@ -900,6 +923,88 @@ class ModuleJavCensored(PluginModuleBase):
         except Exception as e_site_search:
             logger.error(f"Error during search on site '{site}' for keyword '{keyword}': {e_site_search}")
         return None
+
+
+    def _process_direct_url(self, url):
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname.lower() if parsed.hostname else ""
+        except Exception:
+            return None
+        
+        site_key = None
+        extracted_code = None
+        
+        # 1. 도메인 대조 및 고유 코드(CID) 패턴 추출
+        if 'dmm.co.jp' in hostname or 'dmm.com' in hostname:
+            site_key = 'dmm'
+            match = re.search(r'[?&]id=(?P<code>[^&?]+)', url)
+            if not match:
+                match = re.search(r'/cid=(?P<code>[^/&?]+)', url)
+            if match:
+                extracted_code = match.group('code')
+                
+        elif 'mgstage.com' in hostname:
+            site_key = 'mgstage'
+            match = re.search(r'/product_detail/(?P<code>[^/&?]+)', url)
+            if match:
+                extracted_code = match.group('code')
+                
+        elif 'jav321.com' in hostname:
+            site_key = 'jav321'
+            match = re.search(r'/video/([^/&?]+)', url)
+            if match:
+                extracted_code = match.group(1)
+                
+        elif 'javbus.com' in hostname:
+            site_key = 'javbus'
+            match = re.search(r'javbus\.com/([^/&?]+)', url)
+            if match:
+                extracted_code = match.group(1)
+                
+        elif 'javdb.com' in hostname:
+            site_key = 'javdb'
+            match = re.search(r'/v/([^/&?]+)', url)
+            if match:
+                extracted_code = match.group(1)
+
+        if not site_key or not extracted_code:
+            return None
+
+        # 2. 파서 클래스 존재 여부 대조
+        SiteClass = self.site_map.get(site_key)
+        if not SiteClass:
+            return None
+
+        # 3. UI 품번 정규화
+        try:
+            final_ui_code, _, _ = SiteClass._parse_ui_code(extracted_code)
+        except Exception:
+            final_ui_code = extracted_code.upper()
+
+        # 4. 가상 검색 결과 딕셔너리 빌드 (Censored의 모듈 문자는 항상 'C')
+        mock_code = 'C' + SiteClass.site_char + extracted_code
+
+        # 키워드 캐시 등록 (info 단계에서 키워드 대조 및 보정 로직 보호)
+        try:
+            self.keyword_cache.set(mock_code, final_ui_code)
+        except AttributeError:
+            self.keyword_cache[mock_code] = final_ui_code
+
+        item = {
+            'code': mock_code,
+            'ui_code': final_ui_code,
+            'score': 100,
+            'original_score': 100,
+            'adjusted_score': 100,
+            'title': f"[{site_key.upper()} URL 직접 매칭] {final_ui_code}",
+            'desc': f"상세 페이지 직접 우회 진입 성공: {url}",
+            'image_url': '',
+            'site_key': site_key,
+            'content_type': 'unknown',
+            'is_priority_label_site': True
+        }
+        return item
 
 
     # endregion SEARCH
