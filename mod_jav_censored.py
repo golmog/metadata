@@ -51,6 +51,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
             f"{self.name}_title_format": "[{title}] {tagline}",
             f"{self.name}_use_imagehash": "False",
+            f"{self.name}_use_hq_poster_check": "False",
             f"{self.name}_art_count": "0",
             f"{self.name}_tag_option": "not_using", # not_using, label, label_and_site, site
             f"{self.name}_use_extras": "False",
@@ -743,93 +744,80 @@ class ModuleJavCensored(PluginModuleBase):
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
-        """
         # 2단계: HQ 포스터 검증 (manual=False 일 때)
-        if not manual and all_results:
-            logger.debug("--- Starting HQ Poster check ---")
-            all_results_sorted_for_hq_check = sorted(all_results, key=lambda k: k.get("original_score", 0), reverse=True)
+        # HQ 검증은 외부 라이브 CDN을 직접 당겨쓰는 'jav321' 결과물에만 제한적으로 적용
+        use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
+        
+        if not manual and all_results and use_hq_poster_check:
+            logger.debug("--- Starting HQ Poster check (Targeting jav321 only) ---")
+            
+            # jav321 결과물 중 점수가 95점 이상인 최상위 후보들만 검증 대상
+            score_threshold = 95
+            candidates_for_hq_check = [
+                item for item in all_results 
+                if item.get("site_key") == "jav321" and item.get("original_score", 0) >= score_threshold
+            ]
 
-            if all_results_sorted_for_hq_check: 
-                top_original_score = all_results_sorted_for_hq_check[0].get("original_score", 0)
-                score_threshold = 95
+            if candidates_for_hq_check:
+                logger.debug(f"HQ Check: {len(candidates_for_hq_check)} jav321 candidates found (score >= {score_threshold}).")
 
-                if top_original_score >= score_threshold:
-                    candidates_for_hq_check = [
-                        item for item in all_results_sorted_for_hq_check 
-                        if item.get("original_score", 0) >= score_threshold
-                    ]
-                    logger.debug(f"HQ Check: {len(candidates_for_hq_check)} candidates (score >= {score_threshold}).")
+                for item_in_all_results_to_update in candidates_for_hq_check:
+                    code_for_hq_check = item_in_all_results_to_update.get("code")
+                    site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
+                    ps_url_for_hq_check = item_in_all_results_to_update.get("image_url")
 
-                    for candidate_item_ref in candidates_for_hq_check:
-                        item_in_all_results_to_update = next(
-                            (
-                                x for x in all_results 
-                                if x.get('code') == candidate_item_ref.get('code') and 
-                                   x.get('site_key') == candidate_item_ref.get('site_key')
-                            ),
-                            None
+                    # --- hq_poster_score_adj 초기화 및 기본 페널티 설정 ---
+                    item_in_all_results_to_update['hq_poster_score_adj'] = -1
+
+                    try:
+                        SiteClass = self.site_map.get(site_key_for_hq_check)
+                        if not SiteClass: continue
+
+                        info_data_for_hq_check = self.info2(
+                            code_for_hq_check, 
+                            site_key_for_hq_check, 
+                            keyword, 
+                            ps_url=ps_url_for_hq_check
                         )
 
-                        if not item_in_all_results_to_update:
-                            logger.warning(f"HQ Check: Could not find original item in all_results for candidate code {candidate_item_ref.get('code')}. Skipping HQ check for this item.")
-                            continue
+                        if info_data_for_hq_check:
+                            ps_url_hq, pl_url_hq = None, None
+                            for thumb_item_hq in info_data_for_hq_check.get('thumb', []):
+                                if thumb_item_hq.get('aspect') == 'poster': 
+                                    ps_url_hq = thumb_item_hq.get('value')
+                                if thumb_item_hq.get('aspect') == 'landscape': 
+                                    pl_url_hq = thumb_item_hq.get('value')
+                                if ps_url_hq and pl_url_hq: 
+                                    break
 
-                        code_for_hq_check = item_in_all_results_to_update.get("code")
-                        site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
-                        ps_url_for_hq_check = candidate_item_ref.get("image_url")
+                            if ps_url_hq and pl_url_hq:
+                                im_sm_obj_hq = SiteClass.imopen(ps_url_hq)
+                                im_lg_obj_hq = SiteClass.imopen(pl_url_hq)
 
-                        if not code_for_hq_check or not site_key_for_hq_check:
-                            logger.warning(f"HQ Check: Code or site_key missing for an item. Skipping HQ check.")
-                            continue
+                                if im_sm_obj_hq and im_lg_obj_hq:
+                                    try:
+                                        sm_w, sm_h = im_sm_obj_hq.size
+                                        aspect_ratio_for_check = sm_h / sm_w if sm_w > 0 else 1.4225
+                                        poster_pos_result = SiteClass.has_hq_poster(im_sm_obj_hq, im_lg_obj_hq, aspect_ratio=aspect_ratio_for_check)
 
-                        # --- hq_poster_score_adj 초기화 및 기본 페널티 설정 ---
-                        item_in_all_results_to_update['hq_poster_score_adj'] = -1
-
-                        try:
-                            info_data_for_hq_check = self.info2(
-                                code_for_hq_check, 
-                                site_key_for_hq_check, 
-                                keyword, 
-                                ps_url=ps_url_for_hq_check
-                            )
-
-                            if info_data_for_hq_check:
-                                ps_url_hq, pl_url_hq = None, None
-                                for thumb_item_hq in info_data_for_hq_check.get('thumb', []):
-                                    if thumb_item_hq.get('aspect') == 'poster': 
-                                        ps_url_hq = thumb_item_hq.get('value')
-                                    if thumb_item_hq.get('aspect') == 'landscape': 
-                                        pl_url_hq = thumb_item_hq.get('value')
-                                    if ps_url_hq and pl_url_hq: 
-                                        break
-
-                                if ps_url_hq and pl_url_hq:
-                                    im_sm_obj_hq = instance.imopen(ps_url_hq)
-                                    im_lg_obj_hq = instance.imopen(pl_url_hq)
-
-                                    if im_sm_obj_hq and im_lg_obj_hq:
-                                        try:
-                                            sm_w, sm_h = im_sm_obj_hq.size
-                                            aspect_ratio_for_check = sm_h / sm_w if sm_w > 0 else 1.4225
-                                            poster_pos_result = instance.has_hq_poster(im_sm_obj_hq, im_lg_obj_hq, aspect_ratio=aspect_ratio_for_check)
-
-                                            if poster_pos_result:
-                                                item_in_all_results_to_update['hq_poster_score_adj'] = 0
-                                            else:
-                                                item_in_all_results_to_update['hq_poster_score_adj'] = -1
-                                        finally:
-                                            if im_sm_obj_hq: im_sm_obj_hq.close()
-                                            if im_lg_obj_hq: im_lg_obj_hq.close()
-                                    else:
-                                        item_in_all_results_to_update['hq_poster_score_adj'] = -1
+                                        # 검증 성공 시 감점 면제(0점), 실패 시 페널티 부과(-1점)
+                                        if poster_pos_result:
+                                            item_in_all_results_to_update['hq_poster_score_adj'] = 0
+                                        else:
+                                            item_in_all_results_to_update['hq_poster_score_adj'] = -1
+                                    finally:
+                                        if im_sm_obj_hq: im_sm_obj_hq.close()
+                                        if im_lg_obj_hq: im_lg_obj_hq.close()
                                 else:
-                                    logger.debug(f"HQ Check SKIPPED (ps_url or pl_url missing) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
+                                    item_in_all_results_to_update['hq_poster_score_adj'] = -1
                             else:
-                                logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check} on {site_key_for_hq_check}. Penalty: -1.")
-                        except Exception as e_info_hq_check:
-                            logger.error(f"HQ Check Exception for {code_for_hq_check} on {site_key_for_hq_check}: {e_info_hq_check}")
-                            item_in_all_results_to_update['hq_poster_score_adj'] = -2
-        """
+                                logger.debug(f"HQ Check SKIPPED (ps_url or pl_url missing) for {code_for_hq_check}. Penalty: -1.")
+                        else:
+                            logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check}. Penalty: -1.")
+                    except Exception as e_info_hq_check:
+                        logger.error(f"HQ Check Exception for {code_for_hq_check}: {e_info_hq_check}")
+                        # 심각한 네트워크 예외나 크래시 발생 시 -2점 페널티
+                        item_in_all_results_to_update['hq_poster_score_adj'] = -2
 
         # 3단계: 조정된 점수 계산
         for item_adj_score in all_results:
