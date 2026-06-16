@@ -166,6 +166,14 @@ class ModuleJavCensored(PluginModuleBase):
             logger.error(f"Failed to delete AV cache file: {e}")
             logger.error(traceback.format_exc())
 
+        try:
+            for key, value in self.db_default.items():
+                if P.ModelSetting.get(key) is None:
+                    logger.debug(f"[{self.name}] Migration: Setting missing DB key '{key}' to default '{value}'")
+                    P.ModelSetting.set(key, value)
+        except Exception as e_db_sync:
+            logger.error(f"[{self.name}] DB Sync Error: {e_db_sync}")
+
         self.create_default_settings_yaml()
         self._set_site_setting()
 
