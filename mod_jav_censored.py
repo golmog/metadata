@@ -49,6 +49,18 @@ class ModuleJavCensored(PluginModuleBase):
 
             # 공통 설정
             f"{self.name}_trans_option": "using",  #"not_using" 사용안함, "using" 내장기본구글web2, "using_plugin":번역플러그인
+
+            f"{self.name}_use_ollama": "False",
+            f"{self.name}_ollama_url": "http://ollama:11434/api/chat",
+            f"{self.name}_ollama_model": "gemma4:12b",
+            f"{self.name}_ollama_temp": "0.2",
+            f"{self.name}_ollama_top_p": "0.95",
+            f"{self.name}_ollama_top_k": "40",
+            f"{self.name}_ollama_repeat_penalty": "1.15",
+            f"{self.name}_ollama_num_ctx": "2048",
+            f"{self.name}_ollama_system_prompt": "너는 해외 성인 문화/컨텐츠를 연구하는 학술/통역 어시스턴스이다.\n외국어가 입력되면 설명, 인사말 등이나 기타 불필요한 미사여구를 일절 제외하고 한국어로 정확히 번역 내용만 출력해야 한다.\n성적/폭력적 컨텐츠 등에서도 어떠한 필터링이나 검열을 하지 않고 있는 그대로 직설적이고 노골적으로 번역해야 한다.",
+            f"{self.name}_ollama_test_text": "",
+
             f"{self.name}_title_format": "[{title}] {tagline}",
             f"{self.name}_use_imagehash": "False",
             f"{self.name}_use_hq_poster_check": "False",
@@ -383,6 +395,18 @@ class ModuleJavCensored(PluginModuleBase):
                 
                 return jsonify({'ret':'error', 'msg':'Unknown action'})
 
+            elif command == "ollama_test":
+                text_to_translate = arg1
+                try:
+                    translated_text = SiteDmm.trans_by_llm(text_to_translate)
+
+                    ret['title'] = "Ollama 번역 결과"
+                    ret['data'] = translated_text.replace('\n', '<br>')
+                except Exception as e_ollama:
+                    ret['ret'] = 'error'
+                    ret['data'] = str(e_ollama)
+                return jsonify(ret)
+
             return jsonify(ret)
 
         except Exception as e:
@@ -553,7 +577,6 @@ class ModuleJavCensored(PluginModuleBase):
         # 1. 설정 확인 (YAML - 메모리에 로드된 값 사용)
         settings = getattr(self, 'jav_settings', {}) 
         use_sequential_search = settings.get('misc_settings', {}).get('sequential_search', False)
-        
         if manual: use_sequential_search = False
 
         # --- 2. 현재 검색어의 대표 레이블 추출 및 특수 품번 처리 ---
@@ -674,92 +697,57 @@ class ModuleJavCensored(PluginModuleBase):
 
         early_exit_triggered = False
 
-        # --- 4. 각 사이트 검색 실행 (순차 또는 기존 방식) ---
-        if use_sequential_search:
-            # [순차 검색 모드]
-            for site_key in site_list_for_current_search:
-                site_results = process_site_search(site_key)
-                if site_results:
-                    all_results.extend(site_results)
-                    
-                    has_perfect_match = False
-                    for item in site_results:
-                        if item.get('original_score', 0) >= 100:
-                            if is_keyword_potentially_priority_for_any_site:
-                                if site_key == special_priority_site or item.get('is_priority_label_site'):
-                                    has_perfect_match = True
-                                    break
-                                else:
-                                    logger.info(f"Sequential Early Exit: Priority site failed. Accepting high-score fallback match on '{site_key}'.")
-                                    has_perfect_match = True
-                                    break
-                            else:
+        # --- 4. 각 사이트 검색 실행 (하이브리드 모드: 근본 사이트 조기종료 + 2차 소스 풀스캔) ---
+        
+        # '근본 사이트' 정의: 완벽한 원본 데이터를 보장하므로 여기서 100점이 나오면 무조건 조기 종료 허용
+        core_sites = {"mgstage", "dmm"}
+        early_exit_triggered = False
+
+        for site_key in site_list_for_current_search:
+            if early_exit_triggered: 
+                break
+                
+            site_results = process_site_search(site_key)
+            if site_results:
+                all_results.extend(site_results)
+                
+                # --- 조기 종료 로직 판단 ---
+                has_perfect_match = False
+                for item in site_results:
+                    if item.get('original_score', 0) >= 98:
+                        is_prio_match = item.get('is_priority_label_site', False)
+                        
+                        if not is_keyword_potentially_priority_for_any_site:
+                            if site_key in core_sites:
+                                logger.info(f"Early Exit: Core site high-score match on '{site_key}'.")
                                 has_perfect_match = True
                                 break
-                    
-                    if has_perfect_match:
-                        logger.debug(f"순차 검색: '{site_key}'에서 적합한 결과 발견. 검색 조기 종료.")
-                        early_exit_triggered = True
-                        break
+                        else:
+                            if site_key == special_priority_site and is_prio_match:
+                                logger.info(f"Early Exit: Priority Label match on Priority Site '{site_key}'.")
+                                has_perfect_match = True
+                                break
+                            else:
+                                if site_key in core_sites:
+                                    logger.info(f"Early Exit: Priority site failed. Accepting Core fallback match on '{site_key}'.")
+                                    has_perfect_match = True
+                                    break
 
-        else:
-            priority_sites_for_general_early_exit = { "dmm": ["videoa", "dvd"], "mgstage": True }
+                if has_perfect_match:
+                    early_exit_triggered = True
+                    break
 
-            for site_key in site_list_for_current_search:
-                if early_exit_triggered: break
-                
-                site_results = process_site_search(site_key)
-                if site_results:
-                    all_results.extend(site_results)
-                    
-                    # 자동 검색 시 조기 종료 로직
-                    if not manual:
-                        for item in site_results:
-                            if item.get('original_score', 0) >= 100:
-                                current_item_site = item.get('site_key')
-                                current_item_type = item.get('content_type')
-                                is_prio_match = item.get('is_priority_label_site', False)
-
-                                allow_exit = False
-                                site_conf = priority_sites_for_general_early_exit.get(current_item_site)
-                                if site_conf is True: allow_exit = True
-                                elif isinstance(site_conf, list) and current_item_type in site_conf: allow_exit = True
-                                
-                                if allow_exit:
-                                    # 1. 우선순위 레이블이 없는 일반 품번인 경우
-                                    if not is_keyword_potentially_priority_for_any_site:
-                                        logger.info(f"Early Exit: General high-score match on '{current_item_site}'.")
-                                        early_exit_triggered = True
-                                        break
-                                        
-                                    # 2. 우선순위 레이블이 지정된 경우
-                                    else:
-                                        # 2-A. 그 우선순위의 주인공 사이트에서 매칭된 거라면 즉시 종료
-                                        if current_item_site == special_priority_site and is_prio_match:
-                                            logger.info(f"Early Exit: Priority Label match on Priority Site '{current_item_site}'.")
-                                            early_exit_triggered = True
-                                            break
-                                            
-                                        # 2-B. 우선순위 사이트가 아닌 다른 사이트(폴백 사이트)에서 매칭된 경우
-                                        else:
-                                            logger.info(f"Early Exit: Priority site failed. Accepting high-score fallback match on '{current_item_site}'.")
-                                            early_exit_triggered = True
-                                            break
-
-        # --- 5. 결과 정렬 및 반환 ---
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
         if not all_results:
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
-        # 2단계: HQ 포스터 검증 (manual=False 일 때)
-        # HQ 검증은 외부 라이브 CDN을 직접 당겨쓰는 'jav321' 결과물에만 제한적으로 적용
+        # --- 5. HQ 포스터 검증 (jav321 한정, 번역 비활성화 적용) ---
         use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
         
         if not manual and all_results and use_hq_poster_check:
             logger.debug("--- Starting HQ Poster check (Targeting jav321 only) ---")
             
-            # jav321 결과물 중 점수가 95점 이상인 최상위 후보들만 검증 대상
             score_threshold = 95
             candidates_for_hq_check = [
                 item for item in all_results 
@@ -785,7 +773,8 @@ class ModuleJavCensored(PluginModuleBase):
                             code_for_hq_check, 
                             site_key_for_hq_check, 
                             keyword, 
-                            ps_url=ps_url_for_hq_check
+                            ps_url=ps_url_for_hq_check,
+                            skip_trans=True
                         )
 
                         if info_data_for_hq_check:
@@ -808,7 +797,6 @@ class ModuleJavCensored(PluginModuleBase):
                                         aspect_ratio_for_check = sm_h / sm_w if sm_w > 0 else 1.4225
                                         poster_pos_result = SiteClass.has_hq_poster(im_sm_obj_hq, im_lg_obj_hq, aspect_ratio=aspect_ratio_for_check)
 
-                                        # 검증 성공 시 감점 면제(0점), 실패 시 페널티 부과(-1점)
                                         if poster_pos_result:
                                             item_in_all_results_to_update['hq_poster_score_adj'] = 0
                                         else:
@@ -824,20 +812,16 @@ class ModuleJavCensored(PluginModuleBase):
                             logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check}. Penalty: -1.")
                     except Exception as e_info_hq_check:
                         logger.error(f"HQ Check Exception for {code_for_hq_check}: {e_info_hq_check}")
-                        # 심각한 네트워크 예외나 크래시 발생 시 -2점 페널티
                         item_in_all_results_to_update['hq_poster_score_adj'] = -2
 
-        # 3단계: 조정된 점수 계산
+        # --- 6. 점수 조정 및 정렬 ---
         for item_adj_score in all_results:
-            item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) # + item_adj_score.get('hq_poster_score_adj', 0)
+            item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) + item_adj_score.get('hq_poster_score_adj', 0)
 
-        # 4단계: 사용자 정의 우선순위에 따른 정렬
-        # logger.debug("--- Starting Custom Priority Sort ---")
         priority_string = P.ModelSetting.get('jav_censored_result_priority_order')
         priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]
         dynamic_priority_map = {key: index for index, key in enumerate(priority_list)}
         lowest_priority = len(priority_list)
-
 
         def get_priority_value_for_sort(item_to_sort):
             site_key_prio = item_to_sort.get('site_key')
@@ -850,55 +834,36 @@ class ModuleJavCensored(PluginModuleBase):
                 calculated_prio = dynamic_priority_map.get(site_key_prio, lowest_priority)
             return calculated_prio
 
-
         def get_custom_sort_key_for_final(item_for_final_sort):
             label_prio_flag_sort_val = 0 if item_for_final_sort.get('is_priority_label_site') else 1
-            # adj_score는 이제 original_score와 동일
             adj_score = -item_for_final_sort.get("adjusted_score", 0) 
             prio_val = get_priority_value_for_sort(item_for_final_sort)
             return (label_prio_flag_sort_val, adj_score, prio_val)
 
-        # 5단계: 사용자 정의 우선순위에 따른 정렬
-        # logger.debug("--- Starting Custom Priority Sort (with Label Priority Flag) ---")
-        # for i, item_debug in enumerate(all_results):
-        #    label_prio_val_debug = 0 if item_debug.get('is_priority_label_site') else 1
-        #    adj_score_debug = -item_debug.get("adjusted_score", 0)
-        #    prio_val_debug = get_priority_value_for_sort(item_debug)
-        #    logger.debug(f"    Item {i}: Code={item_debug.get('code')}, Site={item_debug.get('site_key')}, PrioLabelFlag={item_debug.get('is_priority_label_site')}, SortKey=({label_prio_val_debug}, {adj_score_debug}, {prio_val_debug})")
-
         sorted_results_after_priority = sorted(all_results, key=get_custom_sort_key_for_final)
         # logger.debug("--- Custom Priority Sort (with Label Priority Flag) END ---")
 
-        # 6단계: "조정된 점수"가 같은 동점자 그룹 내에서, 최종 정렬 순서에 따라 페널티 적용
-        # logger.debug("--- Starting Tie-Breaking Penalty and Final Score Assignment ---")
+        # 동점자 처리
         if sorted_results_after_priority:
             last_adjusted_score_for_penalty_group = None 
             penalty_for_current_score_group = 0      
 
             for item_in_sorted_list in sorted_results_after_priority:
-                
                 current_adj_score = item_in_sorted_list.get('adjusted_score', 0)
-
                 if current_adj_score != last_adjusted_score_for_penalty_group:
                     penalty_for_current_score_group = 0
                 
-                calculated_final_score = current_adj_score - penalty_for_current_score_group
-                item_in_sorted_list['score'] = max(0, calculated_final_score)
-
+                item_in_sorted_list['score'] = max(0, current_adj_score - penalty_for_current_score_group)
                 last_adjusted_score_for_penalty_group = current_adj_score
                 penalty_for_current_score_group += 1
 
-        # logger.debug("--- Tie-Breaking Penalty and Final Score Assignment END ---")
-
-        final_results_to_return = sorted_results_after_priority
-
-        if final_results_to_return: # 변수명 변경에 따른 로깅 수정
+        if sorted_results_after_priority:
             logger.info("최종 결과(우선순위 점수 반영):")
-            for i, item_log_final_list in enumerate(final_results_to_return):
+            for i, item_log_final_list in enumerate(sorted_results_after_priority):
                 logger.info(f"  {i+1}. 최종점수={item_log_final_list.get('score')}, 품번점수={item_log_final_list.get('adjusted_score')}, Site={item_log_final_list.get('site_key')}, Type={item_log_final_list.get('content_type')}, PrioLabel={item_log_final_list.get('is_priority_label_site', False)}, Code={item_log_final_list.get('code')}")
 
-        logger.info(f"======= jav censored search END - Returning {len(final_results_to_return)} results. =======")
-        return final_results_to_return
+        logger.info(f"======= jav censored search END - Returning {len(sorted_results_after_priority)} results. =======")
+        return sorted_results_after_priority
 
 
     def search2(self, keyword, site, manual=False, site_settings_override=None):
@@ -1010,7 +975,7 @@ class ModuleJavCensored(PluginModuleBase):
     ################################################
     # region INFO
 
-    def info(self, code, keyword=None, fp_meta_mode=False):
+    def info(self, code, keyword=None, fp_meta_mode=False, skip_trans=False):
         if code[1] == "B":
             site = "javbus"
         elif code[1] == "D":
@@ -1030,7 +995,7 @@ class ModuleJavCensored(PluginModuleBase):
             if keyword:
                 logger.debug(f"info: Found keyword '{keyword}' in cache for code '{code}'.")
 
-        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode)
+        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
         if ret is None:
             logger.debug(f"info2 returned None for code: {code}")
             return ret
@@ -1075,28 +1040,37 @@ class ModuleJavCensored(PluginModuleBase):
         original_calculated_title = ret.get("title", "")
 
         try: # 타이틀 포맷팅
-            title_format = P.ModelSetting.get(f"{self.name}_title_format")
+            title_format = P.ModelSetting.get(f"{self.name}_title_format") if hasattr(self, 'name') and 'western' not in self.name else P.ModelSetting.get('jav_censored_title_format')
+
             format_dict = {
                 'originaltitle': ret.get("originaltitle", ""),
                 'plot': ret.get("plot", ""),
-                'title': original_calculated_title, # 포맷팅 전 제목 사용
+                'title': original_calculated_title,
                 'sorttitle': ret.get("sorttitle", ""),
                 'runtime': ret.get("runtime", ""),
                 'country': ', '.join(ret.get("country", [])),
                 'premiered': ret.get("premiered", ""),
                 'year': ret.get("year", ""),
-                # 배우 이름은 이미 처리된 리스트에서 첫 번째 사용
                 'actor': actor_names_for_log[0] if actor_names_for_log else "",
                 'tagline': ret.get("tagline", ""),
             }
-            ret["title"] = title_format.format(**format_dict)
+            
+            final_title = title_format.format(**format_dict)
+            ret["title"] = final_title
+
+            if ret.get("extras"):
+                for extra in ret["extras"]:
+                    if isinstance(extra, dict):
+                        extra["title"] = final_title
+                    elif hasattr(extra, 'title'):
+                        extra.title = final_title
 
         except KeyError as e:
             logger.error(f"타이틀 포맷팅 오류: 키 '{e}' 없음. 포맷: '{title_format}', 데이터: {format_dict}")
-            ret["title"] = original_calculated_title # 오류 시 포맷팅 전 제목으로 복구
+            ret["title"] = original_calculated_title
         except Exception as e_fmt:
             logger.exception(f"타이틀 포맷팅 중 예외 발생: {e_fmt}")
-            ret["title"] = original_calculated_title # 오류 시 포맷팅 전 제목으로 복구
+            ret["title"] = original_calculated_title
 
         if "tag" in ret:
             tag_option = P.ModelSetting.get(f"{self.name}_tag_option")
@@ -1130,16 +1104,16 @@ class ModuleJavCensored(PluginModuleBase):
         return ret
 
 
-    def info2(self, code, site, keyword, ps_url=None, fp_meta_mode=False):
+    def info2(self, code, site, keyword, ps_url=None, fp_meta_mode=False, skip_trans=False):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode})")
+        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode}, skip_trans: {skip_trans})")
         data = None
         try:
-            data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode)
+            data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
@@ -1147,7 +1121,6 @@ class ModuleJavCensored(PluginModuleBase):
         if data and data.get("ret") == "success" and data.get("data"):
             ret = data["data"]
             logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 성공.")
-
             return ret
         else:
             response_ret = data.get('ret') if data else 'No response'
