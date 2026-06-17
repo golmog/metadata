@@ -516,12 +516,14 @@ class ModuleJavUncensored(PluginModuleBase):
                     actor_names_for_log.append(item.get("name", item.get("originalname", "?")))
 
         original_calculated_title = ret.get("title", "")
-        try:
+
+        try: # 타이틀 포맷팅
             title_format = P.ModelSetting.get('jav_censored_title_format')
+
             format_dict = {
                 'originaltitle': ret.get("originaltitle", ""),
                 'plot': ret.get("plot", ""),
-                'title': original_calculated_title,
+                'title': original_calculated_title, 
                 'sorttitle': ret.get("sorttitle", ""),
                 'runtime': ret.get("runtime", ""),
                 'country': ', '.join(ret.get("country", [])),
@@ -530,7 +532,19 @@ class ModuleJavUncensored(PluginModuleBase):
                 'actor': actor_names_for_log[0] if actor_names_for_log else "",
                 'tagline': ret.get("tagline", ""),
             }
-            ret["title"] = title_format.format(**format_dict)
+            
+            final_title = title_format.format(**format_dict)
+            ret["title"] = final_title
+
+            if ret.get("extras"):
+                for extra in ret["extras"]:
+                    if isinstance(extra, dict):
+                        if extra.get("content_type") == "trailer":
+                            extra["title"] = final_title
+                    elif hasattr(extra, 'content_type') and extra.content_type == "trailer":
+                        if hasattr(extra, 'title'):
+                            extra.title = final_title
+
         except KeyError as e:
             logger.error(f"타이틀 포맷팅 오류: 키 '{e}' 없음. 포맷: '{title_format}', 데이터: {format_dict}")
             ret["title"] = original_calculated_title

@@ -38,6 +38,28 @@
 
   {{ macros.setting_radio_with_value('jav_censored_trans_option', '번역 옵션', [['not_using', '안함'], ['using', '기본 번역'], ['using_plugin', '번역 플러그인 사용']], value=arg['jav_censored_trans_option'], desc=None) }}
 
+  {{ macros.m_hr() }}
+  {{ macros.setting_checkbox('jav_censored_use_ollama', 'Ollama AI 번역 사용', value=arg['jav_censored_use_ollama'], desc=['ON으로 설정하면 제목과 줄거리를 AI로 번역합니다. 에러 발생 시 위에서 설정한 기본 번역기로 자동 우회(Fallback)합니다.']) }}
+
+  <div id="jav_censored_use_ollama_div" class="collapse">
+    {{ macros.setting_input_text('jav_censored_ollama_url', 'Ollama API URL', value=arg['jav_censored_ollama_url'], placeholder='http://ollama:11434/api/chat') }}
+    {{ macros.setting_input_text('jav_censored_ollama_model', 'Ollama Model', value=arg['jav_censored_ollama_model'], placeholder='gemma4:12b') }}
+    
+    {{ macros.setting_input_text('jav_censored_ollama_temp', 'Temperature (창의성)', value=arg['jav_censored_ollama_temp'], desc=['응답의 다양성을 결정합니다. 낮을수록 일관된 답변, 높을수록 창의적 답변. (0.0~1.0, 기본: 0.2)']) }}
+    
+    {{ macros.setting_input_text('jav_censored_ollama_top_p', 'Top P (어휘풀 제한)', value=arg['jav_censored_ollama_top_p'], desc=['텍스트 생성 시 사용할 단어의 범위를 제한합니다. (기본: 0.95)']) }}
+    
+    {{ macros.setting_input_text('jav_censored_ollama_top_k', 'Top K (샘플링 제한)', value=arg['jav_censored_ollama_top_k'], desc=['다음 단어를 예측할 때 고려할 후보의 수를 제한합니다. (기본: 40)']) }}
+    
+    {{ macros.setting_input_text('jav_censored_ollama_repeat_penalty', 'Repeat Penalty (반복 억제)', value=arg['jav_censored_ollama_repeat_penalty'], desc=['같은 단어가 반복해서 등장하는 것을 억제하는 강도입니다. (기본: 1.15)']) }}
+
+    {{ macros.setting_input_text('jav_censored_ollama_num_ctx', 'Context Window (num_ctx)', value=arg['jav_censored_ollama_num_ctx'], desc=['문맥을 기억하는 최대 토큰 수입니다. (기본: 2048)', '번역 작업에는 큰 값이 필요 없으며, 값을 낮추면 VRAM을 절약하고 처리 속도를 높일 수 있습니다.']) }}
+
+    {{ macros.setting_input_textarea('jav_censored_ollama_system_prompt', 'System Prompt (시스템 프롬프트)', value=arg['jav_censored_ollama_system_prompt'], row='4', desc=['AI에게 부여할 역할과 번역 규칙을 작성합니다.']) }}
+
+    {{ macros.setting_input_text_and_buttons('jav_censored_ollama_test_text', '번역 테스트', [['jav_censored_ollama_test_btn', 'AI 번역 실행']], value='', placeholder='번역할 일본어나 영어 문장을 입력하세요.', desc=['설정 저장 후 테스트가 가능합니다.']) }}
+  </div>
+
   {{ macros.setting_input_text('jav_censored_title_format', '타이틀 포맷', value=arg['jav_censored_title_format'], desc=['title runtime premiered year actor tagline']) }}
 
   {{ macros.setting_input_int('jav_censored_art_count', '최대 아트 수 제한', value=arg['jav_censored_art_count'], min='0', desc=['너무 크면 Plex 라이브러리 용량이 커지고, 디스코드 Proxy 사용시 자원 소모가 심함']) }}
@@ -129,6 +151,7 @@ $(document).ready(function(){
   use_collapse("jav_censored_use_smart_crop");
   use_collapse("jav_censored_use_pose_landmarker");
   use_collapse("jav_censored_mgs_label_priority");
+  use_collapse("jav_censored_use_ollama");
 });
 
 $('#jav_censored_use_smart_crop').change(function() {
@@ -145,6 +168,10 @@ $('input[type=radio][name=jav_censored_image_mode]').change(function() {
 
 $('#jav_censored_mgs_label_priority').change(function() {
   use_collapse('jav_censored_mgs_label_priority');
+});
+
+$('#jav_censored_use_ollama').change(function() {
+  use_collapse('jav_censored_use_ollama');
 });
 
 
@@ -210,5 +237,23 @@ function performModelDownload(type) {
     });
 }
 
+$("body").on('click', '#jav_censored_ollama_test_btn', function(e){
+  e.preventDefault();
+  var text = $('#jav_censored_ollama_test_text').val();
+  if (text == "") { notify('번역할 문장을 입력하세요.', 'warning'); return; }
+  
+  var btn = $(this);
+  var originalText = btn.html();
+  btn.html('번역 중...').prop('disabled', true);
+
+  globalSendCommand('ollama_test', text, null, null, function(ret){
+      btn.html(originalText).prop('disabled', false);
+      if (ret.ret == 'success') {
+          showModal(ret.data, ret.title, false); 
+      } else {
+          notify('에러: ' + ret.data, 'warning');
+      }
+  });
+});
 </script>
 {% endblock %}
