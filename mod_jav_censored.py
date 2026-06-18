@@ -742,11 +742,12 @@ class ModuleJavCensored(PluginModuleBase):
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
-        # --- 5. HQ 포스터 검증 (jav321 한정, 번역 비활성화 적용) ---
+        # --- 5. 이미지 유효성 검증 및 선제 구출 (jav321 한정) ---
         use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
+        image_mode = P.ModelSetting.get(f"{self.name}_image_mode")
         
         if not manual and all_results and use_hq_poster_check:
-            logger.debug("--- Starting HQ Poster check (Targeting jav321 only) ---")
+            logger.debug("--- Starting Image Validity check (Targeting jav321 only) ---")
             
             score_threshold = 95
             candidates_for_hq_check = [
@@ -755,64 +756,68 @@ class ModuleJavCensored(PluginModuleBase):
             ]
 
             if candidates_for_hq_check:
-                logger.debug(f"HQ Check: {len(candidates_for_hq_check)} jav321 candidates found (score >= {score_threshold}).")
+                for item_to_update in candidates_for_hq_check:
+                    code = item_to_update.get("code")
+                    site = item_to_update.get("site_key")
+                    ps_url = item_to_update.get("image_url")
+                    ui_code = item_to_update.get("ui_code", "").upper()
 
-                for item_in_all_results_to_update in candidates_for_hq_check:
-                    code_for_hq_check = item_in_all_results_to_update.get("code")
-                    site_key_for_hq_check = item_in_all_results_to_update.get("site_key")
-                    ps_url_for_hq_check = item_in_all_results_to_update.get("image_url")
-
-                    # --- hq_poster_score_adj 초기화 및 기본 페널티 설정 ---
-                    item_in_all_results_to_update['hq_poster_score_adj'] = -1
+                    item_to_update['hq_poster_score_adj'] = -1
+                    is_image_valid = False
 
                     try:
-                        SiteClass = self.site_map.get(site_key_for_hq_check)
-                        if not SiteClass: continue
+                        SiteClass = self.site_map.get(site)
+                        info_data = self.info2(code, site, keyword, ps_url=ps_url, skip_trans=True, is_validating=True)
 
-                        info_data_for_hq_check = self.info2(
-                            code_for_hq_check, 
-                            site_key_for_hq_check, 
-                            keyword, 
-                            ps_url=ps_url_for_hq_check,
-                            skip_trans=True
-                        )
+                        if info_data:
+                            target_img_url = None
+                            for thumb in info_data.get('thumb', []):
+                                if thumb.get('aspect') == 'poster': target_img_url = thumb.get('value'); break
+                            if not target_img_url:
+                                for thumb in info_data.get('thumb', []):
+                                    if thumb.get('aspect') == 'landscape': target_img_url = thumb.get('value'); break
 
-                        if info_data_for_hq_check:
-                            ps_url_hq, pl_url_hq = None, None
-                            for thumb_item_hq in info_data_for_hq_check.get('thumb', []):
-                                if thumb_item_hq.get('aspect') == 'poster': 
-                                    ps_url_hq = thumb_item_hq.get('value')
-                                if thumb_item_hq.get('aspect') == 'landscape': 
-                                    pl_url_hq = thumb_item_hq.get('value')
-                                if ps_url_hq and pl_url_hq: 
-                                    break
-
-                            if ps_url_hq and pl_url_hq:
-                                im_sm_obj_hq = SiteClass.imopen(ps_url_hq)
-                                im_lg_obj_hq = SiteClass.imopen(pl_url_hq)
-
-                                if im_sm_obj_hq and im_lg_obj_hq:
+                            if target_img_url:
+                                im_obj = SiteClass.imopen(target_img_url)
+                                if im_obj:
                                     try:
-                                        sm_w, sm_h = im_sm_obj_hq.size
-                                        aspect_ratio_for_check = sm_h / sm_w if sm_w > 0 else 1.4225
-                                        poster_pos_result = SiteClass.has_hq_poster(im_sm_obj_hq, im_lg_obj_hq, aspect_ratio=aspect_ratio_for_check)
-
-                                        if poster_pos_result:
-                                            item_in_all_results_to_update['hq_poster_score_adj'] = 0
-                                        else:
-                                            item_in_all_results_to_update['hq_poster_score_adj'] = -1
+                                        if not SiteClass.is_placeholder_image(im_obj): is_image_valid = True
                                     finally:
-                                        if im_sm_obj_hq: im_sm_obj_hq.close()
-                                        if im_lg_obj_hq: im_lg_obj_hq.close()
-                                else:
-                                    item_in_all_results_to_update['hq_poster_score_adj'] = -1
-                            else:
-                                logger.debug(f"HQ Check SKIPPED (ps_url or pl_url missing) for {code_for_hq_check}. Penalty: -1.")
-                        else:
-                            logger.debug(f"HQ Check SKIPPED (info_data_for_hq is None) for {code_for_hq_check}. Penalty: -1.")
-                    except Exception as e_info_hq_check:
-                        logger.error(f"HQ Check Exception for {code_for_hq_check}: {e_info_hq_check}")
-                        item_in_all_results_to_update['hq_poster_score_adj'] = -2
+                                        im_obj.close()
+                    except Exception as e:
+                        logger.error(f"Validity Check Exception for {code}: {e}")
+                        item_to_update['hq_poster_score_adj'] = -2
+                        continue
+
+                    # --- 이미지 서버 모드 시 차선 사이트 선제 스캔(Pre-fetch) ---
+                    if is_image_valid:
+                        item_to_update['hq_poster_score_adj'] = 0
+                    else:
+                        logger.info(f"Validity Check FAILED for {code}.")
+                        if image_mode == 'image_server':
+                            logger.info(f"Attempting Pre-fetch rescue from backup sites for {ui_code}...")
+                            backup_success = False
+                            
+                            # 검색 결과에 이미 확보되어 있는 타 사이트 결과물 활용 (코드/ID가 정확함)
+                            backups = [x for x in all_results if x.get("site_key") != "jav321" and x.get("ui_code", "").upper() == ui_code]
+                            backups.sort(key=lambda k: k.get("original_score", 0), reverse=True)
+                            
+                            for b_item in backups:
+                                try:
+                                    logger.debug(f"Pre-fetching images from {b_item['site_key']}...")
+                                    # is_validating=False 로 정상 실행하여 이미지를 실제 로컬 하드에 저장시킴
+                                    self.info2(b_item['code'], b_item['site_key'], keyword, skip_trans=True, is_validating=False)
+                                    backup_success = True
+                                    break
+                                except Exception as e_res:
+                                    logger.debug(f"Pre-fetch failed on {b_item['site_key']}: {e_res}")
+                            
+                            if backup_success:
+                                item_to_update['hq_poster_score_adj'] = 0
+                                # 구출 성공 플래그 캐시에 저장
+                                try: self.keyword_cache.set(f"RESCUED_{code}", "1")
+                                except AttributeError: self.keyword_cache[f"RESCUED_{code}"] = "1"
+                                logger.info(f"Rescue SUCCESS: Images pre-fetched to local server. Penalty voided.")
 
         # --- 6. 점수 조정 및 정렬 ---
         for item_adj_score in all_results:
@@ -995,7 +1000,13 @@ class ModuleJavCensored(PluginModuleBase):
             if keyword:
                 logger.debug(f"info: Found keyword '{keyword}' in cache for code '{code}'.")
 
-        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+        is_rescued = False
+        try:
+            is_rescued = (self.keyword_cache.get(f"RESCUED_{code}") == "1")
+        except AttributeError: 
+            is_rescued = (self.keyword_cache.get(f"RESCUED_{code}") == "1")
+
+        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, is_rescued=is_rescued)
         if ret is None:
             logger.debug(f"info2 returned None for code: {code}")
             return ret
@@ -1104,16 +1115,16 @@ class ModuleJavCensored(PluginModuleBase):
         return ret
 
 
-    def info2(self, code, site, keyword, ps_url=None, fp_meta_mode=False, skip_trans=False):
+    def info2(self, code, site, keyword, ps_url=None, fp_meta_mode=False, skip_trans=False, is_validating=False, is_rescued=False):
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None:
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode}, skip_trans: {skip_trans})")
+        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode}, skip_trans: {skip_trans}, is_validating: {is_validating}, is_rescued: {is_rescued})")
         data = None
         try:
-            data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+            data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, is_validating=is_validating, is_rescued=is_rescued)
         except Exception as e_info:
             logger.exception(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 중 오류 발생: {e_info}")
             return None
