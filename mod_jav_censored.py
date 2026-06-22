@@ -173,7 +173,7 @@ class ModuleJavCensored(PluginModuleBase):
             if os.path.exists(cache_filepath):
                 logger.debug(f"AV Cache file found at {cache_filepath}. Deleting for re-initialization.")
                 os.remove(cache_filepath)
-                logger.info("AV Cache file deleted successfully.")
+                logger.debug("AV Cache file deleted successfully.")
         except Exception as e:
             logger.error(f"Failed to delete AV cache file: {e}")
             logger.error(traceback.format_exc())
@@ -573,13 +573,8 @@ class ModuleJavCensored(PluginModuleBase):
 
         all_results = []
         original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",") # 설정된 기본 사이트 순서
-        
-        # 1. 설정 확인 (YAML - 메모리에 로드된 값 사용)
-        settings = getattr(self, 'jav_settings', {}) 
-        use_sequential_search = settings.get('misc_settings', {}).get('sequential_search', False)
-        if manual: use_sequential_search = False
 
-        # --- 2. 현재 검색어의 대표 레이블 추출 및 특수 품번 처리 ---
+        # --- 1. 현재 검색어의 대표 레이블 추출 및 특수 품번 처리 ---
         current_keyword_label = ""
         is_special_format = False
         
@@ -662,7 +657,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.debug(f"Automatic Priority: Label '{current_keyword_label}' is automatically assigned to 'mgstage'.")
 
 
-        # --- 3. 검색 순서 동적 조정 ---
+        # --- 2. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
         if special_priority_site and special_priority_site in site_list_for_current_search:
             site_list_for_current_search.remove(special_priority_site)
@@ -695,54 +690,56 @@ class ModuleJavCensored(PluginModuleBase):
                     results.append(item)
             return results
 
+        # --- 3. 각 사이트 검색 실행 (하이브리드 모드: 1티어 코어 조기종료 + 2티어 풀스캔) ---
         early_exit_triggered = False
-
-        # --- 4. 각 사이트 검색 실행 (하이브리드 모드: 근본 사이트 조기종료 + 2차 소스 풀스캔) ---
-        
-        # '근본 사이트' 정의: 완벽한 원본 데이터를 보장하므로 여기서 100점이 나오면 무조건 조기 종료 허용
-        core_sites = {"mgstage", "dmm"}
-        early_exit_triggered = False
+        priority_sites_for_general_early_exit = { "dmm": ["videoa", "dvd"], "mgstage": True }
 
         for site_key in site_list_for_current_search:
-            if early_exit_triggered: 
-                break
-                
+            if early_exit_triggered: break
+            
             site_results = process_site_search(site_key)
             if site_results:
                 all_results.extend(site_results)
                 
-                # --- 조기 종료 로직 판단 ---
-                has_perfect_match = False
-                for item in site_results:
-                    if item.get('original_score', 0) >= 98:
-                        is_prio_match = item.get('is_priority_label_site', False)
-                        
-                        if not is_keyword_potentially_priority_for_any_site:
-                            if site_key in core_sites:
-                                logger.info(f"Early Exit: Core site high-score match on '{site_key}'.")
-                                has_perfect_match = True
-                                break
-                        else:
-                            if site_key == special_priority_site and is_prio_match:
-                                logger.info(f"Early Exit: Priority Label match on Priority Site '{site_key}'.")
-                                has_perfect_match = True
-                                break
-                            else:
-                                if site_key in core_sites:
-                                    logger.info(f"Early Exit: Priority site failed. Accepting Core fallback match on '{site_key}'.")
-                                    has_perfect_match = True
-                                    break
+                if not manual:
+                    for item in site_results:
+                        if item.get('original_score', 0) >= 100:
+                            current_item_site = item.get('site_key')
+                            current_item_type = item.get('content_type')
+                            is_prio_match = item.get('is_priority_label_site', False)
 
-                if has_perfect_match:
-                    early_exit_triggered = True
-                    break
+                            allow_exit = False
+                            site_conf = priority_sites_for_general_early_exit.get(current_item_site)
+                            if site_conf is True: allow_exit = True
+                            elif isinstance(site_conf, list) and current_item_type in site_conf: allow_exit = True
+                            
+                            if allow_exit:
+                                # 1. 특별한 우선순위 레이블 지정이 없는 일반 품번인 경우
+                                if not is_keyword_potentially_priority_for_any_site:
+                                    logger.debug(f"Early Exit: General perfect match on Core Site '{current_item_site}'.")
+                                    early_exit_triggered = True
+                                    break
+                                    
+                                # 2. 우선순위 레이블(MGS 독점 등)이 얽혀있는 경우
+                                else:
+                                    # 2-A. 그 우선순위의 주인공 사이트에서 매칭된 거라면 즉시 종료
+                                    if current_item_site == special_priority_site and is_prio_match:
+                                        logger.debug(f"Early Exit: Priority Label perfect match on Priority Site '{current_item_site}'.")
+                                        early_exit_triggered = True
+                                        break
+                                        
+                                    # 2-B. 주인공 사이트가 실패하여 다음 타자(폴백)를 스캔 중일 때
+                                    else:
+                                        logger.debug(f"Early Exit: Priority site failed. Accepting perfect fallback match on Core Site '{current_item_site}'.")
+                                        early_exit_triggered = True
+                                        break
 
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
         if not all_results:
             logger.debug("======= jav censored search END - No results found. =======")
             return []
 
-        # --- 5. 이미지 유효성 검증 및 선제 구출 (jav321 한정) ---
+        # --- 4. 이미지 유효성 검증 및 선제 구출 (jav321 한정) ---
         use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
         image_mode = P.ModelSetting.get(f"{self.name}_image_mode")
         
@@ -785,7 +782,7 @@ class ModuleJavCensored(PluginModuleBase):
                                     finally:
                                         im_obj.close()
                     except Exception as e:
-                        logger.error(f"Validity Check Exception for {code}: {e}")
+                        logger.error(f"Validity Check: Exception for {code}: {e}")
                         item_to_update['hq_poster_score_adj'] = -2
                         continue
 
@@ -793,7 +790,7 @@ class ModuleJavCensored(PluginModuleBase):
                     if is_image_valid:
                         item_to_update['hq_poster_score_adj'] = 0
                     else:
-                        logger.info(f"Validity Check FAILED for {code}.")
+                        logger.warning(f"Validity Check: FAILED for {code}.")
                         if image_mode == 'image_server':
                             logger.info(f"Attempting Pre-fetch rescue from backup sites for {ui_code}...")
                             backup_success = False
@@ -819,7 +816,7 @@ class ModuleJavCensored(PluginModuleBase):
                                 except AttributeError: self.keyword_cache[f"RESCUED_{code}"] = "1"
                                 logger.info(f"Rescue SUCCESS: Images pre-fetched to local server. Penalty voided.")
 
-        # --- 6. 점수 조정 및 정렬 ---
+        # --- 5. 점수 조정 및 정렬 ---
         for item_adj_score in all_results:
             item_adj_score['adjusted_score'] = item_adj_score.get('original_score', 0) + item_adj_score.get('hq_poster_score_adj', 0)
 
