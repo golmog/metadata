@@ -656,9 +656,16 @@ class ModuleJavCensored(PluginModuleBase):
             special_priority_site = 'mgstage'
             logger.debug(f"Automatic Priority: Label '{current_keyword_label}' is automatically assigned to 'mgstage'.")
 
-
         # --- 2. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
+
+        # JavDB 지연 검색(Lazy Fallback) 설정
+        javdb_deferred = False
+        if not manual and 'javdb' in site_list_for_current_search:
+            site_list_for_current_search.remove('javdb')
+            javdb_deferred = True
+            # logger.debug(f"[{self.name}] JavDB deferred to Last Resort to prevent Cloudflare Ban.")
+
         if special_priority_site and special_priority_site in site_list_for_current_search:
             site_list_for_current_search.remove(special_priority_site)
             site_list_for_current_search.insert(0, special_priority_site)
@@ -734,6 +741,17 @@ class ModuleJavCensored(PluginModuleBase):
                                         early_exit_triggered = True
                                         break
 
+        # --- JavDB Lazy Fallback 스캔 ---
+        if javdb_deferred and not early_exit_triggered:
+            has_any_100_score = any(item.get('original_score', 0) >= 100 for item in all_results)
+            if not has_any_100_score:
+                logger.warning(f"[{self.name}] No perfect match found in primary sites. Triggering Deferred JavDB Scan...")
+                javdb_results = process_site_search('javdb')
+                if javdb_results:
+                    all_results.extend(javdb_results)
+            # else:
+            #     logger.debug(f"[{self.name}] A perfect match exists in primary sites. Skipping JavDB to avoid IP ban.")
+
         # --- 4. 1차 정렬 (점수 및 사이트 우선순위 기반) ---
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
         if not all_results:
@@ -803,22 +821,21 @@ class ModuleJavCensored(PluginModuleBase):
                 except Exception as e:
                     logger.error(f"Validity Check Exception for {code}: {e}")
 
-                # B. 검증 실패 시 구출(Pre-fetch) 또는 페널티 처리
+                # B. 검증 실패 시 구출(Pre-fetch) 시도
                 if not is_image_valid:
-                    logger.warning(f"Validity Check FAILED for {code}.")
-                    penalty_applied = True # 기본적으로 페널티를 매김
+                    logger.info(f"Validity Check FAILED for {code}.")
                     
                     if image_mode == 'image_server':
                         logger.info(f"Attempting Pre-fetch rescue from backup sites for {ui_code}...")
                         backup_success = False
                         
-                        # 자신을 제외한 차선 사이트 중 동일 품번 추출
+                        # 본인(1등)을 제외한 차선 사이트 중 동일 품번 추출
                         backups = [x for x in all_results_sorted[1:] if x.get("ui_code", "").upper() == ui_code]
                         
                         for b_item in backups:
                             try:
-                                logger.debug(f"Pre-fetching images from backup site: {b_item['site_key']}...")
-                                # 1단계: 대체 사이트 이미지 해시 검사 (다운로드 없이 URL만 획득)
+                                logger.debug(f"Pre-fetching and validating images from backup site: {b_item['site_key']}...")
+                                # 1단계: 대체 사이트 이미지 해시 검사
                                 b_info_data = self.info2(b_item['code'], b_item['site_key'], keyword, skip_trans=True, is_validating=True)
                                 
                                 b_target_url = None
@@ -850,22 +867,16 @@ class ModuleJavCensored(PluginModuleBase):
                             except Exception as e_res:
                                 logger.debug(f"Pre-fetch failed on {b_item['site_key']}: {e_res}")
                         
-                        # 3단계: 구출에 성공했다면 페널티 면제! (그대로 1위 유지)
+                        # 3단계: 구출 결과 처리
                         if backup_success:
-                            logger.info(f"Rescue SUCCESS: Valid images pre-fetched to local server. Penalty voided.")
-                            penalty_applied = False
-
                             try:
                                 self.keyword_cache.set(f"RESCUED_{code}", "1")
                             except AttributeError:
                                 self.keyword_cache[f"RESCUED_{code}"] = "1"
-
-                    # C. 구출 불가능(또는 실패) 시 점수를 깎고 2차(최종) 재정렬 수행
-                    if penalty_applied:
-                        logger.warning(f"Rescue FAILED or Unavilable. Applying Penalty (-1) to {code} and resorting.")
-                        top_item['original_score'] = max(0, top_item.get('original_score', 0) - 1)
-                        # 점수가 변경되었으므로 리스트를 다시 한 번 정렬합니다. (2등이 1등으로 올라올 수 있음)
-                        all_results_sorted = sorted(all_results_sorted, key=get_custom_sort_key_for_final)
+                                
+                            logger.info(f"Rescue SUCCESS: Valid images pre-fetched to local server. Keeping '{top_item['site_key']}' at 1st place.")
+                        else:
+                            logger.warning(f"Rescue FAILED: All backup sites returned fake/dead images. Keeping '{top_item['site_key']}' at 1st place anyway.")
 
         # --- 6. 최종 점수 할당 (동점자 처리) ---
         if all_results_sorted:
