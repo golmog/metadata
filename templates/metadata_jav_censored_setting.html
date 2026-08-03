@@ -53,7 +53,7 @@
     
     {{ macros.setting_input_text('jav_censored_ollama_repeat_penalty', 'Repeat Penalty (반복 억제)', value=arg['jav_censored_ollama_repeat_penalty'], desc=['같은 단어가 반복해서 등장하는 것을 억제하는 강도입니다. (기본: 1.15)']) }}
 
-    {{ macros.setting_input_text('jav_censored_ollama_num_ctx', 'Context Window (num_ctx)', value=arg['jav_censored_ollama_num_ctx'], desc=['문맥을 기억하는 최대 토큰 수입니다. (기본: 2048)', '번역 작업에는 큰 값이 필요 없으며, 값을 낮추면 VRAM을 절약하고 처리 속도를 높일 수 있습니다.']) }}
+    {{ macros.setting_input_text('jav_censored_ollama_num_ctx', 'Context Window (num_ctx)', value=arg['jav_censored_ollama_num_ctx'], desc=['문맥을 기억하는 최대 토큰 수입니다. (기본: 2048)', '번역 작업에는 큰 값이 필요 없으며, 값을 낮추면 VRAM을 절약하고 처리 속도를 높일 수 있습니다.', '간혹 긴 문장으로 `length` 오류가 발생할 경우 값을 조정해보세요.']) }}
 
     {{ macros.setting_input_textarea('jav_censored_ollama_system_prompt', 'System Prompt (시스템 프롬프트)', value=arg['jav_censored_ollama_system_prompt'], row='4', desc=['AI에게 부여할 역할과 번역 규칙을 작성합니다.']) }}
 
