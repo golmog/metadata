@@ -745,7 +745,7 @@ class ModuleJavCensored(PluginModuleBase):
         if javdb_deferred and not early_exit_triggered:
             has_any_100_score = any(item.get('original_score', 0) >= 100 for item in all_results)
             if not has_any_100_score:
-                logger.warning(f"[{self.name}] No perfect match found in primary sites. Triggering Deferred JavDB Scan...")
+                # logger.warning(f"[{self.name}] No perfect match found in primary sites. Triggering Deferred JavDB Scan...")
                 javdb_results = process_site_search('javdb')
                 if javdb_results:
                     all_results.extend(javdb_results)
