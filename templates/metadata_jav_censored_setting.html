@@ -36,9 +36,12 @@
 
   {{ macros.setting_checkbox('jav_censored_use_hq_poster_check', '자동 매칭 시 이미지 유효성 검증', value=arg['jav_censored_use_hq_poster_check'], desc=['자동 매칭 시 95점 이상인 후보(현재는 Jav321 한정)에 대해 상세 페이지를 선제적으로 분석하여, 이미지가 삭제(403/404)되었거나 가짜 이미지(Now Printing)인지 검증합니다.', '유효하지 않은 이미지를 가진 항목은 페널티를 받아 우선순위가 내려가 안전한 타 사이트 데이터로 대체됩니다.', '이미지 서버 사용시에는 차선 사이트(javbus 등)의 이미지를 대신 사용하도록 처리됩니다(메타 내용은 유지).']) }}
 
-  {{ macros.setting_radio_with_value('jav_censored_trans_option', '번역 옵션', [['not_using', '안함'], ['using', '기본 번역'], ['using_plugin', '번역 플러그인 사용']], value=arg['jav_censored_trans_option'], desc=None) }}
+  {{ macros.m_hr() }}
+  {{ macros.setting_input_text('jav_censored_flaresolverr_url', 'FlareSolverr URL', value=arg['jav_censored_flaresolverr_url'], placeholder='예: http://flaresolverr:8191', desc=['FlareSolverr 서버의 접속 주소를 입력하세요. (끝에 / 없이 입력)', '※ 각 사이트 파서(예: JavDB) 설정에서 FlareSolverr 사용 옵션이 켜져 있어야 작동합니다.']) }}
 
   {{ macros.m_hr() }}
+  {{ macros.setting_radio_with_value('jav_censored_trans_option', '번역 옵션', [['not_using', '안함'], ['using', '기본 번역'], ['using_plugin', '번역 플러그인 사용']], value=arg['jav_censored_trans_option'], desc=None) }}
+
   {{ macros.setting_checkbox('jav_censored_use_ollama', 'Ollama AI 번역 사용', value=arg['jav_censored_use_ollama'], desc=['ON으로 설정하면 제목과 줄거리를 AI로 번역합니다. 에러 발생 시 위에서 설정한 기본 번역기로 자동 우회(Fallback)합니다.']) }}
 
   <div id="jav_censored_use_ollama_div" class="collapse">
