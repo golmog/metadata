@@ -7,41 +7,57 @@
 
 {{ macros.m_hr_black() }}
 
-<form id='setting' name='setting'>
-<div class="tab-content mb-4">
-  {{ macros.setting_checkbox('jav_censored_db_use', 'DB 검색(캐시) 사용', value=arg['jav_censored_db_use'], desc=['검색 시 로컬 DB에 있는 항목을 최상위 100점으로 우선 반환합니다.']) }}
-  {{ macros.setting_checkbox('jav_censored_db_save', '새 메타데이터 DB 자동 저장', value=arg['jav_censored_db_save'], desc=['새롭게 파싱된 메타데이터를 DB에 자동으로 저장합니다.']) }}
-  {{ macros.m_hr() }}
-  {{ macros.setting_checkbox('jav_censored_db_save_only_translated', '번역된 메타데이터만 저장', value=arg['jav_censored_db_save_only_translated'], desc=['번역이 완료된 메타데이터만 DB에 저장합니다.']) }}
-  {{ macros.setting_checkbox('jav_censored_db_auto_enrich', 'Import 후 미디어 자동 일괄 채우기', value=arg['jav_censored_db_auto_enrich'], desc=['DB Import / 스마트 병합 완료 즉시 비어있는 미디어(이미지/트레일러) 자동 일괄 채우기를 백그라운드에서 실행합니다.']) }}
-  {{ macros.m_hr() }}
+<style>
+  #btn_toggle_setting.collapsed .text-expanded { display: none; }
+  #btn_toggle_setting.collapsed .text-collapsed { display: inline; }
+  #btn_toggle_setting:not(.collapsed) .text-expanded { display: inline; }
+  #btn_toggle_setting:not(.collapsed) .text-collapsed { display: none; }
+</style>
 
-  {{ macros.setting_input_textarea_and_buttons('jav_censored_db_import_path', 'JSON/DB Import & Export', [['btn_db_import_merge', '스마트 병합 Import'], ['btn_db_import_missing', '없는 것만 Import'], ['btn_db_export_current', 'Export (현재 카테고리)'], ['btn_db_export_all', 'Export (전체 데이터)']], value=arg['jav_censored_db_import_path'], row='3', desc=['JSON 파일 폴더 경로 또는 공유받은 DB 파일(.db)의 전체 경로를 입력하세요.', '엔터(줄바꿈)로 구분하여 여러 경로를 입력할 수 있습니다.', '※ 스마트 병합: 기존 내 이미지는 안전하게 보존하면서 번역/줄거리만 최신으로 교체 + 신규 등록', '※ Export 시에는 이미지/예고편 URL 정보가 제거된(공유용) 단일 DB 파일(.db)로 다운로드됩니다.']) }}
-  {{ macros.m_hr() }}
+<div class="mb-3">
+  <button class="btn btn-sm btn-outline-secondary btn-block font-weight-bold py-2 text-center collapsed" type="button" data-toggle="collapse" data-target="#setting_collapse_box" aria-expanded="false" aria-controls="setting_collapse_box" id="btn_toggle_setting">
+    <span>
+      DB 설정 및 제어 패널 
+      <span class="text-collapsed small text-muted">(펼치기) ▼</span>
+      <span class="text-expanded small text-muted">(접기) ▲</span>
+    </span>
+  </button>
+</div>
 
-  {{ macros.setting_input_text_and_buttons('jav_censored_enrich_delay', '미디어 일괄 채우기(딜레이)', [['btn_enrich_start', '일괄 채우기 시작'], ['btn_enrich_stop', '작업 중지']], value=arg['jav_censored_enrich_delay'], desc=['공유받아 이미지가 비어있는 항목들의 포스터/팬아트/트레일러를 순차적으로 채워 넣습니다. (기존 번역 텍스트 보존)', '※ 사이트 차단(Rate-Limit) 방지를 위해 딜레이를 2초 이상으로 유지하는 것을 권장합니다.']) }}
+<div class="collapse mb-4" id="setting_collapse_box">
+  <form id='setting' name='setting'>
+  <div class="tab-content">
+    {{ macros.setting_checkbox('jav_censored_db_use', 'DB 검색(캐시) 사용', value=arg['jav_censored_db_use'], desc=['검색 시 로컬 DB에 있는 항목을 최상위 100점으로 우선 반환합니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_db_save', '새 메타데이터 DB 자동 저장', value=arg['jav_censored_db_save'], desc=['새롭게 파싱되거나 번역된 메타데이터를 DB에 자동으로 저장합니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_db_save_only_translated', '번역된 메타데이터만 저장', value=arg['jav_censored_db_save_only_translated'], desc=['번역이 완료된 메타데이터만 DB에 저장합니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_db_auto_enrich', 'Import 후 미디어 자동 일괄 채우기', value=arg['jav_censored_db_auto_enrich'], desc=['DB Import / 스마트 병합 완료 즉시 비어있는 미디어(이미지/트레일러) 자동 일괄 채우기를 백그라운드에서 실행합니다.']) }}
+    {{ macros.setting_input_textarea('jav_censored_db_image_url_mapping', '웹 리스트 이미지 주소 치환', value=arg['jav_censored_db_image_url_mapping'], row='2', desc=['웹 리스트에서 이미지가 열리지 않을 때(localhost, 사설 IP 등) 주소를 치환하여 불러옵니다.', '형식: [기존주소]|[치환주소] (엔터로 여러 개 등록 가능)', '예시: http://localhost/images|https://myddns.com/images']) }}
+    {{ macros.m_hr() }}
 
-  <!-- 진행률 프로그레스 바 -->
-  <div id="enrich_progress_box" class="form-group row my-2" style="display: none;">
-    <div class="col-sm-2"></div>
-    <div class="col-sm-10">
-      <div class="progress" style="height: 20px;">
-        <div id="enrich_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;">0%</div>
-      </div>
-      <div class="d-flex justify-content-between text-muted small mt-1">
-        <span id="enrich_current_info">처리 중: -</span>
-        <span id="enrich_counts">진행: 0 / 0 (성공: 0, 실패: 0)</span>
+    {{ macros.setting_input_textarea_and_buttons('jav_censored_db_import_path', 'JSON/DB Import & Export', [['btn_db_import_merge', '스마트 병합 Import'], ['btn_db_import_missing', '없는 것만 Import'], ['btn_db_export_current', 'Export (현재 카테고리)'], ['btn_db_export_all', 'Export (전체 데이터)']], value=arg['jav_censored_db_import_path'], row='3', desc=['JSON 파일 폴더 경로 또는 공유받은 DB 파일(.db)의 전체 경로를 입력하세요.', '엔터(줄바꿈)로 구분하여 여러 경로를 입력할 수 있습니다.', '※ 스마트 병합: 기존 내 이미지는 안전하게 보존하면서 번역/줄거리만 최신으로 교체 + 신규 등록', '※ Export 시에는 이미지/예고편 URL 정보가 제거된(공유용) 단일 DB 파일(.db)로 다운로드됩니다.']) }}
+    {{ macros.m_hr() }}
+
+    <!-- 미디어 일괄 채우기 매크로 -->
+    {{ macros.setting_input_text_and_buttons('jav_censored_enrich_delay', '미디어 일괄 채우기', [['btn_enrich_start', '일괄 채우기 시작'], ['btn_enrich_stop', '작업 중지']], value=arg['jav_censored_enrich_delay'], desc=['공유받아 이미지가 비어있는 항목들의 포스터/팬아트/트레일러를 순차적으로 채워 넣습니다. (기존 번역 텍스트 보존)', '※ 사이트 차단(Rate-Limit) 방지를 위해 딜레이를 2초 이상으로 유지하는 것을 권장합니다.']) }}
+
+    <!-- 진행률 프로그레스 바 -->
+    <div id="enrich_progress_box" class="form-group row my-2" style="display: none;">
+      <div class="col-sm-2"></div>
+      <div class="col-sm-10">
+        <div class="progress" style="height: 20px;">
+          <div id="enrich_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;">0%</div>
+        </div>
+        <div class="d-flex justify-content-between text-muted small mt-1">
+          <span id="enrich_current_info">처리 중: -</span>
+          <span id="enrich_counts">진행: 0 / 0 (성공: 0, 실패: 0)</span>
+        </div>
       </div>
     </div>
   </div>
-
-  {{ macros.m_hr() }}
-  {{ macros.setting_input_textarea('jav_censored_db_image_url_mapping', '웹 리스트 이미지 주소 치환', value=arg['jav_censored_db_image_url_mapping'], row='2', desc=['웹 리스트에서 이미지가 열리지 않을 때(localhost, 사설 IP 등) 주소를 치환하여 불러옵니다.', '형식: [기존주소]|[치환주소] (엔터로 여러 개 등록 가능)', '예시: http://localhost/images|https://myddns.com/images']) }}
-
+  </form>
 </div>
-</form>
 
-{{ macros.m_hr_black() }}
+{{ macros.m_hr() }}
 
 <div>
   <form id="form_search" class="form-inline" style="text-align:left">
@@ -190,19 +206,23 @@ function make_list(data) {
             if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch(e) { jd = {}; } }
             
             var info_html = '<div style="line-height: 1.4;">';
+            
+            // 줄 1: 사이트 뱃지 + 제목
             info_html += '  <div class="mb-1">';
             info_html += '    <span class="badge badge-secondary mr-2" style="font-size: 0.82em; vertical-align: middle;">' + row.site.toUpperCase() + '</span>';
             info_html += '    <strong class="text-primary" style="font-size: 1.05em; vertical-align: middle;">' + row.title + '</strong>';
             info_html += '  </div>';
             
-            // 생성 / 갱신 시간
-            info_html += '  <div class="text-muted mb-2" style="font-size: 0.82em;">';
+            // 줄 2: code + 생성/갱신 시간
+            info_html += '  <div class="d-flex align-items-center flex-wrap text-muted mb-2" style="font-size: 0.82em;">';
+            info_html += '    <span class="badge badge-info mr-2" style="font-size: 1.05em; padding: 0.25em 0.55em; font-weight: 600;" title="고유 코드 (code)">' + row.code + '</span>';
             info_html += '    <span>생성: ' + row.created_time + '</span>';
             if (row.updated_time && row.updated_time !== row.created_time) {
                 info_html += '    <span class="ml-3 text-info">갱신: ' + row.updated_time + '</span>';
             }
             info_html += '  </div>';
             
+            // 줄 3: 줄거리
             var plot_text = jd.plot || "줄거리 정보가 없습니다.";
             if (plot_text.length > 250) plot_text = plot_text.substring(0, 250) + "...";
             info_html += '  <div class="text-muted" style="font-size: 0.88em; line-height: 1.45; word-break: break-word;">' + plot_text + '</div>';
@@ -354,7 +374,6 @@ $("body").on('click', '#btn_db_export_current, #btn_db_export_all', function(e){
     });
 });
 
-// ================= 일괄 채우기(Enrichment) 제어부 =================
 var enrich_timer = null;
 
 function check_enrich_status() {
@@ -418,6 +437,13 @@ $("body").on('click', '#btn_enrich_stop', function(e){
         notify(ret.msg, 'warning');
         check_enrich_status();
     });
+});
+
+$(document).ready(function(){
+    var saved_size = localStorage.getItem(sub + '_page_size');
+    if(saved_size) { $("#page_size").val(saved_size); }
+
+    globalRequestSearch('1');
 });
 
 </script>
