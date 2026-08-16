@@ -58,6 +58,7 @@ setting = {
                     {'uri': 'jav321', 'name': 'Jav321'},
                     {'uri': 'javbus', 'name': 'Javbus'},
                     {'uri': 'javdb', 'name': 'JavDB'},
+                    {'uri': 'db', 'name': '메타 DB 관리'},
                     {'uri': 'manual/files/jav_censored.md', 'name': '매뉴얼'},
                 ]
             },
@@ -66,6 +67,7 @@ setting = {
                 'name': 'JAV Uncensored',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
+                    {'uri': 'db', 'name': '메타 DB 관리'},
                 ]
             },
             {
@@ -73,6 +75,7 @@ setting = {
                 'name': '서양 AV (TPDB)',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
+                    {'uri': 'db', 'name': '메타 DB 관리'},
                 ]
             },
             {
