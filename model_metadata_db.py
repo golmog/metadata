@@ -214,10 +214,30 @@ class ModelAvMetadata(Base):
                 'next_page': end_page + 1 if end_page < total_page else 0,
             }
             
-            return {'success': True, 'paging': paging, 'list': [item.as_dict() for item in items]}
+            module_name = 'jav_censored' if category == 'CEN' else ('jav_uncensored' if category == 'UNCEN' else 'western')
+            url_mapping_str = P.ModelSetting.get(f"{module_name}_db_image_url_mapping") or ""
+            mappings = []
+            if url_mapping_str:
+                for line in url_mapping_str.split('\n'):
+                    line = line.strip()
+                    if '|' in line:
+                        parts = line.split('|', 1)
+                        if parts[0].strip() and parts[1].strip():
+                            mappings.append((parts[0].strip(), parts[1].strip()))
+
+            item_list = []
+            for item in items:
+                d = item.as_dict()
+                if d.get('poster_url') and mappings:
+                    for src_url, dst_url in mappings:
+                        if d['poster_url'].startswith(src_url):
+                            d['poster_url'] = d['poster_url'].replace(src_url, dst_url, 1)
+                            break
+                item_list.append(d)
+
+            return {'success': True, 'paging': paging, 'list': item_list}
         except Exception as e:
             logger.error(f"[MetaDB] web_list error: {e}")
-            logger.error(traceback.format_exc())
             return {'success': False, 'paging': None, 'list': []}
 
     @classmethod

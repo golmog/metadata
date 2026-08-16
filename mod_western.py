@@ -61,6 +61,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_db_auto_enrich": "True",
             f"{self.name}_enrich_delay": "2.0",
             f"{self.name}_db_import_path": "",
+            f"{self.name}_db_image_url_mapping": "",
         }
 
         self.enrich_status = {

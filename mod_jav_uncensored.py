@@ -73,6 +73,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_db_auto_enrich": "True",
             f"{self.name}_enrich_delay": "2.0",
             f"{self.name}_db_import_path": "",
+            f"{self.name}_db_image_url_mapping": "",
 
             f'{self.name}_1pondo_use_proxy' : 'False',
             f'{self.name}_1pondo_proxy_url' : '',
