@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['btn_db_clear', 'DB 초기화'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+{{ macros.m_hr_black() }}
+
+<form id='setting' name='setting'>
+<div class="tab-content mb-4">
+  {{ macros.setting_checkbox('jav_uncensored_db_use', 'DB 검색(캐시) 사용', value=arg['jav_uncensored_db_use'], desc=['검색 시 로컬 DB에 있는 항목을 최상위 100점으로 우선 반환합니다.']) }}
+  {{ macros.setting_checkbox('jav_uncensored_db_save', '새 메타데이터 DB 자동 저장', value=arg['jav_uncensored_db_save'], desc=['새롭게 파싱된 메타데이터를 DB에 자동으로 저장합니다.']) }}
+  {{ macros.setting_checkbox('jav_uncensored_db_save_only_translated', '번역된 메타데이터만 저장', value=arg['jav_uncensored_db_save_only_translated'], desc=['번역이 완료된 메타데이터만 DB에 저장합니다.']) }}
+  {{ macros.setting_checkbox('jav_uncensored_db_auto_enrich', 'Import 후 미디어 자동 일괄 채우기', value=arg['jav_uncensored_db_auto_enrich'], desc=['DB Import / 스마트 병합 완료 즉시 비어있는 미디어(이미지/트레일러) 자동 일괄 채우기를 백그라운드에서 실행합니다.']) }}
+  {{ macros.m_hr() }}
+
+  {{ macros.setting_input_textarea_and_buttons('jav_uncensored_db_import_path', 'JSON/DB Import & Export', [['btn_db_import_merge', '스마트 병합 Import'], ['btn_db_import_missing', '없는 것만 Import'], ['btn_db_export_current', 'Export (현재 카테고리)'], ['btn_db_export_all', 'Export (전체 데이터)']], value=arg['jav_uncensored_db_import_path'], row='3', desc=['JSON 파일 폴더 경로 또는 공유받은 DB 파일(.db)의 전체 경로를 입력하세요.', '엔터(줄바꿈)로 구분하여 여러 경로를 입력할 수 있습니다.', '※ 스마트 병합: 기존 내 이미지는 안전하게 보존하면서 번역/줄거리만 최신으로 교체 + 신규 등록', '※ Export 시에는 이미지/예고편 URL 정보가 제거된(공유용) 단일 DB 파일(.db)로 다운로드됩니다.']) }}
+  {{ macros.m_hr() }}
+
+  {{ macros.setting_input_text_and_buttons('jav_uncensored_enrich_delay', '미디어 일괄 채우기(딜레이)', [['btn_enrich_start', '일괄 채우기 시작'], ['btn_enrich_stop', '작업 중지']], value=arg['jav_uncensored_enrich_delay'], desc=['공유받아 이미지가 비어있는 항목들의 포스터/팬아트/트레일러를 순차적으로 채워 넣습니다. (기존 번역 텍스트 보존)', '※ 사이트 차단(Rate-Limit) 방지를 위해 딜레이를 2초 이상으로 유지하는 것을 권장합니다.']) }}
+
+  <div id="enrich_progress_box" class="form-group row my-2" style="display: none;">
+    <div class="col-sm-2"></div>
+    <div class="col-sm-10">
+      <div class="progress" style="height: 20px;">
+        <div id="enrich_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;">0%</div>
+      </div>
+      <div class="d-flex justify-content-between text-muted small mt-1">
+        <span id="enrich_current_info">처리 중: -</span>
+        <span id="enrich_counts">진행: 0 / 0 (성공: 0, 실패: 0)</span>
+      </div>
+    </div>
+  </div>
+</div>
+</form>
+
+{{ macros.m_hr_black() }}
+
+<div>
+  <form id="form_search" class="form-inline" style="text-align:left">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-6">
+          <select id="search_site" name="search_site" class="form-control form-control-sm">
+            <option value="all">전체 사이트</option>
+            <option value="1pondo">1Pondo</option>
+            <option value="10musume">10Musume</option>
+            <option value="paco">Pacopacomama</option>
+            <option value="heyzo">Heyzo</option>
+            <option value="carib">Caribbean</option>
+            <option value="fc2com">FC2</option>
+          </select>
+          <select id="search_order" name="search_order" class="form-control form-control-sm">
+            <option value="desc">최근 생성순</option>
+            <option value="asc">과거 생성순</option>
+            <option value="code_asc">품번순 (A-Z)</option>
+            <option value="code_desc">품번 역순 (Z-A)</option>
+          </select>
+          <select id="page_size" name="page_size" class="form-control form-control-sm">
+            <option value="10">10개씩 보기</option>
+            <option value="25">25개씩 보기</option>
+            <option value="50">50개씩 보기</option>
+            <option value="100">100개씩 보기</option>
+          </select>
+        </span>
+        <span class="col-md-6 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="품번 또는 제목을 입력하세요" aria-label="Search">
+          <button id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+  
+  <div id='page1'></div>
+  {{ macros.m_hr_head_top() }}
+  <div class="row text-center font-weight-bold py-1">
+    <div class="col-sm-2">포스터</div>
+    <div class="col-sm-8">메타데이터 정보</div>
+    <div class="col-sm-2">관리</div>
+  </div>
+  {{ macros.m_hr_head_bottom() }}
+  <div id="list_div"></div>
+  <div id='page2'></div>
+</div>
+
+<!-- 포스터 크게 보기 모달 -->
+<div class="modal fade" id="imageEnlargeModal" tabindex="-1" role="dialog" aria-hidden="true" style="cursor: pointer;">
+  <div class="modal-dialog modal-dialog-centered justify-content-center" role="document" style="max-width: fit-content; margin: auto;">
+    <div class="modal-content bg-transparent border-0 text-center" data-dismiss="modal">
+      <div class="modal-body p-0 d-flex justify-content-center align-items-center">
+        <img id="enlarged_image" src="" class="rounded shadow-lg" style="max-height: 85vh; max-width: 90vw; width: auto; height: auto; object-fit: contain;" alt="Enlarged Poster">
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JSON 편집 모달 -->
+<div class="modal fade" id="jsonEditModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-xl" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">JSON 데이터 수동 편집</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit_code">
+        <textarea id="edit_json_textarea" class="form-control" rows="25" style="font-family: monospace; font-size: 13px;"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="btn_save_json">DB에 반영하기</button>
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "jav_uncensored"; 
+var current_data = null; 
+
+$(document).ready(function(){
+    var saved_size = localStorage.getItem('jav_uncensored_page_size');
+    if(saved_size) { $("#page_size").val(saved_size); }
+    globalRequestSearch('1');
+});
+
+$("#search").click(function(e) { e.preventDefault(); globalRequestSearch('1'); });
+$("body").on('click', '#page, #gloablSearchPageBtn', function(e){ e.preventDefault(); globalRequestSearch($(this).data('page')); });
+
+$("body").on('change', '#search_site, #search_order, #page_size', function(e){
+    if ($(this).attr('id') === 'page_size') { localStorage.setItem('jav_uncensored_page_size', $(this).val()); }
+    globalRequestSearch('1');
+});
+
+$("#reset_btn").click(function(e){
+    e.preventDefault();
+    $("#search_word").val(''); $("#search_site").val('all'); $("#search_order").val('desc');
+    globalRequestSearch('1');
+});
+$("#search_word").keydown(function(e) { if (e.which == 13) { e.preventDefault(); globalRequestSearch('1'); } });
+
+function make_list(data) {
+    current_data = data;
+    var str = '';
+    if (!data || data.length == 0) {
+        str += '<div class="row"><div class="col-sm-12 text-center p-4 text-muted">저장된 메타데이터가 없습니다. (또는 검색 결과 없음)</div></div>';
+    } else {
+        for (var i in data) {
+            var row = data[i];
+            str += '<div class="row align-items-start py-3 px-1" style="border-bottom: 1px solid rgba(128, 128, 128, 0.15);">';
+            
+            // 1. 포스터 영역 (Col-2)
+            var img_html = '';
+            if (row.poster_url) {
+                img_html = '<div class="text-center"><img src="' + row.poster_url + '" class="enlarge-img shadow-sm" data-src="' + row.poster_url + '" style="max-height:150px; max-width:100%; object-fit:contain; object-position:top; border-radius:4px; cursor:zoom-in;" title="클릭하여 크게 보기"></div>';
+            } else {
+                img_html = '<div class="d-flex align-items-center justify-content-center rounded text-muted" style="height: 130px; font-size: 0.85em; border: 1px dashed rgba(128, 128, 128, 0.3);">No Image</div>';
+            }
+            str += '<div class="col-sm-2">' + img_html + '</div>';
+            
+            // 2. 통합 메타데이터 정보 영역 (Col-8)
+            var jd = row.json_data;
+            if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch(e) { jd = {}; } }
+            
+            var info_html = '<div style="line-height: 1.4;">';
+            info_html += '  <div class="mb-1">';
+            info_html += '    <span class="badge badge-secondary mr-2" style="font-size: 0.82em; vertical-align: middle;">' + row.site.toUpperCase() + '</span>';
+            info_html += '    <strong class="text-primary" style="font-size: 1.05em; vertical-align: middle;">' + row.title + '</strong>';
+            info_html += '  </div>';
+            
+            // 생성 / 갱신 시간
+            info_html += '  <div class="text-muted mb-2" style="font-size: 0.82em;">';
+            info_html += '    <span>생성: ' + row.created_time + '</span>';
+            if (row.updated_time && row.updated_time !== row.created_time) {
+                info_html += '    <span class="ml-3 text-info">갱신: ' + row.updated_time + '</span>';
+            }
+            info_html += '  </div>';
+            
+            var plot_text = jd.plot || "줄거리 정보가 없습니다.";
+            if (plot_text.length > 250) plot_text = plot_text.substring(0, 250) + "...";
+            info_html += '  <div class="text-muted" style="font-size: 0.88em; line-height: 1.45; word-break: break-word;">' + plot_text + '</div>';
+            info_html += '</div>';
+            str += '<div class="col-sm-8">' + info_html + '</div>';
+            
+            // 3. 관리 버튼 영역 (Col-2)
+            var btns = '<div class="d-flex flex-column align-items-center justify-content-start pt-1">';
+            btns += '  <button class="btn btn-sm btn-outline-info btn_edit_db mb-2 w-75" data-idx="' + i + '">JSON 편집</button>';
+            btns += '  <button class="btn btn-sm btn-outline-success btn_refresh_image mb-2 w-75" data-code="' + row.code + '">이미지 갱신</button>';
+            btns += '  <button class="btn btn-sm btn-outline-danger btn_delete_db w-75" data-code="' + row.code + '">데이터 삭제</button>';
+            btns += '</div>';
+            str += '<div class="col-sm-2">' + btns + '</div>';
+            
+            str += '</div>';
+        }
+    }
+    document.getElementById("list_div").innerHTML = str;
+}
+
+$("body").on('click', '.enlarge-img', function(){
+    var img_src = $(this).data('src');
+    $('#enlarged_image').attr('src', img_src);
+    $('#imageEnlargeModal').modal('show');
+});
+
+$('#imageEnlargeModal').on('click', function(){
+    $(this).modal('hide');
+});
+
+$("body").on('click', '.btn_edit_db', function(e){
+    e.preventDefault();
+    var idx = $(this).data('idx');
+    var jd = current_data[idx].json_data;
+    if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch(e){} }
+    $('#edit_code').val(jd.code);
+    $('#edit_json_textarea').val(JSON.stringify(jd, null, 4));
+    $('#jsonEditModal').modal('show');
+});
+
+$("body").on('click', '#btn_save_json', function(e){
+    e.preventDefault();
+    var code = $('#edit_code').val();
+    var raw_json = $('#edit_json_textarea').val();
+    try { JSON.parse(raw_json); } catch(err) { alert('입력된 내용이 올바른 JSON 형식이 아닙니다!'); return; }
+    
+    globalSendCommand('db_edit_save', code, raw_json, null, function(ret){
+        if(ret.ret == 'success'){ 
+            notify(ret.msg || 'DB에 성공적으로 반영되었습니다.', 'success'); 
+            $('#jsonEditModal').modal('hide'); 
+            globalRequestSearch('1'); 
+        } else {
+            notify('저장 실패: ' + ret.msg, 'warning');
+        }
+    });
+});
+
+$("body").on('click', '.btn_refresh_image', function(e){
+    e.preventDefault();
+    var code = $(this).data('code');
+    var btn = $(this);
+    var origText = btn.text();
+    btn.prop('disabled', true).text('갱신 중...');
+
+    globalSendCommand('db_refresh_image', code, null, null, function(ret){
+        btn.prop('disabled', false).text(origText);
+        notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
+        if (ret.ret == 'success') {
+            var currentPage = (current_data && current_data.paging) ? current_data.paging.current_page : '1';
+            globalRequestSearch(currentPage);
+        }
+    });
+});
+
+$("body").on('click', '.btn_delete_db', function(e){
+    e.preventDefault();
+    var code = $(this).data('code');
+    if(confirm("정말 이 데이터를 삭제하시겠습니까?")) {
+        globalSendCommand('db_delete', code, null, null, function(ret){
+            if (ret.ret == 'success') { notify('삭제되었습니다.', 'success'); globalRequestSearch('1'); }
+        });
+    }
+});
+
+$("body").on('click', '#btn_db_clear', function(e){
+    e.preventDefault();
+    if(confirm("⚠️ 주의!\n현재 카테고리의 모든 로컬 DB 메타데이터 캐시가 삭제됩니다.\n진행하시겠습니까?")) {
+        globalSendCommand('db_clear', null, null, null, function(ret){
+            notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
+            if (ret.ret == 'success') globalRequestSearch('1');
+        });
+    }
+});
+
+$("body").on('click', '#btn_db_vacuum', function(e){
+    e.preventDefault();
+    var btn = $(this); var origText = btn.text(); btn.prop('disabled', true).text('최적화 중...');
+    globalSendCommand('db_vacuum', null, null, null, function(ret){
+        btn.prop('disabled', false).text(origText);
+        notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
+    });
+});
+
+$("body").on('click', '#btn_db_import_merge, #btn_db_import_missing', function(e){
+    e.preventDefault();
+    var path = $('#' + sub + '_db_import_path').val();
+    if(!path) { notify("경로를 입력하세요.", 'warning'); return; }
+    
+    var mode = $(this).attr('id') == 'btn_db_import_merge' ? 'update' : 'missing';
+    var auto_enrich = $('#' + sub + '_db_auto_enrich').is(':checked');
+    var delay = $('#' + sub + '_enrich_delay').val() || '2.0';
+    
+    var btn = $(this); 
+    var origText = btn.text(); 
+    btn.prop('disabled', true).text('병합 처리 중...');
+    
+    globalSendCommand('db_import', path, mode, auto_enrich ? 'true' : 'false', function(ret){
+        btn.prop('disabled', false).text(origText);
+        notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
+        if (ret.ret == 'success') {
+            globalRequestSearch('1');
+            if (auto_enrich && typeof check_enrich_status === 'function') {
+                check_enrich_status();
+            }
+        }
+    }, {delay: delay});
+});
+
+$("body").on('click', '#btn_db_export_current, #btn_db_export_all', function(e){
+    e.preventDefault();
+    var mode = $(this).attr('id') == 'btn_db_export_current' ? 'current' : 'all';
+    var btn = $(this); var origText = btn.text(); btn.prop('disabled', true).text('DB 생성 중...');
+    globalSendCommand('db_export', mode, null, null, function(ret){
+        btn.prop('disabled', false).text(origText);
+        if (ret.ret == 'success') {
+            notify(ret.msg, 'success');
+            window.location.href = '/' + package_name + '/normal/' + sub + '/db_download?filename=' + ret.filename;
+        } else { notify('Export 실패: ' + ret.msg, 'warning'); }
+    });
+});
+
+var enrich_timer = null;
+
+function check_enrich_status() {
+    globalSendCommand('db_enrich_status', null, null, null, function(ret){
+        if(ret.ret == 'success'){
+            var s = ret.data;
+            if(s.is_running){
+                $('#btn_enrich_start').prop('disabled', true).text('작업 진행 중...');
+                $('#btn_enrich_stop').show();
+                $('#enrich_progress_box').show();
+                
+                var percent = s.total > 0 ? Math.round((s.current / s.total) * 100) : 0;
+                $('#enrich_progress_bar').css('width', percent + '%').text(percent + '%');
+                $('#enrich_current_info').html('처리 중: <strong class="text-primary">' + s.current_code + '</strong>');
+                $('#enrich_counts').text('진행: ' + s.current + ' / ' + s.total + ' (성공: ' + s.success + ', 실패: ' + s.fail + ')');
+                
+                if(!enrich_timer){
+                    enrich_timer = setInterval(check_enrich_status, 1500);
+                }
+            } else {
+                $('#btn_enrich_start').prop('disabled', false).text('일괄 채우기 시작');
+                $('#btn_enrich_stop').hide();
+                if(enrich_timer){
+                    clearInterval(enrich_timer);
+                    enrich_timer = null;
+                    globalRequestSearch('1');
+                }
+                if(s.status === '완료'){
+                    $('#enrich_current_info').html('<strong class="text-success">모든 미디어 채우기가 완료되었습니다.</strong>');
+                } else if(s.status === '중단됨'){
+                    $('#enrich_current_info').html('<strong class="text-warning">사용자에 의해 작업이 중단되었습니다.</strong>');
+                }
+            }
+        }
+    });
+}
+
+check_enrich_status();
+
+$("body").on('click', '#btn_enrich_start', function(e){
+    e.preventDefault();
+    var delay = $('#' + sub + '_enrich_delay').val() || '2.0';
+    var btn = $(this);
+    btn.prop('disabled', true);
+    
+    globalSendCommand('db_enrich_start', delay, null, null, function(ret){
+        notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
+        if(ret.ret == 'success'){
+            check_enrich_status();
+        } else {
+            btn.prop('disabled', false);
+        }
+    });
+});
+
+$("body").on('click', '#btn_enrich_stop', function(e){
+    e.preventDefault();
+    globalSendCommand('db_enrich_stop', null, null, null, function(ret){
+        notify(ret.msg, 'warning');
+        check_enrich_status();
+    });
+});
+
+</script>
+{% endblock %}
