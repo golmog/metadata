@@ -63,26 +63,34 @@
   <form id="form_search" class="form-inline" style="text-align:left">
     <div class="container-fluid">
       <div class="row show-grid">
-        <span class="col-md-6">
-          <select id="search_site" name="search_site" class="form-control form-control-sm">
-            <option value="all">전체 사이트</option>
-            <option value="tpdb">ThePornDB</option>
-          </select>
-          <select id="search_order" name="search_order" class="form-control form-control-sm">
-            <option value="desc">최근 생성순</option>
-            <option value="asc">과거 생성순</option>
-            <option value="code_asc">품번순 (A-Z)</option>
-            <option value="code_desc">품번 역순 (Z-A)</option>
-          </select>
-          <select id="page_size" name="page_size" class="form-control form-control-sm">
-            <option value="10">10개씩 보기</option>
-            <option value="25">25개씩 보기</option>
-            <option value="50">50개씩 보기</option>
-            <option value="100">100개씩 보기</option>
-          </select>
+        <span class="col-md-7">
+          <div class="input-group input-group-sm">
+            <select id="search_site" name="search_site" class="form-control form-control-sm">
+              <option value="all">전체 사이트</option>
+              <option value="tpdb">ThePornDB</option>
+            </select>
+            <select id="search_status" name="search_status" class="form-control form-control-sm">
+              <option value="all">전체 상태</option>
+              <option value="no_poster">포스터 누락</option>
+              <option value="no_plot">줄거리 누락</option>
+              <option value="complete">정상 완료</option>
+            </select>
+            <select id="search_order" name="search_order" class="form-control form-control-sm">
+              <option value="desc">최근 생성순</option>
+              <option value="asc">과거 생성순</option>
+              <option value="code_asc">품번순 (A-Z)</option>
+              <option value="code_desc">품번 역순 (Z-A)</option>
+            </select>
+            <select id="page_size" name="page_size" class="form-control form-control-sm">
+              <option value="10">10개씩</option>
+              <option value="25">25개씩</option>
+              <option value="50">50개씩</option>
+              <option value="100">100개씩</option>
+            </select>
+          </div>
         </span>
-        <span class="col-md-6 text-right">
-          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="품번 또는 제목을 입력하세요" aria-label="Search">
+        <span class="col-md-5 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="품번 또는 제목 검색" aria-label="Search">
           <button id="search" class="btn btn-sm btn-outline-success">검색</button>
           <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
         </span>
@@ -139,25 +147,88 @@ var sub = "western";
 var current_data = null; 
 
 $(document).ready(function(){
-    var saved_size = localStorage.getItem('western_page_size');
+    var saved_size = localStorage.getItem(sub + '_page_size');
     if(saved_size) { $("#page_size").val(saved_size); }
+
+    var saved_site = localStorage.getItem(sub + '_search_site');
+    if(saved_site) { $("#search_site").val(saved_site); }
+
+    var saved_status = localStorage.getItem(sub + '_search_status');
+    if(saved_status) { $("#search_status").val(saved_status); }
+
+    var saved_order = localStorage.getItem(sub + '_search_order');
+    if(saved_order) { $("#search_order").val(saved_order); }
+
+    var saved_word = localStorage.getItem(sub + '_search_word');
+    if(saved_word) { $("#search_word").val(saved_word); }
+
+    var saved_collapse = localStorage.getItem(sub + '_setting_collapse');
+    if (saved_collapse === 'show') {
+        $('#setting_collapse_box').addClass('show');
+        $('#btn_toggle_setting').removeClass('collapsed').attr('aria-expanded', 'true');
+    } else {
+        $('#setting_collapse_box').removeClass('show');
+        $('#btn_toggle_setting').addClass('collapsed').attr('aria-expanded', 'false');
+    }
+
+    var saved_page = localStorage.getItem(sub + '_current_page') || '1';
+    globalRequestSearch(saved_page);
+});
+
+$("body").on('click', '#btn_toggle_setting', function(){
+    var willExpand = $(this).hasClass('collapsed');
+    localStorage.setItem(sub + '_setting_collapse', willExpand ? 'show' : 'hide');
+});
+
+$("body").on('click', '#page, #gloablSearchPageBtn', function(e){
+    e.preventDefault();
+    var targetPage = $(this).data('page');
+    if(targetPage && !isNaN(targetPage)) {
+        localStorage.setItem(sub + '_current_page', targetPage);
+        globalRequestSearch(targetPage);
+    }
+});
+
+$("body").on('change', '#search_site, #search_status, #search_order, #page_size', function(e){
+    localStorage.setItem(sub + '_search_site', $('#search_site').val());
+    localStorage.setItem(sub + '_search_status', $('#search_status').val());
+    localStorage.setItem(sub + '_search_order', $('#search_order').val());
+    localStorage.setItem(sub + '_page_size', $('#page_size').val());
+    
+    localStorage.setItem(sub + '_current_page', '1');
     globalRequestSearch('1');
 });
 
-$("#search").click(function(e) { e.preventDefault(); globalRequestSearch('1'); });
-$("body").on('click', '#page, #gloablSearchPageBtn', function(e){ e.preventDefault(); globalRequestSearch($(this).data('page')); });
-
-$("body").on('change', '#search_site, #search_order, #page_size', function(e){
-    if ($(this).attr('id') === 'page_size') { localStorage.setItem('western_page_size', $(this).val()); }
+$("#search").click(function(e) {
+    e.preventDefault();
+    localStorage.setItem(sub + '_search_word', $('#search_word').val());
+    localStorage.setItem(sub + '_current_page', '1');
     globalRequestSearch('1');
+});
+
+$("#search_word").keydown(function(e) {
+    if (e.which == 13) {
+        e.preventDefault();
+        localStorage.setItem(sub + '_search_word', $('#search_word').val());
+        localStorage.setItem(sub + '_current_page', '1');
+        globalRequestSearch('1');
+    }
 });
 
 $("#reset_btn").click(function(e){
     e.preventDefault();
-    $("#search_word").val(''); $("#search_site").val('all'); $("#search_order").val('desc');
+    $("#search_word").val('');
+    $("#search_site").val('all');
+    $("#search_status").val('all');
+    $("#search_order").val('desc');
+    
+    localStorage.removeItem(sub + '_search_word');
+    localStorage.setItem(sub + '_search_site', 'all');
+    localStorage.setItem(sub + '_search_status', 'all');
+    localStorage.setItem(sub + '_search_order', 'desc');
+    localStorage.setItem(sub + '_current_page', '1');
     globalRequestSearch('1');
 });
-$("#search_word").keydown(function(e) { if (e.which == 13) { e.preventDefault(); globalRequestSearch('1'); } });
 
 function make_list(data) {
     current_data = data;
@@ -184,15 +255,15 @@ function make_list(data) {
             
             var info_html = '<div style="line-height: 1.4;">';
             
-            // 줄 1: 사이트 뱃지 + 제목
+            // 줄 1: 제목
             info_html += '  <div class="mb-1">';
-            info_html += '    <span class="badge badge-secondary mr-2" style="font-size: 0.82em; vertical-align: middle;">' + row.site.toUpperCase() + '</span>';
             info_html += '    <strong class="text-primary" style="font-size: 1.05em; vertical-align: middle;">' + row.title + '</strong>';
             info_html += '  </div>';
             
-            // 줄 2: code + 생성/갱신 시간
+            // 줄 2: 고유 code 뱃지 + 출처 site 뱃지 + 생성 / 갱신 시간
             info_html += '  <div class="d-flex align-items-center flex-wrap text-muted mb-2" style="font-size: 0.82em;">';
-            info_html += '    <span class="badge badge-info mr-2" style="font-size: 1.05em; padding: 0.25em 0.55em; font-weight: 600;" title="고유 코드 (code)">' + row.code + '</span>';
+            info_html += '    <span class="badge badge-info mr-2" style="font-size: 1em; padding: 0.25em 0.55em; font-weight: 600; vertical-align: middle;" title="고유 코드 (code)">' + row.code + '</span>';
+            info_html += '    <span class="badge badge-secondary mr-2" style="font-size: 1em; font-weight: 500; vertical-align: middle;" title="출처 사이트">' + row.site.toUpperCase() + '</span>';
             info_html += '    <span>생성: ' + row.created_time + '</span>';
             if (row.updated_time && row.updated_time !== row.created_time) {
                 info_html += '    <span class="ml-3 text-info">갱신: ' + row.updated_time + '</span>';
@@ -201,8 +272,8 @@ function make_list(data) {
             
             // 줄 3: 줄거리
             var plot_text = jd.plot || "줄거리 정보가 없습니다.";
-            if (plot_text.length > 250) plot_text = plot_text.substring(0, 250) + "...";
-            info_html += '  <div class="text-muted" style="font-size: 0.88em; line-height: 1.45; word-break: break-word;">' + plot_text + '</div>';
+            if (plot_text.length > 320) plot_text = plot_text.substring(0, 320) + "...";
+            info_html += '  <div class="text-muted" style="font-size: 0.9em; line-height: 1.45; word-break: break-word;">' + plot_text + '</div>';
             info_html += '</div>';
             str += '<div class="col-sm-8">' + info_html + '</div>';
             
@@ -402,13 +473,6 @@ $("body").on('click', '#btn_enrich_stop', function(e){
         notify(ret.msg, 'warning');
         check_enrich_status();
     });
-});
-
-$(document).ready(function(){
-    var saved_size = localStorage.getItem(sub + '_page_size');
-    if(saved_size) { $("#page_size").val(saved_size); }
-
-    globalRequestSearch('1');
 });
 
 </script>

@@ -519,6 +519,9 @@ class ModuleJavUncensored(PluginModuleBase):
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
 
+            if sub == "user_image_update":
+                return self._api_user_image_update(req)
+
             return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
 
         except Exception as e:
@@ -634,6 +637,78 @@ class ModuleJavUncensored(PluginModuleBase):
             return "File not found.", 404
 
         return None
+
+
+    def _api_user_image_update(self, req):
+        ret = {
+            'ret': 'success', 'msg': '', 'total_input': 0, 'updated_count': 0,
+            'skipped_count': 0, 'not_found_count': 0, 'updated_items': [],
+            'not_found_files': [], 'errors': []
+        }
+        try:
+            from .model_metadata_db import ModelAvMetadata, av_db_session
+            import json, re
+
+            files = []
+            if req.is_json:
+                json_body = req.get_json(silent=True) or {}
+                if isinstance(json_body, list): files = json_body
+                elif isinstance(json_body, dict):
+                    files = json_body.get('files') or json_body.get('filenames') or []
+            
+            if not files:
+                raw_files = req.form.get('files') or req.args.get('files')
+                if raw_files:
+                    try:
+                        p = json.loads(raw_files)
+                        files = p if isinstance(p, list) else [p]
+                    except:
+                        files = [f.strip() for f in re.split(r'[\n,]', raw_files) if f.strip()]
+
+            if not files:
+                ret['ret'] = 'warning'
+                ret['msg'] = '업데이트할 파일 목록(files)이 전달되지 않았습니다.'
+                return jsonify(ret), 200
+
+            ret['total_input'] = len(files)
+            batch_size = 100
+            processed_in_batch = 0
+
+            for filename in files:
+                if not filename or not isinstance(filename, str): continue
+                res, code, detail = ModelAvMetadata.update_user_image_by_filename(filename)
+                
+                if res == 'updated':
+                    ret['updated_count'] += 1
+                    ret['updated_items'].append(detail)
+                    processed_in_batch += 1
+                elif res == 'not_found':
+                    ret['not_found_count'] += 1
+                    ret['not_found_files'].append(filename)
+                elif res == 'skipped':
+                    ret['skipped_count'] += 1
+                elif res == 'error':
+                    ret['errors'].append({'file': filename, 'error': detail})
+
+                if processed_in_batch >= batch_size:
+                    av_db_session.commit()
+                    processed_in_batch = 0
+
+            if processed_in_batch > 0:
+                av_db_session.commit()
+
+            ModelAvMetadata.checkpoint_wal()
+
+            ret['msg'] = f"총 {len(files)}개 중 {ret['updated_count']}개 DB 레코드 업데이트 완료"
+            logger.info(f"[{self.name}] User Image API: {ret['msg']}")
+            return jsonify(ret), 200
+
+        except Exception as e:
+            logger.error(f"[{self.name}] user_image_update API Exception: {e}")
+            ret['ret'] = 'error'
+            ret['code'] = 'INTERNAL_EXCEPTION'
+            ret['msg'] = str(e)
+            return jsonify(ret), 200
 
 
     # endregion PluginModuleBase 메서드 오버라이드

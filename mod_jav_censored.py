@@ -737,6 +737,10 @@ class ModuleJavCensored(PluginModuleBase):
             if call == "kodi":
                 data = SiteUtil.info_to_kodi(data)
             return jsonify(data)
+
+        if sub == "user_image_update":
+            return self._api_user_image_update(req)
+
         return None
 
 
@@ -843,6 +847,90 @@ class ModuleJavCensored(PluginModuleBase):
             return "File not found or expired.", 404
 
         return None
+
+
+    def _api_user_image_update(self, req):
+        ret = {
+            'ret': 'success', 'msg': '', 'total_input': 0, 'updated_count': 0,
+            'already_count': 0, 'skipped_count': 0, 'not_found_count': 0,
+            'updated_items': [], 'not_found_files': [], 'errors': []
+        }
+        try:
+            from .model_metadata_db import ModelAvMetadata, av_db_session
+            import json, re
+
+            files = []
+            if req.is_json:
+                json_body = req.get_json(silent=True) or {}
+                if isinstance(json_body, list): files = json_body
+                elif isinstance(json_body, dict):
+                    files = json_body.get('files') or json_body.get('filenames') or []
+            
+            if not files:
+                raw_files = req.form.get('files') or req.args.get('files')
+                if raw_files:
+                    try:
+                        p = json.loads(raw_files)
+                        files = p if isinstance(p, list) else [p]
+                    except:
+                        files = [f.strip() for f in re.split(r'[\n,]', raw_files) if f.strip()]
+
+            if not files:
+                ret['ret'] = 'warning'
+                ret['msg'] = '업데이트할 파일 목록(files)이 전달되지 않았습니다.'
+                return jsonify(ret), 200
+
+            ret['total_input'] = len(files)
+            batch_size = 100
+            processed_in_batch = 0
+            total_modified = 0
+
+            for filename in files:
+                if not filename or not isinstance(filename, str): continue
+                res, code, detail = ModelAvMetadata.update_user_image_by_filename(filename)
+                
+                if res == 'updated':
+                    ret['updated_count'] += 1
+                    ret['updated_items'].append(detail)
+                    processed_in_batch += 1
+                    total_modified += 1
+                elif res == 'already':
+                    ret['already_count'] += 1
+                elif res == 'not_found':
+                    ret['not_found_count'] += 1
+                    ret['not_found_files'].append(filename)
+                elif res == 'skipped':
+                    ret['skipped_count'] += 1
+                elif res == 'error':
+                    ret['errors'].append({'file': filename, 'error': detail})
+
+                if processed_in_batch >= batch_size:
+                    av_db_session.commit()
+                    processed_in_batch = 0
+
+            if processed_in_batch > 0:
+                av_db_session.commit()
+
+            if total_modified > 0:
+                ModelAvMetadata.checkpoint_wal()
+
+            ret['msg'] = f"총 {len(files)}개 중 갱신: {ret['updated_count']}개, 기적용(유지): {ret['already_count']}개, 미등록: {ret['not_found_count']}개"
+            logger.info(f"[{self.name}] User Image API: {ret['msg']}")
+            return jsonify(ret), 200
+
+        except Exception as e:
+            logger.error(f"[{self.name}] user_image_update API Exception: {e}")
+            ret['ret'] = 'error'
+            ret['code'] = 'INTERNAL_EXCEPTION'
+            ret['msg'] = str(e)
+            return jsonify(ret), 200
+
+        except Exception as e:
+            logger.error(f"[{self.name}] user_image_update API Exception: {e}")
+            ret['ret'] = 'error'
+            ret['code'] = 'INTERNAL_EXCEPTION'
+            ret['msg'] = str(e)
+            return jsonify(ret), 200
 
 
     def create_default_settings_yaml(self):
