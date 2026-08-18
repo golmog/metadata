@@ -647,15 +647,17 @@ class ModuleWestern(PluginModuleBase):
                 from .model_metadata_db import ModelAvMetadata, av_db_session
                 kw_norm = re.sub(r'[^a-zA-Z0-9]', '', cleaned_keyword).lower()
                 query_kw = f"%{cleaned_keyword.replace('-', '%')}%"
+                
                 db_records = av_db_session.query(ModelAvMetadata).filter(
-                    ModelAvMetadata.category == self.category,
+                    ModelAvMetadata.category == 'WEST',
                     ModelAvMetadata.originaltitle.ilike(query_kw)
                 ).all()
 
                 valid_db_records = []
                 for record in db_records:
                     record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
-                    if kw_norm in record_orig_norm or record_orig_norm in kw_norm:
+                    
+                    if kw_norm == record_orig_norm:
                         valid_db_records.append(record)
 
                 for record in valid_db_records:
@@ -668,9 +670,17 @@ class ModuleWestern(PluginModuleBase):
                     try: db_item.year = int(record.json_data.get('year', 1900))
                     except: db_item.year = 1900
                     db_item.image_url = record.poster_url or ''
-                    db_item.desc = record.json_data.get('plot', '')
+                    
+                    jd = record.json_data or {}
+                    studio_str = jd.get('studio', 'Unknown')
+                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+                    actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
+                    premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
+                    plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
+
+                    db_item.desc = f"스튜디오: {studio_str} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
                     db_item.score = 105
-                    db_item.content_type = record.json_data.get('content_type', 'movie')
+                    db_item.content_type = jd.get('content_type', 'movie')
 
                     item_dict = db_item.as_dict()
                     item_dict['original_score'] = 105
@@ -679,9 +689,13 @@ class ModuleWestern(PluginModuleBase):
                     all_results.append(item_dict)
 
                 if all_results:
-                    logger.info(f"[{self.name}] Auto-match satisfied by Local DB.")
                     for item in all_results: item['score'] = min(100, item['score'])
+                    logger.debug(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건):")
+                    for idx, item in enumerate(all_results):
+                        year_str = item.get('year') if item.get('year') != 1900 else '????'
+                        logger.debug(f"  📁 {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
                     return all_results
+                
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
 
@@ -801,6 +815,12 @@ class ModuleWestern(PluginModuleBase):
                         for extra in cached_json['extras']:
                             if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
                             elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
+
+                    title_log = cached_json.get('title', 'No Title')
+                    year_log = cached_json.get('year', '????')
+                    site_log = cached_json.get('site', 'unknown').upper()
+                    ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
+                    logger.info(f"[DB Cache Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
 
                     return cached_json
 

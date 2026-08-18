@@ -264,6 +264,9 @@ class ModuleJavCensored(PluginModuleBase):
         # 2. YAML에서 읽어온 전체 설정을 SiteAvBase에 설정
         SiteAvBase.set_yaml_settings(self.jav_settings)
 
+        # SiteAvBase 클래스 자체에도 설정을 주입하여 직접 호출 시 config 누락 방지
+        SiteAvBase.set_config(self.P.ModelSetting)
+
         for ins in ins_list:
             try:
                 P.logger.debug(f"set_config site {ins.__name__} with settings.")
@@ -986,53 +989,54 @@ class ModuleJavCensored(PluginModuleBase):
             try:
                 from .model_metadata_db import ModelAvMetadata, av_db_session
                 
-                kw_norm = re.sub(r'[^a-zA-Z0-9]', '', keyword).lower()
-                query_kw = f"%{keyword.replace('-', '%')}%"
+                kw_ui_code, kw_label, kw_num = SiteAvBase._parse_ui_code(keyword)
+                search_query_num = f"%{kw_num}%" if kw_num else f"%{keyword}%"
+
                 db_records = av_db_session.query(ModelAvMetadata).filter(
-                    ModelAvMetadata.category == self.category,
-                    ModelAvMetadata.originaltitle.ilike(query_kw)
+                    ModelAvMetadata.category == 'CEN',
+                    ModelAvMetadata.originaltitle.ilike(search_query_num)
                 ).all()
 
                 valid_db_records = []
                 for record in db_records:
-                    record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
-                    if kw_norm == record_orig_norm or kw_norm in record_orig_norm:
+                    match_score = SiteAvBase._calculate_score(keyword, record.originaltitle)
+                    if match_score >= 99:
                         valid_db_records.append(record)
 
                 for record in valid_db_records:
-                    # 1. Plex 에이전트 표준 객체 생성 (site 이름 필수)
                     db_item = EntityAVSearch(record.site)
                     db_item.code = record.code
                     db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
                     db_item.title = f"📁 [DB 저장됨] {record.title}"
-                    
-                    # [핵심] Plex 에이전트가 터지지 않도록 title_ko와 정수형 year를 보장합니다.
+                    db_item.originaltitle = record.originaltitle
                     db_item.title_ko = db_item.title
-                    try:
-                        db_item.year = int(record.json_data.get('year', 1900))
-                    except (ValueError, TypeError):
-                        db_item.year = 1900
-                        
+                    try: db_item.year = int(record.json_data.get('year', 1900))
+                    except: db_item.year = 1900
                     db_item.image_url = record.poster_url or ''
-                    db_item.desc = record.json_data.get('plot', '')
-                    db_item.score = 105
-                    db_item.content_type = record.json_data.get('content_type', 'unknown')
-
-                    # 2. 표준 as_dict() 를 통해 완벽한 JSON 딕셔너리로 변환
-                    item_dict = db_item.as_dict()
                     
-                    # 3. 플러그인 내부 정렬/처리에 필요한 메타데이터 전용 추가 속성 부여
+                    jd = record.json_data or {}
+                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+                    actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
+                    premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
+                    plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
+                    
+                    db_item.desc = f"출처: {record.site.upper()} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
+                    db_item.score = 105
+                    db_item.content_type = jd.get('content_type', 'unknown')
+
+                    item_dict = db_item.as_dict()
                     item_dict['original_score'] = 105
                     item_dict['site_key'] = record.site
                     item_dict['is_db_cached'] = True
-                    item_dict['is_priority_label_site'] = True
-
+                    item_dict['is_priority_label_site'] = True 
                     all_results.append(item_dict)
 
-                if not manual and all_results:
-                    logger.info(f"[{self.name}] Auto-match satisfied by Local DB. Skipping remote search.")
-                    for item in all_results:
-                        item['score'] = min(100, item['score'])
+                if all_results:
+                    for item in all_results: item['score'] = min(100, item['score'])
+                    logger.debug(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건):")
+                    for idx, item in enumerate(all_results):
+                        year_str = item.get('year') if item.get('year') != 1900 else '????'
+                        logger.debug(f"  📁 {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
                     return all_results
 
             except Exception as e_db:
@@ -1125,13 +1129,6 @@ class ModuleJavCensored(PluginModuleBase):
         # --- 2. 검색 순서 동적 조정 ---
         site_list_for_current_search = list(original_site_order_list) # 복사본 사용
 
-        # JavDB 지연 검색(Lazy Fallback) 설정
-        javdb_deferred = False
-        if not manual and 'javdb' in site_list_for_current_search:
-            site_list_for_current_search.remove('javdb')
-            javdb_deferred = True
-            # logger.debug(f"[{self.name}] JavDB deferred to Last Resort to prevent Cloudflare Ban.")
-
         if special_priority_site and special_priority_site in site_list_for_current_search:
             site_list_for_current_search.remove(special_priority_site)
             site_list_for_current_search.insert(0, special_priority_site)
@@ -1163,9 +1160,8 @@ class ModuleJavCensored(PluginModuleBase):
                     results.append(item)
             return results
 
-        # --- 3. 각 사이트 검색 실행 (하이브리드 모드: 1티어 코어 조기종료 + 2티어 풀스캔) ---
+        # --- 3. 각 사이트 검색 실행 (100점 매칭 시 즉시 조기 종료) ---
         early_exit_triggered = False
-        priority_sites_for_general_early_exit = { "dmm": ["videoa", "dvd"], "mgstage": True }
 
         for site_key in site_list_for_current_search:
             if early_exit_triggered: break
@@ -1177,46 +1173,9 @@ class ModuleJavCensored(PluginModuleBase):
                 if not manual:
                     for item in site_results:
                         if item.get('original_score', 0) >= 100:
-                            current_item_site = item.get('site_key')
-                            current_item_type = item.get('content_type')
-                            is_prio_match = item.get('is_priority_label_site', False)
-
-                            allow_exit = False
-                            site_conf = priority_sites_for_general_early_exit.get(current_item_site)
-                            if site_conf is True: allow_exit = True
-                            elif isinstance(site_conf, list) and current_item_type in site_conf: allow_exit = True
-                            
-                            if allow_exit:
-                                # 1. 특별한 우선순위 레이블 지정이 없는 일반 품번인 경우
-                                if not is_keyword_potentially_priority_for_any_site:
-                                    logger.debug(f"Early Exit: General perfect match on Core Site '{current_item_site}'.")
-                                    early_exit_triggered = True
-                                    break
-                                    
-                                # 2. 우선순위 레이블(MGS 독점 등)이 얽혀있는 경우
-                                else:
-                                    # 2-A. 그 우선순위의 주인공 사이트에서 매칭된 거라면 즉시 종료
-                                    if current_item_site == special_priority_site and is_prio_match:
-                                        logger.debug(f"Early Exit: Priority Label perfect match on Priority Site '{current_item_site}'.")
-                                        early_exit_triggered = True
-                                        break
-                                        
-                                    # 2-B. 주인공 사이트가 실패하여 다음 타자(폴백)를 스캔 중일 때
-                                    else:
-                                        logger.debug(f"Early Exit: Priority site failed. Accepting perfect fallback match on Core Site '{current_item_site}'.")
-                                        early_exit_triggered = True
-                                        break
-
-        # --- JavDB Lazy Fallback 스캔 ---
-        if javdb_deferred and not early_exit_triggered:
-            has_any_100_score = any(item.get('original_score', 0) >= 100 for item in all_results)
-            if not has_any_100_score:
-                # logger.warning(f"[{self.name}] No perfect match found in primary sites. Triggering Deferred JavDB Scan...")
-                javdb_results = process_site_search('javdb')
-                if javdb_results:
-                    all_results.extend(javdb_results)
-            # else:
-            #     logger.debug(f"[{self.name}] A perfect match exists in primary sites. Skipping JavDB to avoid IP ban.")
+                            logger.debug(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 발견. 검색 중단: {keyword}")
+                            early_exit_triggered = True
+                            break
 
         # --- 4. 1차 정렬 (점수 및 사이트 우선순위 기반) ---
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
@@ -1248,103 +1207,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         all_results_sorted = sorted(all_results, key=get_custom_sort_key_for_final)
 
-        # --- 5. 최상위 결과 이미지 유효성 검증 및 선제 구출 (jav321, javbus 한정) ---
-        use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
-        image_mode = P.ModelSetting.get(f"{self.name}_image_mode")
-        
-        if not manual and use_hq_poster_check and all_results_sorted:
-            top_item = all_results_sorted[0]
-            
-            if top_item.get("site_key") in ["jav321", "javbus"] and top_item.get("original_score", 0) >= 95:
-                logger.debug(f"--- Starting Image Validity check for Top Result ({top_item['site_key']}) ---")
-                
-                code = top_item.get("code")
-                site = top_item.get("site_key")
-                ps_url = top_item.get("image_url")
-                ui_code = top_item.get("ui_code", "").upper()
-                is_image_valid = False
-
-                # A. 최상위 결과의 이미지 생존/가짜 여부 검증
-                try:
-                    SiteClass = self.site_map.get(site)
-                    info_data = self.info2(code, site, keyword, ps_url=ps_url, skip_trans=True, is_validating=True)
-
-                    if info_data:
-                        target_img_url = None
-                        for thumb in info_data.get('thumb', []):
-                            if thumb.get('aspect') == 'poster': target_img_url = thumb.get('value'); break
-                        if not target_img_url:
-                            for thumb in info_data.get('thumb', []):
-                                if thumb.get('aspect') == 'landscape': target_img_url = thumb.get('value'); break
-
-                        if target_img_url:
-                            im_obj = SiteClass.imopen(target_img_url)
-                            if im_obj:
-                                try:
-                                    if not SiteClass.is_placeholder_image(im_obj): is_image_valid = True
-                                finally:
-                                    im_obj.close()
-                except Exception as e:
-                    logger.error(f"Validity Check Exception for {code}: {e}")
-
-                # B. 검증 실패 시 구출(Pre-fetch) 시도
-                if not is_image_valid:
-                    logger.info(f"Validity Check FAILED for {code}.")
-                    
-                    if image_mode == 'image_server':
-                        logger.info(f"Attempting Pre-fetch rescue from backup sites for {ui_code}...")
-                        backup_success = False
-                        
-                        # 본인(1등)을 제외한 차선 사이트 중 동일 품번 추출
-                        backups = [x for x in all_results_sorted[1:] if x.get("ui_code", "").upper() == ui_code]
-                        
-                        for b_item in backups:
-                            try:
-                                logger.debug(f"Pre-fetching and validating images from backup site: {b_item['site_key']}...")
-                                # 1단계: 대체 사이트 이미지 해시 검사
-                                b_info_data = self.info2(b_item['code'], b_item['site_key'], keyword, skip_trans=True, is_validating=True)
-                                
-                                b_target_url = None
-                                if b_info_data:
-                                    for thumb in b_info_data.get('thumb', []):
-                                        if thumb.get('aspect') == 'poster': b_target_url = thumb.get('value'); break
-                                    if not b_target_url:
-                                        for thumb in b_info_data.get('thumb', []):
-                                            if thumb.get('aspect') == 'landscape': b_target_url = thumb.get('value'); break
-
-                                is_b_fake = True
-                                if b_target_url:
-                                    B_SiteClass = self.site_map.get(b_item['site_key'])
-                                    im_b_obj = B_SiteClass.imopen(b_target_url)
-                                    if im_b_obj:
-                                        try:
-                                            if not B_SiteClass.is_placeholder_image(im_b_obj): is_b_fake = False
-                                        finally:
-                                            im_b_obj.close()
-                                            
-                                # 2단계: 진짜(Real)일 때 하드디스크에 저장(Pre-fetch) 지시
-                                if not is_b_fake:
-                                    logger.debug(f"Valid real image found on {b_item['site_key']}! Starting full pre-fetch...")
-                                    self.info2(b_item['code'], b_item['site_key'], keyword, skip_trans=True, is_validating=False)
-                                    backup_success = True
-                                    break
-                                else:
-                                    logger.debug(f"Fake image detected on {b_item['site_key']}. Moving to next backup site...")
-                            except Exception as e_res:
-                                logger.debug(f"Pre-fetch failed on {b_item['site_key']}: {e_res}")
-                        
-                        # 3단계: 구출 결과 처리
-                        if backup_success:
-                            try:
-                                self.keyword_cache.set(f"RESCUED_{code}", "1")
-                            except AttributeError:
-                                self.keyword_cache[f"RESCUED_{code}"] = "1"
-                                
-                            logger.info(f"Rescue SUCCESS: Valid images pre-fetched to local server. Keeping '{top_item['site_key']}' at 1st place.")
-                        else:
-                            logger.warning(f"Rescue FAILED: All backup sites returned fake/dead images. Keeping '{top_item['site_key']}' at 1st place anyway.")
-
-        # --- 6. 최종 점수 할당 (동점자 처리) ---
+        # --- 5. 최종 점수 할당 (동점자 처리) ---
         if all_results_sorted:
             for i, item_in_sorted_list in enumerate(all_results_sorted):
                 raw_score = min(100, item_in_sorted_list.get('original_score', 0))
@@ -1589,8 +1452,6 @@ class ModuleJavCensored(PluginModuleBase):
                         logger.info(f"[{self.name}] DB 캐시에 한글 번역이 없어 캐시를 건너뛰고 새로 번역을 수행합니다: {code}")
 
                 if not is_db_untranslated:
-                    logger.info(f"[{self.name}] DB 캐시를 로드했습니다: {code}")
-                    
                     needs_enrichment = not cached_json.get('thumb')
                     if needs_enrichment:
                         logger.info(f"[{self.name}] 이미지/트레일러 누락 감지. Enrichment를 수행합니다...")
@@ -1606,24 +1467,90 @@ class ModuleJavCensored(PluginModuleBase):
                                 cached_json['extras'] = fresh_data['extras']
                             if save_db:
                                 ModelAvMetadata.save_metadata(self.category, cached_json)
-                    
+
                     if cached_json.get('extras'):
                         for extra in cached_json['extras']:
                             if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
                             elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
 
+                    title_log = cached_json.get('title', 'No Title')
+                    year_log = cached_json.get('year', '????')
+                    site_log = cached_json.get('site', 'unknown').upper()
+                    ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
+                    logger.info(f"[DB Cache Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
+
                     return cached_json
 
-        is_rescued = False
-        try:
-            is_rescued = (self.keyword_cache.get(f"RESCUED_{code}") == "1")
-        except AttributeError: 
-            is_rescued = (self.keyword_cache.get(f"RESCUED_{code}") == "1")
-
-        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, is_rescued=is_rescued)
+        ret = self.info2(code, site, keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
         if ret is None:
             logger.debug(f"info2 returned None for code: {code}")
             return ret
+
+        # 가짜/플레이스홀더 이미지 감지 시 사용자 우선순위 순서대로 즉시 구출
+        use_hq_poster_check = P.ModelSetting.get_bool(f"{self.name}_use_hq_poster_check")
+        if use_hq_poster_check and ret and site in ['jav321', 'javbus']:
+            target_poster_url = None
+            for thumb in ret.get('thumb', []):
+                if thumb.get('aspect') == 'poster':
+                    target_poster_url = thumb.get('value')
+                    break
+            
+            is_fake_image = False
+            SiteClass = self.site_map.get(site)
+            if target_poster_url and SiteClass:
+                im_obj = SiteClass.imopen(target_poster_url)
+                if im_obj:
+                    try:
+                        if SiteClass.is_placeholder_image(im_obj):
+                            is_fake_image = True
+                    finally:
+                        im_obj.close()
+            
+            # 가짜 이미지인 경우, 현재 사이트보다 뒤에 위치한 후순위 사이트들만 차례대로 순회
+            if is_fake_image:
+                ui_code = ret.get('originaltitle') or ret.get('ui_code') or keyword
+                logger.info(f"[{self.name}] 가짜/플레이스홀더 이미지 감지 ({site}). 후순위 사이트 검색 시작: {ui_code}")
+                
+                # 1. 사용자가 설정한 사이트 순서(jav_censored_order) 가져오기
+                user_order_list = [s.strip() for s in P.ModelSetting.get_list(f"{self.name}_order", ",") if s.strip()]
+                for s_key in self.site_map.keys():
+                    if s_key not in user_order_list:
+                        user_order_list.append(s_key)
+
+                # 2. 현재 사이트(site)의 인덱스 뒤에 있는 사이트들만 슬라이싱
+                if site in user_order_list:
+                    site_idx = user_order_list.index(site)
+                    candidate_sites = user_order_list[site_idx + 1:]
+                else:
+                    candidate_sites = [s for s in user_order_list if s != site]
+
+                backup_sites = [s for s in candidate_sites if s in self.site_map]
+                logger.debug(f"[{self.name}] 구출 대상 후순위 백업 사이트 목록: {backup_sites}")
+                
+                for b_site in backup_sites:
+                    try:
+                        b_search = self.search2(ui_code, b_site, manual=True)
+                        if b_search and len(b_search) > 0 and b_search[0].get('score', 0) >= 100:
+                            b_code = b_search[0]['code']
+                            # 백업 사이트에서 이미지만 경량 조회 및 다운로드
+                            b_info = self.info2(b_code, b_site, keyword=ui_code, skip_trans=True)
+                            if b_info and b_info.get('thumb'):
+                                b_target_url = next((t['value'] for t in b_info['thumb'] if t.get('aspect') == 'poster'), None)
+                                b_im_obj = SiteClass.imopen(b_target_url) if b_target_url else None
+                                b_is_fake = False
+                                if b_im_obj:
+                                    try:
+                                        if SiteClass.is_placeholder_image(b_im_obj): b_is_fake = True
+                                    finally:
+                                        b_im_obj.close()
+                                
+                                if not b_is_fake:
+                                    logger.info(f"[{self.name}] '{b_site}'에서 유효한 백업 이미지 획득/교체 완료)")
+                                    ret['thumb'] = b_info['thumb']
+                                    ret['fanart'] = b_info.get('fanart', [])
+                                    break
+                    except Exception as e_rescue:
+                        logger.debug(f"[{self.name}] '{b_site}' 구출 시도 중 예외: {e_rescue}")
 
         db_prefix = f"{self.name}_{site}"
 
@@ -1748,7 +1675,7 @@ class ModuleJavCensored(PluginModuleBase):
             logger.warning(f"info2: site '{site}'에 해당하는 SiteClass를 찾을 수 없습니다.")
             return None
 
-        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode}, skip_trans: {skip_trans}, is_validating: {is_validating}, is_rescued: {is_rescued})")
+        logger.info(f"info2: 사이트 '{site}'에서 코드 '{code}' 정보 조회 시작...(skip_image: {fp_meta_mode}, skip_trans: {skip_trans}, is_validating: {is_validating}")
         data = None
         try:
             data = SiteClass.info(code, keyword=keyword, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, is_validating=is_validating, is_rescued=is_rescued)
