@@ -163,6 +163,9 @@ class ModuleJavUncensored(PluginModuleBase):
         # 2. YAML에서 읽어온 전체 설정을 SiteAvBase에 설정
         SiteAvBase.set_yaml_settings(jav_settings)
 
+        # SiteAvBase 클래스 자체에도 설정을 주입하여 직접 호출 시 config 누락 방지
+        SiteAvBase.set_config(self.P.ModelSetting)
+
         for ins in ins_list:
             try:
                 P.logger.debug(f"set_config site {ins.__name__} with settings.")
@@ -727,18 +730,30 @@ class ModuleJavUncensored(PluginModuleBase):
         if use_db and not manual:
             try:
                 from .model_metadata_db import ModelAvMetadata, av_db_session
-                kw_norm = re.sub(r'[^a-zA-Z0-9]', '', keyword).lower()
-                query_kw = f"%{keyword.replace('-', '%')}%"
+                
+                parsed_ui = SiteAvBase._parse_ui_code_uncensored(keyword)
+                norm_kw = re.sub(r'[^a-zA-Z0-9]', '', parsed_ui or keyword).lower()
+                
+                # 숫자 파트 기반 1차 쿼리
+                match_num = re.search(r'\d+', keyword)
+                search_query = f"%{match_num.group()}%" if match_num else f"%{keyword}%"
+
                 db_records = av_db_session.query(ModelAvMetadata).filter(
-                    ModelAvMetadata.category == self.category,
-                    ModelAvMetadata.originaltitle.ilike(query_kw)
+                    ModelAvMetadata.category == 'UNCEN',
+                    ModelAvMetadata.originaltitle.ilike(search_query)
                 ).all()
 
                 valid_db_records = []
                 for record in db_records:
-                    record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
-                    if kw_norm in record_orig_norm or record_orig_norm in kw_norm:
+                    norm_orig = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
+                    norm_code = re.sub(r'[^a-zA-Z0-9]', '', record.code).lower()
+
+                    if norm_kw == norm_orig or norm_kw == norm_code:
                         valid_db_records.append(record)
+                    elif len(norm_orig) > len(norm_kw) and norm_orig.endswith(norm_kw):
+                        prefix = norm_orig[:-len(norm_kw)]
+                        if prefix in ['1pon', '10mu', 'paco', 'heyzo', 'carib', 'fc2']:
+                            valid_db_records.append(record)
 
                 for record in valid_db_records:
                     db_item = EntityAVSearch(record.site)
@@ -750,9 +765,16 @@ class ModuleJavUncensored(PluginModuleBase):
                     try: db_item.year = int(record.json_data.get('year', 1900))
                     except: db_item.year = 1900
                     db_item.image_url = record.poster_url or ''
-                    db_item.desc = record.json_data.get('plot', '')
+                    
+                    jd = record.json_data or {}
+                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+                    actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
+                    premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
+                    plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
+                    
+                    db_item.desc = f"출처: {record.site.upper()} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
                     db_item.score = 105
-                    db_item.content_type = record.json_data.get('content_type', 'unknown')
+                    db_item.content_type = jd.get('content_type', 'unknown')
 
                     item_dict = db_item.as_dict()
                     item_dict['original_score'] = 105
@@ -762,9 +784,13 @@ class ModuleJavUncensored(PluginModuleBase):
                     all_results.append(item_dict)
 
                 if all_results:
-                    logger.info(f"[{self.name}] Auto-match satisfied by Local DB.")
                     for item in all_results: item['score'] = min(100, item['score'])
+                    logger.debug(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건):")
+                    for idx, item in enumerate(all_results):
+                        year_str = item.get('year') if item.get('year') != 1900 else '????'
+                        logger.debug(f"  📁 {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
                     return all_results
+                
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
 
@@ -902,6 +928,12 @@ class ModuleJavUncensored(PluginModuleBase):
                         for extra in cached_json['extras']:
                             if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
                             elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
+
+                    title_log = cached_json.get('title', 'No Title')
+                    year_log = cached_json.get('year', '????')
+                    site_log = cached_json.get('site', 'unknown').upper()
+                    ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
+                    logger.info(f"[DB Cache Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
 
                     return cached_json
 
