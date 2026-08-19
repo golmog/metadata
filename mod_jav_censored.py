@@ -1229,9 +1229,24 @@ class ModuleJavCensored(PluginModuleBase):
                         self.keyword_cache[f"BYPASS_{code_to_bypass}"] = "1"
 
         if all_results_sorted:
-            logger.info("최종 결과(우선순위 점수 반영):")
+            logger.info(f"최종 결과(우선순위 점수 반영, 총 {len(all_results_sorted)}건):")
             for i, item_log in enumerate(all_results_sorted):
-                logger.info(f"  {i+1}. 최종점수={item_log.get('score')}, 품번점수={item_log.get('original_score')}, Site={item_log.get('site_key')}, Type={item_log.get('content_type')}, PrioLabel={item_log.get('is_priority_label_site', False)}, DB_Cache={item_log.get('is_db_cached', False)}, Code={item_log.get('code')}")
+                ui_code = item_log.get('ui_code', '미상')
+                site_key = item_log.get('site_key', 'unknown').upper()
+                score = item_log.get('score')
+                orig_score = item_log.get('original_score')
+                code = item_log.get('code')
+                content_type = item_log.get('content_type')
+                db_cache = item_log.get('is_db_cached', False)
+                prio_label = item_log.get('is_priority_label_site', False)
+                
+                raw_title = item_log.get('title', '')
+                title_preview = (raw_title[:60] + "...") if len(raw_title) > 60 else raw_title
+                
+                type_str = f"Type={content_type}, " if content_type and content_type != 'unknown' else ""
+                prio_str = "PrioLabel=True, " if prio_label else ""
+                
+                logger.info(f"  {i+1}. [{site_key}] 점수={score}(원점수={orig_score}) | 품번={ui_code} | Code={code} | {type_str}{prio_str}DB_Cache={db_cache} | Title='{title_preview}'")
 
         logger.info(f"======= jav censored search END - Returning {len(all_results_sorted)} results. =======")
         return all_results_sorted

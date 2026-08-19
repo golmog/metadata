@@ -3,7 +3,7 @@ import time
 import requests
 import traceback
 from urllib.parse import unquote_plus
-from support_site import SupportWavve, SiteUtilAv, SiteUtil
+from support_site import SupportWavve, SiteUtilAv, SiteUtil, SiteAvBase
 from flask import request, send_file, redirect, abort, Response, send_from_directory, current_app
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
@@ -214,35 +214,42 @@ class ModuleRoute(PluginModuleBase):
                 ret = SiteUtilAv.discord_proxy_image(image_url, proxy_url=proxy_url, crop_mode=crop_mode)
                 return redirect(ret)    
 
-            elif sub == "jav_image":
-                image_url = unquote_plus(request.args.get("url"))
-                mode = request.args.get("mode")
+            elif sub in ["jav_image", "jav_image_un"]:
+                image_url = unquote_plus(request.args.get("url")) if request.args.get("url") else None
+                mode = unquote_plus(request.args.get("mode")) if request.args.get("mode") else None
                 site = request.args.get("site")
-                if mode: 
-                    mode = unquote_plus(mode)
-                if site == 'tpdb':
-                    return P.get_module("western").site_map[site].jav_image(image_url, mode=mode)
-                return P.get_module("jav_censored").site_map[site].jav_image(image_url, mode=mode)
-            elif sub == "jav_video":
-                image_url = unquote_plus(request.args.get("url"))
+                path = request.args.get("path")
+                
+                target_site_cls = self._get_site_class(site)
+                return target_site_cls.jav_image(url=image_url, mode=mode, site=site, path=path)
+
+            elif sub in ["jav_video", "jav_video_un"]:
+                video_url = unquote_plus(request.args.get("url")) if request.args.get("url") else None
                 site = request.args.get("site")
-                return P.get_module("jav_censored").site_map[site].jav_video(image_url)
-            elif sub == "jav_image_un":
-                image_url = unquote_plus(request.args.get("url"))
-                mode = request.args.get("mode")
-                site = request.args.get("site")
-                if mode: 
-                    mode = unquote_plus(mode)
-                if site == 'avdbs':
-                    return P.get_module("jav_censored").site_map[site].jav_image(image_url, mode=mode)  
-                return P.get_module("jav_uncensored").site_map[site]['instance'].jav_image(image_url, mode=mode)
-            elif sub == "jav_video_un":
-                image_url = unquote_plus(request.args.get("url"))
-                site = request.args.get("site")
-                if site == 'tpdb':
-                    return P.get_module("western").site_map[site].jav_image(image_url)
-                return P.get_module("jav_uncensored").site_map[site]['instance'].jav_video(image_url)
+                
+                target_site_cls = self._get_site_class(site)
+                return target_site_cls.jav_video(video_url)
 
         except Exception as e: 
             logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
+
+
+    def _get_site_class(self, site):
+        if not site or site == 'system':
+            return SiteAvBase
+
+        mod_western = P.get_module("western")
+        if mod_western and site in getattr(mod_western, 'site_map', {}):
+            return mod_western.site_map[site]
+
+        mod_cen = P.get_module("jav_censored")
+        if mod_cen and site in getattr(mod_cen, 'site_map', {}):
+            return mod_cen.site_map[site]
+
+        mod_uncen = P.get_module("jav_uncensored")
+        if mod_uncen and site in getattr(mod_uncen, 'site_map', {}):
+            site_entry = mod_uncen.site_map[site]
+            return site_entry.get('instance') if isinstance(site_entry, dict) else site_entry
+
+        return SiteAvBase

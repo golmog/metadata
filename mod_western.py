@@ -2,14 +2,19 @@
 import os
 import re
 import traceback
+import json
+import sqlite3
+from datetime import datetime
 import requests
 
 from flask import jsonify, send_file
 from io import BytesIO
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
+from sqlalchemy import func
 
 from .setup import *
 from support_site.site_av.site_tpdb import SiteTpdb
+from support_site.site_av.site_stashdb import SiteStashdb
 from support_site.site_av.site_av_base import SiteAvBase
 from support_site.entity_av import EntityAVSearch
 from support_site import UtilNfo
@@ -20,16 +25,31 @@ class ModuleWestern(PluginModuleBase):
         super(ModuleWestern, self).__init__(P, name='western', first_menu='setting')
         self.category = 'WEST'
         self.site_map = {
+            "stashdb": SiteStashdb,
             "tpdb": SiteTpdb,
         }
 
         self.db_default = {
             f"{self.name}_db_version": "1",
             
+            # 사이트 순환 검색 우선순위
+            f"{self.name}_order": "stashdb, tpdb",
+            
+            # StashDB 설정
+            f"{self.name}_stashdb_api_key": "",
+            f"{self.name}_stashdb_test_code": "",
+            f"{self.name}_stashdb_user_schema": "studio:czechvr|{raw_title}|{studio_code} - {raw_title}",
+            f"{self.name}_stashdb_use_fingerprint": "False",
+            f"{self.name}_stashdb_fingerprint_type": "OSHASH",
+            f"{self.name}_stashdb_ffmpeg_path": "/usr/bin/ffmpeg",
+
+            # TPDB 설정
             f"{self.name}_tpdb_api_token": "",
             f"{self.name}_tpdb_test_code": "",
 
-            f"{self.name}_trans_option": "using", 
+            # 공통 메타 설정
+            f"{self.name}_trans_option": "using",
+            f"{self.name}_trans_title": "True",
             f"{self.name}_title_format": "[{studio}] {actor} - {title}",
             f"{self.name}_tag_option": "studio",
             f"{self.name}_use_extras": "False",
@@ -37,7 +57,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_search_regex_removal": r"[._\-\s]+xxx[._\-\s]+(?:internal|remastered|webrip|web-dl)?[._\-\s]*\d+[pk][._\-\s]+.*$",
             f"{self.name}_search_regex_removal_2nd": r"(?:solo|vr)$",
 
-            f"{self.name}_trust_single_result": "True",
+            f"{self.name}_trust_single_result": "False",
 
             f"{self.name}_use_proxy": "False",
             f"{self.name}_proxy_url": "",
@@ -55,6 +75,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_image_server_save_format": "/western/{studio}",
             f"{self.name}_image_server_rewrite": "True",
             
+            # 로컬 DB 캐시 설정
             f"{self.name}_db_use": "False",
             f"{self.name}_db_save": "False",
             f"{self.name}_db_save_only_translated": "True",
@@ -69,6 +90,15 @@ class ModuleWestern(PluginModuleBase):
             'current': 0, 'success': 0, 'fail': 0, 'current_code': '', 'stop_flag': False
         }
 
+        try:
+            self.keyword_cache = F.get_cache(f"{P.package_name}_{self.name}_keyword_cache")
+        except Exception:
+            self.keyword_cache = {}
+
+
+    ################################################
+    # region PluginModuleBase 메서드 오버라이드
+
     def plugin_load(self):
         try:
             from .model_metadata_db import engine, Base, ModelAvMetadata
@@ -82,15 +112,18 @@ class ModuleWestern(PluginModuleBase):
     def plugin_load_celery(self):
         self._set_site_setting()
 
+
     def setting_save_after(self, change_list):
         self._set_site_setting()
 
+
     def _set_site_setting(self):
-        try:
-            P.logger.debug(f"[{self.name}] Setting config for SiteTpdb.")
-            SiteTpdb.set_config(self.P.ModelSetting)
-        except Exception as e:
-            P.logger.error(f"[{self.name}] Error initializing site TPDB: {str(e)}")
+        for site_key, site_cls in self.site_map.items():
+            try:
+                P.logger.debug(f"[{self.name}] Setting config for {site_cls.__name__}.")
+                site_cls.set_config(self.P.ModelSetting)
+            except Exception as e:
+                P.logger.error(f"[{self.name}] Error initializing site {site_key}: {e}")
 
 
     def process_ajax(self, sub, req):
@@ -99,8 +132,9 @@ class ModuleWestern(PluginModuleBase):
             logger.debug(f"[{self.name}] process_ajax 요청됨 - command: {command}")
             
             custom_commands = [
-                'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum', 'db_import', 'db_export',
-                'db_enrich_start', 'db_enrich_stop', 'db_enrich_status', 'db_refresh_image'
+                'test', 'db_list', 'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum',
+                'db_import', 'db_export', 'db_enrich_start', 'db_enrich_stop',
+                'db_enrich_status', 'db_refresh_image'
             ]
             if command in custom_commands:
                 res = self.process_command(command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
@@ -110,23 +144,26 @@ class ModuleWestern(PluginModuleBase):
             return res if res is not None else jsonify({'ret': 'error', 'msg': '기본 처리 결과가 없습니다.'})
         except Exception as e:
             logger.error(f"[{self.name}] Exception in process_ajax: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'ret': 'error', 'msg': str(e)})
 
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             ret = {'ret': 'success'}
+
+            # --- 1. 웹 UI 검색 테스트 ---
             if command == "test":
+                call = arg1 # 'stashdb' 또는 'tpdb'
                 code = arg2
-                call = arg1 
                 P.ModelSetting.set(f"{self.name}_{call}_test_code", code)
                 SiteClass = self.site_map.get(call)
                 if not SiteClass:
                     return jsonify({'ret': 'error', 'msg': f"Site '{call}' not found."})
 
-                search_results = self.search(code, manual=True)
+                search_results = self.search2(code, call, manual=True)
                 if not search_results:
-                    return jsonify({'ret': 'warning', 'msg': f"No results for '{code}'"})
+                    return jsonify({'ret': 'warning', 'msg': f"'{call}' 검색 결과가 없습니다: '{code}'"})
 
                 info_data = self.info(search_results[0]['code'], keyword=code)
                 ret['json'] = {
@@ -135,10 +172,12 @@ class ModuleWestern(PluginModuleBase):
                 }
                 return jsonify(ret)
 
+            # --- 2. 로컬 DB 리스트 조회 ---
             elif command == 'db_list':
                 from .model_metadata_db import ModelAvMetadata
                 return jsonify(ModelAvMetadata.web_list(req, category=self.category))
 
+            # --- 3. 로컬 DB JSON 직접 수정 저장 ---
             elif command == 'db_edit_save':
                 from .model_metadata_db import ModelAvMetadata
                 code = arg1
@@ -160,26 +199,28 @@ class ModuleWestern(PluginModuleBase):
                     logger.error(f"[{self.name}] DB Edit Save 예외: {e}")
                     return jsonify({'ret': 'error', 'msg': str(e)})
 
+            # --- 4. 로컬 DB 단일 레코드 삭제 ---
             elif command == 'db_delete':
                 from .model_metadata_db import ModelAvMetadata
                 code = arg1
                 success = ModelAvMetadata.delete_record(code)
                 return jsonify({'ret': 'success'} if success else {'ret': 'error', 'msg': '삭제 실패'})
 
+            # --- 5. 로컬 DB 전체 초기화 ---
             elif command == 'db_clear':
                 from .model_metadata_db import ModelAvMetadata
                 success, count = ModelAvMetadata.clear_db(self.category)
                 return jsonify({'ret': 'success', 'msg': f'{count}건의 메타데이터가 삭제되었습니다.'} if success else {'ret': 'error', 'msg': '초기화 실패'})
 
+            # --- 6. 로컬 DB VACUUM 최적화 ---
             elif command == 'db_vacuum':
                 from .model_metadata_db import ModelAvMetadata
                 success = ModelAvMetadata.vacuum_db()
                 return jsonify({'ret': 'success', 'msg': 'DB 최적화(VACUUM) 완료'} if success else {'ret': 'error', 'msg': '최적화 실패'})
 
+            # --- 7. 스마트 병합 / 누락분 Import ---
             elif command == 'db_import':
                 from .model_metadata_db import ModelAvMetadata, av_db_session
-                import json, sqlite3
-                
                 raw_paths = arg1
                 mode = arg2 # 'update' or 'missing'
                 auto_enrich = (arg3 == 'true')
@@ -189,7 +230,7 @@ class ModuleWestern(PluginModuleBase):
                 
                 try:
                     insert_count, update_count, skip_count = 0, 0, 0
-                    batch_size = 500  # 500건 단위 커밋 & 로그 출력 주기
+                    batch_size = 500
                     processed_in_batch = 0
                     
                     for import_path in import_paths:
@@ -271,7 +312,6 @@ class ModuleWestern(PluginModuleBase):
                                 processed_in_batch = 0
                                 logger.info(f"[{self.name}] JSON Import 진행 중: {total_files}/{total_files} (100.0%) | 최종 커밋 완료")
 
-                    # 대용량 작업 완료 후 WAL 파일 청소
                     ModelAvMetadata.checkpoint_wal()
 
                     final_msg = f"병합 완료! (신규 등록: {insert_count}건, 번역/메타 갱신: {update_count}건, 건너뜀: {skip_count}건)"
@@ -292,11 +332,9 @@ class ModuleWestern(PluginModuleBase):
                     av_db_session.rollback()
                     return jsonify({'ret': 'error', 'msg': str(e)})
 
+            # --- 8. 로컬 DB Export ---
             elif command == 'db_export':
                 from .model_metadata_db import ModelAvMetadata
-                import json, sqlite3
-                from datetime import datetime
-
                 mode = arg1 # 'current' or 'all'
                 try:
                     tmp_dir = os.path.join(path_data, 'tmp')
@@ -340,6 +378,7 @@ class ModuleWestern(PluginModuleBase):
                     logger.error(f"[{self.name}] DB Export Error: {e}")
                     return jsonify({'ret': 'error', 'msg': str(e)})
 
+            # --- 9. 미디어 일괄 채우기 (Enrichment) 제어 ---
             elif command == 'db_enrich_start':
                 if self.enrich_status['is_running']:
                     return jsonify({'ret': 'warning', 'msg': '이미 일괄 작업이 진행 중입니다.'})
@@ -357,6 +396,7 @@ class ModuleWestern(PluginModuleBase):
             elif command == 'db_enrich_status':
                 return jsonify({'ret': 'success', 'data': self.enrich_status})
 
+            # --- 10. 단일 항목 이미지 최신 갱신 ---
             elif command == 'db_refresh_image':
                 from .model_metadata_db import ModelAvMetadata
                 code = arg1
@@ -364,7 +404,12 @@ class ModuleWestern(PluginModuleBase):
                 if not cached_json:
                     return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
                 
-                SiteClass = self.site_map.get("tpdb")
+                # 식별자 판별 (S: stashdb, P: tpdb)
+                site_key = 'stashdb' if len(code) > 1 and code[1] == 'S' else 'tpdb'
+                SiteClass = self.site_map.get(site_key)
+                if not SiteClass:
+                    return jsonify({'ret': 'error', 'msg': f"사이트 클래스를 찾을 수 없습니다: {site_key}"})
+                
                 res = SiteClass.info(code, fp_meta_mode=False, skip_trans=True)
                 if res and res.get('ret') == 'success' and res.get('data'):
                     fresh_ret = res['data']
@@ -372,14 +417,12 @@ class ModuleWestern(PluginModuleBase):
                     cached_json['fanart'] = fresh_ret.get('fanart', [])
                     if fresh_ret.get('extras'):
                         for extra in fresh_ret['extras']:
-                            if isinstance(extra, dict):
-                                extra['title'] = cached_json.get('title', '')
-                            elif hasattr(extra, 'title'):
-                                extra.title = cached_json.get('title', '')
+                            if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
+                            elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
                         cached_json['extras'] = fresh_ret['extras']
                     
                     ModelAvMetadata.save_metadata(self.category, cached_json)
-                    return jsonify({'ret': 'success', 'msg': f"[{cached_json.get('originaltitle', code)}] 이미지 및 미디어 정보가 갱신되었습니다."})
+                    return jsonify({'ret': 'success', 'msg': f"[{cached_json.get('originaltitle', code)}] 이미지 정보가 갱신되었습니다."})
                 else:
                     return jsonify({'ret': 'warning', 'msg': '사이트에서 최신 이미지 정보를 가져오지 못했습니다.'})
 
@@ -390,6 +433,391 @@ class ModuleWestern(PluginModuleBase):
             P.logger.error(traceback.format_exc())
             return jsonify({'ret':'exception', 'log':str(e)})
 
+    # endregion PluginModuleBase 메서드 오버라이드
+    ################################################
+
+
+    ################################################
+    # region SEARCH & INFO
+
+    def search(self, keyword, manual=False, media_path=None):
+        target_video_file = media_path
+        if not target_video_file and os.path.isabs(keyword) and os.path.exists(keyword):
+            target_video_file = keyword
+            cleaned_keyword = self._clean_search_keyword(os.path.splitext(os.path.basename(keyword))[0])
+        else:
+            cleaned_keyword = self._clean_search_keyword(keyword)
+
+        logger.info(f"======= Western search START - keyword:[{cleaned_keyword}] video:[{target_video_file}] manual:[{manual}] =======")
+        all_results = []
+        
+        # 1. Local DB 캐시 선행 검색
+        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
+        if use_db and not manual:
+            try:
+                from .model_metadata_db import ModelAvMetadata, av_db_session
+                
+                # (1) 비디오 파일이 있거나 검색어가 해시 문자열일 때 로컬 DB 해시 매칭 대조
+                target_hash = None
+                if target_video_file and os.path.exists(target_video_file):
+                    target_hash = SiteAvBase.calculate_oshash(target_video_file)
+                elif re.match(r'^[0-9a-fA-F]{16}$', keyword.strip()):
+                    target_hash = keyword.strip().lower()
+
+                if target_hash:
+                    db_hash_record = av_db_session.query(ModelAvMetadata).filter(
+                        ModelAvMetadata.category == 'WEST',
+                        func.json_extract(ModelAvMetadata.json_data, '$.extra_info.oshash') == target_hash
+                    ).first()
+                    
+                    if not db_hash_record:
+                        db_hash_record = av_db_session.query(ModelAvMetadata).filter(
+                            ModelAvMetadata.category == 'WEST',
+                            func.json_extract(ModelAvMetadata.json_data, '$.extra_info.phash') == target_hash
+                        ).first()
+
+                    if db_hash_record:
+                        logger.info(f"[{self.name}] ★★★ Local DB Fingerprint Match Hit! (Hash: {target_hash})")
+                        db_item = self._create_search_item_from_record(db_hash_record, 105)
+                        item_dict = db_item.as_dict()
+                        item_dict['score'] = 100
+                        return [item_dict]
+
+                # (2) 텍스트 기반 로컬 DB 검색
+                kw_norm = re.sub(r'[^a-zA-Z0-9]', '', cleaned_keyword).lower()
+                query_kw = f"%{cleaned_keyword.replace('-', '%')}%"
+                db_records = av_db_session.query(ModelAvMetadata).filter(
+                    ModelAvMetadata.category == 'WEST',
+                    ModelAvMetadata.originaltitle.ilike(query_kw)
+                ).all()
+
+                for record in db_records:
+                    record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
+                    if kw_norm == record_orig_norm:
+                        db_item = self._create_search_item_from_record(record, 105)
+                        item_dict = db_item.as_dict()
+                        item_dict['score'] = 100
+                        all_results.append(item_dict)
+
+                if all_results:
+                    return all_results
+            except Exception as e_db:
+                logger.error(f"[{self.name}] DB Search Error: {e_db}")
+
+        # 2. 사이트 순환 검색 (western_order: "stashdb, tpdb")
+        site_order_list = [s.strip().lower() for s in P.ModelSetting.get_list(f"{self.name}_order", ",") if s.strip()]
+        early_exit_triggered = False
+
+        for site_key in site_order_list:
+            if early_exit_triggered: break
+            SiteClass = self.site_map.get(site_key)
+            if not SiteClass: continue
+
+            try:
+                data = SiteClass.search(cleaned_keyword, manual=manual, media_path=target_video_file)
+                if data and data.get("ret") == "success" and data.get("data"):
+                    results = data["data"]
+                    for item in results:
+                        item['site_key'] = site_key
+                        all_results.append(item)
+                        
+                        # 자동 검색 시 100점 매칭 발견 시 즉시 조기 종료
+                        if not manual and item.get('score', 0) >= 100:
+                            logger.info(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 발견. 순환 중단: {cleaned_keyword}")
+                            early_exit_triggered = True
+                            break
+            except Exception as e_site:
+                logger.error(f"[{self.name}] Error searching on {site_key}: {e_site}")
+
+        # 3. 우선순위 정렬 및 동점자 처리
+        if all_results:
+            # (1) 사이트 우선순위 맵 생성 (stashdb=0, tpdb=1)
+            priority_map = {site: idx for idx, site in enumerate(site_order_list)}
+            default_prio = len(site_order_list)
+
+            # (2) 1차 정렬: 점수 높은 순(내림차순) -> 사이트 우선순위 앞선 순(오름차순)
+            all_results_sorted = sorted(
+                all_results,
+                key=lambda x: (-int(x.get('score', 0)), priority_map.get(x.get('site_key', '').lower(), default_prio))
+            )
+
+            # (3) 동점자 순위 분리 (Plex 화면에서 1위가 명확히 선택되도록 1점씩 차감)
+            for i, item in enumerate(all_results_sorted):
+                raw_score = int(round(item.get('score', 0)))
+                raw_score = max(0, min(100, raw_score))
+
+                if i == 0:
+                    item['score'] = raw_score
+                else:
+                    prev_score = all_results_sorted[i-1]['score']
+                    if raw_score >= prev_score:
+                        item['score'] = max(0, prev_score - 1)
+                    else:
+                        item['score'] = raw_score
+
+                if manual:
+                    try: self.keyword_cache.set(f"BYPASS_{item['code']}", "1")
+                    except Exception:
+                        if not hasattr(self, 'keyword_cache'): self.keyword_cache = {}
+                        self.keyword_cache[f"BYPASS_{item['code']}"] = "1"
+
+            all_results = all_results_sorted
+
+            logger.info(f"[{self.name}] 최종 검색 결과(우선순위 정렬 완료, 총 {len(all_results)}건):")
+            for idx, item_log in enumerate(all_results[:10]):
+                logger.info(f"  {idx+1}. [{item_log.get('site_key', '').upper()}] 점수={item_log.get('score')} | UI={item_log.get('ui_code')} | Title='{item_log.get('title')}'")
+        else:
+            logger.info(f"======= Western search END - No results found for: {cleaned_keyword} =======")
+
+        return all_results
+
+
+    def _create_search_item_from_record(self, record, score):
+        db_item = EntityAVSearch(record.site)
+        db_item.code = record.code
+        db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
+        db_item.title = f"📁 [DB 저장됨] {record.title}"
+        db_item.originaltitle = record.originaltitle
+        db_item.title_ko = db_item.title
+        try: db_item.year = int(record.json_data.get('year', 1900))
+        except: db_item.year = 1900
+        db_item.image_url = record.poster_url or ''
+        
+        jd = record.json_data or {}
+        studio_str = jd.get('studio', 'Unknown')
+        actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+        actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
+        premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
+        plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
+
+        db_item.desc = f"스튜디오: {studio_str} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
+        db_item.score = score
+        db_item.content_type = jd.get('content_type', 'movie')
+        return db_item
+
+
+    def _clean_search_keyword(self, keyword):
+        cleaned = keyword
+        cleaned = re.sub(r'^\[[^\]]+\]\s*', '', cleaned)
+        cleaned = re.sub(r'[\-_.]', ' ', cleaned)
+
+        regex_string_1st = P.ModelSetting.get(f"{self.name}_search_regex_removal")
+        if regex_string_1st and regex_string_1st.strip():
+            patterns = [p.strip() for p in regex_string_1st.split('\n') if p.strip()]
+            for pattern in patterns:
+                try: cleaned = re.sub(pattern, ' ', cleaned, flags=re.IGNORECASE).strip()
+                except Exception as e: logger.error(f"[{self.name}] 1차 정규식 오류 '{pattern}': {e}")
+                    
+        regex_string_2nd = P.ModelSetting.get(f"{self.name}_search_regex_removal_2nd")
+        if regex_string_2nd and regex_string_2nd.strip():
+            patterns = [p.strip() for p in regex_string_2nd.split('\n') if p.strip()]
+            for pattern in patterns:
+                try: cleaned = re.sub(pattern, ' ', cleaned, flags=re.IGNORECASE).strip()
+                except Exception as e: logger.error(f"[{self.name}] 2차 정규식 오류 '{pattern}': {e}")
+
+        return re.sub(r'\s+', ' ', cleaned).strip()
+
+
+    def search2(self, keyword, site, manual=False):
+        SiteClass = self.site_map.get(site)
+        if SiteClass:
+            cleaned_keyword = self._clean_search_keyword(keyword)
+            res = SiteClass.search(cleaned_keyword, manual=manual)
+            if res and res.get("ret") == "success" and res.get("data"):
+                return res["data"]
+        return None
+
+
+    def info(self, code, keyword=None, fp_meta_mode=False, skip_trans=False, media_path=None):
+        if len(code) < 3 or code[0] != 'W':
+            logger.error(f"[{self.name}] 처리할 수 없는 코드: {code}")
+            return None
+
+        # 식별자 판별 (S: stashdb, P: tpdb)
+        site_key = 'stashdb' if code[1] == 'S' else 'tpdb'
+        SiteClass = self.site_map.get(site_key)
+        if not SiteClass:
+            logger.error(f"[{self.name}] 사이트 인스턴스 없음: {site_key}")
+            return None
+
+        bypass_cache = False
+        if not hasattr(self, 'keyword_cache'): self.keyword_cache = {}
+        try:
+            if self.keyword_cache.get(f"BYPASS_{code}") == "1":
+                bypass_cache = True
+                self.keyword_cache.set(f"BYPASS_{code}", "0")
+        except Exception:
+            pass
+
+        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
+        save_db = P.ModelSetting.get_bool(f"{self.name}_db_save")
+        
+        if use_db and not bypass_cache:
+            from .model_metadata_db import ModelAvMetadata
+            cached_json = ModelAvMetadata.get_metadata(code)
+            
+            if cached_json:
+                is_db_untranslated = False
+                db_plot = cached_json.get('plot', '')
+                if db_plot and not skip_trans:
+                    from support_site import SiteUtil
+                    if not SiteUtil.is_include_hangul(db_plot):
+                        is_db_untranslated = True
+
+                if not is_db_untranslated:
+                    logger.info(f"[{self.name}] DB 캐시 로드: {code}")
+                    return cached_json
+
+        data = None
+        try:
+            if site_key == 'stashdb':
+                data = SiteClass.info(code, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, media_path=media_path)
+            else:
+                data = SiteClass.info(code, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+        except Exception as e:
+            logger.exception(f"[{self.name}] Info 조회 중 오류: {e}")
+            return None
+
+        if not data or data.get("ret") != "success" or not data.get("data"):
+            logger.warning(f"[{self.name}] Info 조회 실패: {code}")
+            return None
+
+        ret = data["data"]
+        ret["plex_is_proxy_preview"] = True
+        ret["plex_is_landscape_to_art"] = True
+        ret["plex_art_count"] = len(ret.get("fanart", []))
+
+        # --- 사용자 타이틀 포맷팅 및 태그 처리 (StashDB / TPDB 공통 적용) ---
+        original_calculated_title = ret.get("title", "")
+        safe_studio = ret.get("studio", "Unknown")
+        type_char = code[2] if len(code) > 2 else 'S'
+        content_type = 'movie' if type_char == 'M' else 'scene'
+
+        actor_names = []
+        for a in ret.get('actor', []):
+            name = ""
+            if isinstance(a, dict): name = str(a.get('name') or a.get('originalname') or "")
+            elif hasattr(a, 'name'): name = str(a.name or a.originalname or "")
+            if name: actor_names.append(name)
+
+        actor_str = ", ".join(actor_names[:3]) if actor_names else ""
+        year_val = ret.get("year", "")
+        if not year_val and ret.get("premiered"):
+            year_val = str(ret.get("premiered"))[:4]
+
+        # JAV 표준 품번 파서 엔진(_parse_ui_code_uncensored / _parse_ui_code)을 통한 정규화
+        studio_code = ""
+        raw_code_candidate = ret.get('original', {}).get('code') or ""
+        if not raw_code_candidate and original_calculated_title:
+            match_code = re.search(r'\b([a-zA-Z0-9]{2,8}[-_]\d{2,7}|[a-zA-Z]{2,6}\d{3,5})\b', original_calculated_title)
+            if match_code:
+                raw_code_candidate = match_code.group(0)
+
+        if raw_code_candidate:
+            # (1) Uncensored 파서 우선 시도 (FC2, 1pondo, Heyzo, Carib 등)
+            uncen_parsed = SiteAvBase._parse_ui_code_uncensored(raw_code_candidate)
+            if uncen_parsed and '-' in uncen_parsed and not uncen_parsed.startswith(raw_code_candidate.upper()):
+                studio_code = uncen_parsed.upper()
+            else:
+                # (2) Censored 파서 시도 (DMM/MGS 일반 품번: ssni00123 -> SSNI-123 등)
+                cen_parsed, _, _ = SiteAvBase._parse_ui_code(raw_code_candidate)
+                if cen_parsed and '-' in cen_parsed:
+                    studio_code = cen_parsed.upper()
+                else:
+                    studio_code = uncen_parsed.upper() if uncen_parsed else raw_code_candidate.upper()
+
+        # JAV 표준 장르 번역 (tags.json 사전 및 trans 엔진 적용)
+        if ret.get('genre'):
+            translated_genres = []
+            for g in ret['genre']:
+                t_g = SiteAvBase.get_translated_tag('uncen_tags', g)
+                if t_g and t_g not in translated_genres:
+                    translated_genres.append(t_g)
+            ret['genre'] = translated_genres
+
+        # 제목 번역 옵션(western_trans_title)에 따른 포맷팅 대상 제목 결정
+        trans_title_enabled = P.ModelSetting.get_bool(f"{self.name}_trans_title")
+        if trans_title_enabled is None:
+            trans_title_enabled = True
+
+        translated_title = ret.get("tagline") if trans_title_enabled else original_calculated_title
+        effective_title = translated_title or original_calculated_title
+
+        format_dict = {
+            'originaltitle': ret.get("originaltitle", "") or original_calculated_title,
+            'plot': ret.get("plot", ""),
+            'title': effective_title,
+            'studio': safe_studio,
+            'year': year_val,
+            'actor': actor_str,
+            'tagline': effective_title,
+            'code': studio_code,
+            'ui_code': studio_code
+        }
+
+        # Movie 포맷은 TPDB 전용으로만 분기 적용
+        use_movie_format = P.ModelSetting.get_bool(f"{self.name}_use_movie_title_format")
+        if site_key == 'tpdb' and content_type == 'movie' and use_movie_format:
+            title_format = P.ModelSetting.get(f"{self.name}_movie_title_format") or "[{studio}] {title}"
+        else:
+            title_format = P.ModelSetting.get(f"{self.name}_title_format") or "[{studio}] {actor} - {title}"
+
+        try:
+            final_title = title_format.format(**format_dict)
+            final_title = re.sub(r'\[([^\]]+)\]\s*-\s*', r'[\1] ', final_title)
+            final_title = re.sub(r'\s*-\s*$', '', final_title)
+            final_title = re.sub(r'^\s*-\s*', '', final_title)
+            final_title = re.sub(r'(\s*-\s*){2,}', ' - ', final_title)
+            final_title = re.sub(r'\s+', ' ', final_title).strip()
+
+            ret["title"] = final_title
+            clean_sort_title = re.sub(r'[\[\]\-_]', ' ', final_title)
+            ret["sorttitle"] = re.sub(r'\s+', ' ', clean_sort_title).strip()
+            ret["originaltitle"] = original_calculated_title
+            ret["tagline"] = ret.get("tagline") or final_title
+
+            if ret.get('extras'):
+                for extra in ret['extras']:
+                    if isinstance(extra, dict) and extra.get('content_type') == 'trailer':
+                        extra['title'] = final_title
+        except Exception as e_fmt:
+            logger.error(f"[{self.name}] 타이틀 포맷 오류: {e_fmt}")
+            ret["title"] = original_calculated_title
+
+        # 태그(컬렉션) 옵션 처리
+        tag_option = P.ModelSetting.get(f"{self.name}_tag_option")
+        ret["tag"] = []
+        if tag_option != "not_using":
+            safe_studio = ret.get("original", {}).get("studio", "")
+            safe_network = ret.get("original", {}).get("network", "")
+
+            if tag_option in ["studio", "studio_network"]:
+                if safe_studio and safe_studio != 'Unknown' and safe_studio not in ret["tag"]:
+                    ret["tag"].append(safe_studio)
+            if tag_option in ["network", "studio_network"]:
+                if safe_network and safe_network != 'Unknown' and safe_network not in ret["tag"]:
+                    ret["tag"].append(safe_network)
+
+        logger.info(f"[{self.name}] Info Success: {code} -> {ret['title']} ({ret.get('year', '')})")
+
+        # DB 저장
+        save_only_trans = P.ModelSetting.get_bool(f"{self.name}_db_save_only_translated")
+        should_save = save_db and ret
+        if should_save and save_only_trans and skip_trans:
+            should_save = False
+
+        if should_save:
+            from .model_metadata_db import ModelAvMetadata
+            ModelAvMetadata.save_metadata(self.category, ret)
+
+        return ret
+
+    # endregion SEARCH & INFO
+    ################################################
+
+
+    ################################################
+    # region API & DOWNLOADS
 
     def process_api(self, sub, req):
         try:
@@ -397,13 +825,17 @@ class ModuleWestern(PluginModuleBase):
             if sub == "search" and call in ["plex", "kodi"]:
                 keyword = req.args.get("keyword", "").strip()
                 manual = req.args.get("manual") == "True"
-                search_results = self.search(keyword, manual=manual)
+                media_path = req.args.get("media_path") or req.args.get("path")
+                search_results = self.search(keyword, manual=manual, media_path=media_path)
                 return jsonify(search_results)
 
             if sub == "info":
                 code = req.args.get("code")
                 data = self.info(code)
                 return jsonify(data)
+
+            if sub == "user_image_update":
+                return self._api_user_image_update(req)
 
             return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
         except Exception as e:
@@ -539,8 +971,6 @@ class ModuleWestern(PluginModuleBase):
         }
         try:
             from .model_metadata_db import ModelAvMetadata, av_db_session
-            import json, re
-
             files = []
             if req.is_json:
                 json_body = req.get_json(silent=True) or {}
@@ -603,336 +1033,6 @@ class ModuleWestern(PluginModuleBase):
             return jsonify(ret), 200
 
 
-    def _clean_search_keyword(self, keyword):
-        cleaned = keyword
-        
-        cleaned = re.sub(r'^\[[^\]]+\]\s*', '', cleaned)
-        cleaned = re.sub(r'[\-_.]', ' ', cleaned)
-
-        regex_string_1st = P.ModelSetting.get(f"{self.name}_search_regex_removal")
-        if regex_string_1st and regex_string_1st.strip():
-            patterns = [p.strip() for p in regex_string_1st.split('\n') if p.strip()]
-            for pattern in patterns:
-                try:
-                    cleaned = re.sub(pattern, ' ', cleaned, flags=re.IGNORECASE).strip()
-                except Exception as e:
-                    logger.error(f"[{self.name}] 1차 정규식 오류 '{pattern}': {e}")
-                    
-        regex_string_2nd = P.ModelSetting.get(f"{self.name}_search_regex_removal_2nd")
-        if regex_string_2nd and regex_string_2nd.strip():
-            patterns = [p.strip() for p in regex_string_2nd.split('\n') if p.strip()]
-            for pattern in patterns:
-                try:
-                    cleaned = re.sub(pattern, ' ', cleaned, flags=re.IGNORECASE).strip()
-                except Exception as e:
-                    logger.error(f"[{self.name}] 2차 정규식 오류 '{pattern}': {e}")
-
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        
-        if cleaned != keyword:
-            logger.debug(f"[{self.name}] Keyword cleaned: '{keyword}' -> '{cleaned}'")
-            return cleaned
-            
-        return keyword
-
-
-    def search(self, keyword, manual=False):
-        cleaned_keyword = self._clean_search_keyword(keyword)
-        logger.info(f"======= Western search START - keyword:[{cleaned_keyword}] manual:[{manual}] =======")
-        all_results = []
-        
-        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
-        if use_db and not manual:
-            try:
-                from .model_metadata_db import ModelAvMetadata, av_db_session
-                kw_norm = re.sub(r'[^a-zA-Z0-9]', '', cleaned_keyword).lower()
-                query_kw = f"%{cleaned_keyword.replace('-', '%')}%"
-                
-                db_records = av_db_session.query(ModelAvMetadata).filter(
-                    ModelAvMetadata.category == 'WEST',
-                    ModelAvMetadata.originaltitle.ilike(query_kw)
-                ).all()
-
-                valid_db_records = []
-                for record in db_records:
-                    record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
-                    
-                    if kw_norm == record_orig_norm:
-                        valid_db_records.append(record)
-
-                for record in valid_db_records:
-                    db_item = EntityAVSearch(record.site)
-                    db_item.code = record.code
-                    db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
-                    db_item.title = f"📁 [DB 저장됨] {record.title}"
-                    db_item.originaltitle = record.originaltitle
-                    db_item.title_ko = db_item.title
-                    try: db_item.year = int(record.json_data.get('year', 1900))
-                    except: db_item.year = 1900
-                    db_item.image_url = record.poster_url or ''
-                    
-                    jd = record.json_data or {}
-                    studio_str = jd.get('studio', 'Unknown')
-                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
-                    actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
-                    premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
-                    plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
-
-                    db_item.desc = f"스튜디오: {studio_str} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
-                    db_item.score = 105
-                    db_item.content_type = jd.get('content_type', 'movie')
-
-                    item_dict = db_item.as_dict()
-                    item_dict['original_score'] = 105
-                    item_dict['site_key'] = record.site
-                    item_dict['is_db_cached'] = True
-                    all_results.append(item_dict)
-
-                if all_results:
-                    for item in all_results: item['score'] = min(100, item['score'])
-                    logger.debug(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건):")
-                    for idx, item in enumerate(all_results):
-                        year_str = item.get('year') if item.get('year') != 1900 else '????'
-                        logger.debug(f"  📁 {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
-                    return all_results
-                
-            except Exception as e_db:
-                logger.error(f"[{self.name}] DB Search Error: {e_db}")
-
-        live_results = []
-        for site_name, SiteClass in self.site_map.items():
-            try:
-                data = SiteClass.search(cleaned_keyword, manual=manual)
-                
-                # --- [폴백 로직] 1차 검색 실패 시 날짜 패턴 제거 후 2차 검색 시도 ---
-                if not data or data.get("ret") != "success" or not data.get("data"):
-                    logger.debug(f"[{self.name}] 1st search failed on {site_name}. Fallback triggered.")
-                    date_pattern = r'[ ._\-]*(?:\d{2}|\d{4})[ ._\-]\d{2}[ ._\-](?:\d{2}|\d{4})[ ._\-]*'
-                    ep_pattern = r'[ ._\-]*(?:[e][p]?\d+)[ ._\-]*'
-                    
-                    fallback_keyword = re.sub(date_pattern, ' ', cleaned_keyword)
-                    fallback_keyword = re.sub(ep_pattern, ' ', fallback_keyword, flags=re.IGNORECASE)
-                    fallback_keyword = re.sub(r'\s+', ' ', fallback_keyword).strip()
-                    
-                    if fallback_keyword and fallback_keyword != cleaned_keyword:
-                        logger.info(f"[{self.name}] Fallback search - keyword:[{fallback_keyword}]")
-                        data = SiteClass.search(fallback_keyword, manual=manual)
-                
-                if data and data.get("ret") == "success" and data.get("data"):
-                    results = data["data"]
-                    for item in results:
-                        item['site_key'] = site_name
-                        studio_str = ""
-                        match_studio = re.match(r'^\[(.*?)\]', item.get('title', ''))
-                        if match_studio: studio_str = match_studio.group(1).lower()
-                        if 'clip4sale' in studio_str:
-                            item['score'] = max(0, item.get('score', 0) - 5)
-                        live_results.append(item)
-            except Exception as e:
-                logger.error(f"[{self.name}] Error during search on site '{site_name}': {e}")
-                
-        if live_results:
-            all_results.extend(live_results)
-
-        if all_results:
-            all_results = sorted(all_results, key=lambda k: k.get("score", 0), reverse=True)
-            if manual:
-                for item in all_results:
-                    try: self.keyword_cache.set(f"BYPASS_{item['code']}", "1")
-                    except AttributeError:
-                        if not hasattr(self, 'keyword_cache'): self.keyword_cache = {}
-                        self.keyword_cache[f"BYPASS_{item['code']}"] = "1"
-
-        logger.debug(f"======= Western search END - Returning {len(all_results)} results. =======")
-        return all_results
-
-
-    def search2(self, keyword, site, manual=False):
-        if site == "tpdb":
-            return self.search(keyword, manual=manual)
-        return None
-
-
-    def info(self, code, keyword=None, fp_meta_mode=False, skip_trans=False):
-        if code[0] != 'W':
-            logger.error(f"[{self.name}] 처리할 수 없는 코드: {code}")
-            return None
-            
-        site = "tpdb"
-        SiteClass = self.site_map.get(site)
-
-        logger.debug(f"[{self.name}] Info 조회 시작: Code='{code}', Keyword='{keyword}'")
-        
-        bypass_cache = False
-        if not hasattr(self, 'keyword_cache'): self.keyword_cache = {}
-        try:
-            if self.keyword_cache.get(f"BYPASS_{code}") == "1":
-                bypass_cache = True
-                self.keyword_cache.set(f"BYPASS_{code}", "0")
-        except AttributeError:
-            if self.keyword_cache.get(f"BYPASS_{code}") == "1":
-                bypass_cache = True
-                self.keyword_cache[f"BYPASS_{code}"] = "0"
-
-        if bypass_cache: logger.info(f"[{self.name}] 수동 갱신 요청 감지. DB를 무시합니다: {code}")
-
-        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
-        save_db = P.ModelSetting.get_bool(f"{self.name}_db_save")
-        SiteClass = self.site_map.get("tpdb")
-        
-        if use_db and not bypass_cache:
-            from .model_metadata_db import ModelAvMetadata
-            cached_json = ModelAvMetadata.get_metadata(code)
-            
-            if cached_json:
-                is_db_untranslated = False
-                db_plot = cached_json.get('plot', '')
-                if db_plot and not skip_trans:
-                    from support_site import SiteUtil
-                    if not SiteUtil.is_include_hangul(db_plot):
-                        is_db_untranslated = True
-                        logger.info(f"[{self.name}] DB 캐시에 한글 번역이 없어 캐시를 건너뛰고 새로 번역을 수행합니다: {code}")
-
-                if not is_db_untranslated:
-                    logger.info(f"[{self.name}] DB 캐시를 로드했습니다: {code}")
-                    needs_enrichment = not cached_json.get('thumb')
-                    
-                    if needs_enrichment:
-                        logger.info(f"[{self.name}] 이미지/트레일러 누락 감지. Enrichment를 수행합니다...")
-                        fresh_data = SiteClass.info(code, fp_meta_mode=False, skip_trans=True)
-                        if fresh_data and fresh_data.get('ret') == 'success' and fresh_data.get('data'):
-                            fresh_ret = fresh_data['data']
-                            cached_json['thumb'] = fresh_ret.get('thumb', [])
-                            cached_json['fanart'] = fresh_ret.get('fanart', [])
-                            if fresh_ret.get('extras'):
-                                for extra in fresh_ret['extras']:
-                                    if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
-                                    elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
-                                cached_json['extras'] = fresh_ret['extras']
-                            if save_db: ModelAvMetadata.save_metadata(self.category, cached_json)
-
-                    if cached_json.get('extras'):
-                        for extra in cached_json['extras']:
-                            if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
-                            elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
-
-                    title_log = cached_json.get('title', 'No Title')
-                    year_log = cached_json.get('year', '????')
-                    site_log = cached_json.get('site', 'unknown').upper()
-                    ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
-                    logger.info(f"[DB Cache Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
-
-                    return cached_json
-
-        data = None
-        try:
-            data = SiteClass.info(code, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
-        except Exception as e:
-            logger.exception(f"[{self.name}] Info 조회 중 오류: {e}")
-            return None
-
-        if not data or data.get("ret") != "success" or not data.get("data"):
-            logger.warning(f"[{self.name}] Info 조회 실패: {code}")
-            return None
-
-        ret = data["data"]
-        ret["plex_is_proxy_preview"] = True
-        ret["plex_is_landscape_to_art"] = True
-        ret["plex_art_count"] = len(ret.get("fanart", []))
-
-        original_calculated_title = ret.get("title", "")
-        safe_studio = ret.get("studio", "Unknown")
-        type_char = code[2] if len(code) > 2 else 'S'
-        content_type = 'movie' if type_char == 'M' else 'scene'
-
-        try:
-            actor_names = []
-            for a in ret.get('actor', []):
-                name = ""
-                if isinstance(a, dict): name = str(a.get('name') or a.get('originalname') or "")
-                elif hasattr(a, 'name'): name = str(a.name or a.originalname or "")
-                if name: actor_names.append(name)
-            
-            actor_str = ", ".join(actor_names[:3]) if actor_names else ""
-            year_val = ret.get("year", "")
-            if not year_val and ret.get("premiered"):
-                year_val = str(ret.get("premiered"))[:4]
-
-            format_dict = {
-                'originaltitle': ret.get("originaltitle", ""),
-                'plot': ret.get("plot", ""),
-                'title': original_calculated_title,
-                'studio': safe_studio,
-                'year': year_val,
-                'actor': actor_str,
-                'tagline': ret.get("tagline", "") 
-            }
-            
-            use_movie_format = P.ModelSetting.get_bool(f"{self.name}_use_movie_title_format")
-            if content_type == 'movie' and use_movie_format:
-                title_format = P.ModelSetting.get(f"{self.name}_movie_title_format") or "[{studio}] {title}"
-            else:
-                title_format = P.ModelSetting.get(f"{self.name}_title_format") or "[{studio}] {actor} - {title}"
-            
-            final_title = title_format.format(**format_dict)
-            final_title = re.sub(r'\[([^\]]+)\]\s*-\s*', r'[\1] ', final_title)
-            final_title = re.sub(r'\s*-\s*$', '', final_title)
-            final_title = re.sub(r'^\s*-\s*', '', final_title)
-            final_title = re.sub(r'(\s*-\s*){2,}', ' - ', final_title)
-            final_title = re.sub(r'\s+', ' ', final_title).strip()
-            
-            ret["title"] = final_title
-            clean_sort_title = re.sub(r'[\[\]\-_]', ' ', final_title)
-            clean_sort_title = re.sub(r'\s+', ' ', clean_sort_title).strip()
-            
-            ret["sorttitle"] = clean_sort_title
-            ret["originaltitle"] = original_calculated_title
-            ret["tagline"] = final_title
-
-            if ret.get('extras'):
-                for extra in ret['extras']:
-                    if isinstance(extra, dict) and extra.get('content_type') == 'trailer':
-                        extra['title'] = final_title
-
-        except Exception as e:
-            logger.error(f"[{self.name}] 타이틀 포맷 오류: {e}")
-            ret["title"] = original_calculated_title
-            ret["originaltitle"] = original_calculated_title
-            ret["sorttitle"] = original_calculated_title
-
-        tag_option = P.ModelSetting.get(f"{self.name}_tag_option")
-        ret["tag"] = []
-
-        if tag_option != "not_using":
-            safe_studio = ret.get("original", {}).get("studio", "")
-            safe_network = ret.get("original", {}).get("network", "")
-
-            if tag_option in ["studio", "studio_network"]:
-                if safe_studio and safe_studio != 'Unknown' and safe_studio not in ret["tag"]:
-                    ret["tag"].append(safe_studio)
-            
-            if tag_option in ["network", "studio_network"]:
-                if safe_network and safe_network != 'Unknown' and safe_network not in ret["tag"]:
-                    ret["tag"].append(safe_network)
-
-        logger.info(f"[{self.name}] Info Success: {code} -> {ret['title']} ({ret.get('year', '')})")
-
-        # DB 자동 저장
-        save_only_trans = P.ModelSetting.get_bool(f"{self.name}_db_save_only_translated")
-        should_save = save_db and ret
-        
-        if should_save and save_only_trans:
-            if skip_trans:
-                should_save = False
-                logger.debug(f"[{self.name}] 미번역(skip_trans=True) 조회 모드이므로 DB 캐시 저장을 건너뜁니다: {code}")
-
-        if should_save:
-            from .model_metadata_db import ModelAvMetadata
-            ModelAvMetadata.save_metadata(self.category, ret)
-
-        return ret
-
-
     def _run_enrichment_worker(self, delay):
         from .model_metadata_db import ModelAvMetadata, av_db_session
         import time
@@ -978,7 +1078,6 @@ class ModuleWestern(PluginModuleBase):
                 self.enrich_status['status'] = '완료'
                 logger.info(f"[{self.name}] 일괄 작업 완료 (성공: {self.enrich_status['success']}, 실패: {self.enrich_status['fail']})")
 
-            # 작업 완료 후 부풀어 오른 WAL 파일 즉시 청소
             ModelAvMetadata.checkpoint_wal()
 
         except Exception as e_main:
@@ -986,3 +1085,6 @@ class ModuleWestern(PluginModuleBase):
             self.enrich_status['status'] = f'오류 발생: {e_main}'
         finally:
             self.enrich_status['is_running'] = False
+
+    # endregion API & DOWNLOADS
+    ################################################

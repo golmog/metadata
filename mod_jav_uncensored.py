@@ -794,30 +794,36 @@ class ModuleJavUncensored(PluginModuleBase):
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
 
-        # 2. 라이브 파싱 (Uncensored 구조: 일치하는 단일 타겟 사이트만 즉시 호출)
-        live_results = []
+        # 2. 직결 라우팅 (Uncensored 고유 방식: 일치하는 단일 사이트 1곳만 즉시 조회)
         for site_name, site_info in self.site_map.items():
             if any(k in keyword.lower() for k in site_info['keyword']) or re.search(site_info['regex'], keyword.lower()):
                 instance = site_info['instance']
-                search_code = keyword
-                data = instance.search(search_code, manual=manual)
-
+                data = instance.search(keyword, manual=manual)
                 if data and data.get('ret') == 'success' and data.get('data'):
-                    live_results.extend(data['data'])
-                    break
+                    all_results = data['data']
+                    for item in all_results:
+                        item['site_key'] = site_name
+                break # 단일 확정 사이트이므로 루프 즉시 종료
 
-        if live_results:
-            all_results.extend(live_results)
-
-        # 3. 우회 꼬리표 부착 (manual=True)
+        # 3. 결과 반환 및 수동 검색 시 우회 플래그 설정
         if all_results:
-            all_results = sorted(all_results, key=lambda k: k.get('score', 0), reverse=True)
             if manual:
                 for item in all_results:
                     try: self.keyword_cache.set(f"BYPASS_{item['code']}", "1")
                     except AttributeError: self.keyword_cache[f"BYPASS_{item['code']}"] = "1"
 
-        logger.info(f'======= jav uncensored search END - Returning {len(all_results)} results =======')
+            logger.info(f"[{self.name}] 최종 검색 결과 (총 {len(all_results)}건):")
+            for idx, item_log in enumerate(all_results):
+                ui_code = item_log.get('ui_code', '미상')
+                site_key = item_log.get('site_key', 'unknown').upper()
+                score = item_log.get('score')
+                code = item_log.get('code')
+                raw_title = item_log.get('title', '')
+                title_preview = (raw_title[:60] + "...") if len(raw_title) > 60 else raw_title
+                logger.info(f"  {idx+1}. [{site_key}] 점수={score} | 품번={ui_code} | Code={code} | Title='{title_preview}'")
+        else:
+            logger.info(f'======= jav uncensored search END - NOT FOUND: {keyword} =======')
+
         return all_results
 
 
