@@ -72,7 +72,7 @@ setting = {
             },
             {
                 'uri': 'western',
-                'name': '서양 AV (TPDB)',
+                'name': 'Western AV',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
                     {'uri': 'db', 'name': '메타 DB 관리'},
