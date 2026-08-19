@@ -110,7 +110,7 @@ try:
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_uncensored import ModuleJavUncensored
     from .mod_western import ModuleWestern
-    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored,ModuleJavUncensored, ModuleWestern])
+    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored, ModuleJavUncensored, ModuleWestern])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())
