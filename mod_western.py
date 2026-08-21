@@ -70,16 +70,14 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_poster_force_studios": "",
 
             f"{self.name}_image_mode": "image_server",
-            f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
-            f"{self.name}_image_server_local_path": "/data/images",
-            f"{self.name}_image_server_save_format": "/western/{studio}",
-            f"{self.name}_image_server_rewrite": "True",
+            f"{self.name}_image_server_save_format": "/western/{studio_1}/{studio}",
             
             # 로컬 DB 캐시 설정
             f"{self.name}_db_use": "False",
             f"{self.name}_db_save": "False",
             f"{self.name}_db_save_only_translated": "True",
             f"{self.name}_db_auto_enrich": "True",
+            f"{self.name}_db_delete_user_images": "False",
             f"{self.name}_enrich_delay": "2.0",
             f"{self.name}_db_import_path": "",
             f"{self.name}_db_image_url_mapping": "",
@@ -129,19 +127,34 @@ class ModuleWestern(PluginModuleBase):
     def process_ajax(self, sub, req):
         try:
             command = req.form.get('command')
+            
+            # 1. 폼 검색 목록 요청(command가 없거나 db_list인 경우)
+            if not command or command == 'db_list' or req.form.get('page_size') is not None:
+                from .model_metadata_db import ModelAvMetadata
+                return jsonify(ModelAvMetadata.web_list(req, category=self.category))
+
+            # 2. 백그라운드 미디어 채우기 상태 조회 (최우선 즉시 반환)
+            if command == 'db_enrich_status':
+                return jsonify({'ret': 'success', 'data': self.enrich_status})
+
             logger.debug(f"[{self.name}] process_ajax 요청됨 - command: {command}")
             
+            # 3. 기타 커스텀 명령 처리
             custom_commands = [
-                'test', 'db_list', 'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum',
+                'test', 'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum',
                 'db_import', 'db_export', 'db_enrich_start', 'db_enrich_stop',
-                'db_enrich_status', 'db_refresh_image'
+                'db_refresh_image', 'db_crop_save'
             ]
             if command in custom_commands:
                 res = self.process_command(command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
-                return res if res is not None else jsonify({'ret': 'error', 'msg': '처리 결과가 없습니다.'})
+                if res is not None:
+                    return res
+                return jsonify({'ret': 'success'})
                 
             res = super(ModuleWestern, self).process_ajax(sub, req)
-            return res if res is not None else jsonify({'ret': 'error', 'msg': '기본 처리 결과가 없습니다.'})
+            if res is not None:
+                return res
+            return jsonify({'ret': 'success'})
         except Exception as e:
             logger.error(f"[{self.name}] Exception in process_ajax: {e}")
             logger.error(traceback.format_exc())
@@ -152,8 +165,36 @@ class ModuleWestern(PluginModuleBase):
         try:
             ret = {'ret': 'success'}
 
+            # --- 0. 포스터 수동 크롭/업로드 저장 ---
+            if command == "db_crop_save":
+                from .model_metadata_db import ModelAvMetadata
+                code = arg1
+                crop_data = arg2
+                upload_payload = arg3
+
+                pl_base64 = None
+                p_base64 = None
+
+                if upload_payload:
+                    try:
+                        p_json = json.loads(upload_payload)
+                        if p_json.get('type') == 'p':
+                            p_base64 = p_json.get('data')
+                        elif p_json.get('type') == 'pl':
+                            pl_base64 = p_json.get('data')
+                    except Exception:
+                        pl_base64 = upload_payload
+
+                success, result_msg = ModelAvMetadata.save_user_cropped_poster(
+                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64
+                )
+                if success:
+                    return jsonify({'ret': 'success', 'msg': '포스터(_p_user)가 성공적으로 저장되었습니다.', 'new_url': result_msg})
+                else:
+                    return jsonify({'ret': 'error', 'msg': f'저장 실패: {result_msg}'})
+
             # --- 1. 웹 UI 검색 테스트 ---
-            if command == "test":
+            elif command == "test":
                 call = arg1 # 'stashdb' 또는 'tpdb'
                 code = arg2
                 P.ModelSetting.set(f"{self.name}_{call}_test_code", code)
@@ -508,7 +549,7 @@ class ModuleWestern(PluginModuleBase):
         site_order_list = [s.strip().lower() for s in P.ModelSetting.get_list(f"{self.name}_order", ",") if s.strip()]
         early_exit_triggered = False
 
-        for site_key in site_order_list:
+        for idx, site_key in enumerate(site_order_list):
             if early_exit_triggered: break
             SiteClass = self.site_map.get(site_key)
             if not SiteClass: continue
@@ -521,11 +562,17 @@ class ModuleWestern(PluginModuleBase):
                         item['site_key'] = site_key
                         all_results.append(item)
                         
-                        # 자동 검색 시 100점 매칭 발견 시 즉시 조기 종료
+                        # 자동 검색 시 100점 매칭 발견 시 조기 확정
                         if not manual and item.get('score', 0) >= 100:
-                            logger.info(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 발견. 순환 중단: {cleaned_keyword}")
+                            if idx < len(site_order_list) - 1:
+                                remaining_site = site_order_list[idx + 1]
+                                logger.debug(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 확정 ('{remaining_site}' 검색 생략): {cleaned_keyword}")
+                            else:
+                                # 마지막 사이트인 경우 일반 매칭 완료 로그 출력
+                                logger.info(f"[{self.name}] '{site_key}'에서 100점 매칭 완료: {cleaned_keyword}")
                             early_exit_triggered = True
                             break
+
             except Exception as e_site:
                 logger.error(f"[{self.name}] Error searching on {site_key}: {e_site}")
 
@@ -576,7 +623,7 @@ class ModuleWestern(PluginModuleBase):
         db_item = EntityAVSearch(record.site)
         db_item.code = record.code
         db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
-        db_item.title = f"📁 [DB 저장됨] {record.title}"
+        db_item.title = f"📁 [DB Cache] {record.title}"
         db_item.originaltitle = record.originaltitle
         db_item.title_ko = db_item.title
         try: db_item.year = int(record.json_data.get('year', 1900))
@@ -726,11 +773,11 @@ class ModuleWestern(PluginModuleBase):
                 else:
                     studio_code = uncen_parsed.upper() if uncen_parsed else raw_code_candidate.upper()
 
-        # JAV 표준 장르 번역 (tags.json 사전 및 trans 엔진 적용)
+        # JAV 표준 장르 번역 (av_tags.json 사전 및 trans 엔진 적용)
         if ret.get('genre'):
             translated_genres = []
             for g in ret['genre']:
-                t_g = SiteAvBase.get_translated_tag('uncen_tags', g)
+                t_g = SiteAvBase.get_translated_tag(g)
                 if t_g and t_g not in translated_genres:
                     translated_genres.append(t_g)
             ret['genre'] = translated_genres
@@ -834,10 +881,39 @@ class ModuleWestern(PluginModuleBase):
                 data = self.info(code)
                 return jsonify(data)
 
+            if sub == "crop_save":
+                from .model_metadata_db import ModelAvMetadata
+                if req.is_json:
+                    body_json = req.get_json(silent=True) or {}
+                    code = body_json.get("code")
+                    crop_data = body_json.get("crop_data")
+                    pl_base64 = body_json.get("pl_base64")
+                    p_base64 = body_json.get("p_base64")
+                else:
+                    code = req.form.get("code") or req.args.get("code")
+                    crop_data = req.form.get("crop_data") or req.args.get("crop_data")
+                    pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
+                    p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
+
+                if isinstance(crop_data, dict):
+                    crop_data = json.dumps(crop_data)
+
+                if not code or (not crop_data and not p_base64):
+                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭/업로드 데이터가 누락되었습니다.'}), 400
+
+                success, result_msg = ModelAvMetadata.save_user_cropped_poster(
+                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64
+                )
+                if success:
+                    return jsonify({'ret': 'success', 'msg': '포스터가 저장되었습니다.', 'new_url': result_msg}), 200
+                else:
+                    return jsonify({'ret': 'error', 'msg': result_msg}), 500
+
             if sub == "user_image_update":
                 return self._api_user_image_update(req)
 
             return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
+        
         except Exception as e:
             logger.error(f"[{self.name}] Exception in process_api (sub={sub}): {e}")
             logger.error(traceback.format_exc())

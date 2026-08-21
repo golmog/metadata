@@ -7,11 +7,33 @@
 
 {{ macros.m_hr_black() }}
 
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+
 <style>
   #btn_toggle_setting.collapsed .text-expanded { display: none; }
   #btn_toggle_setting.collapsed .text-collapsed { display: inline; }
   #btn_toggle_setting:not(.collapsed) .text-expanded { display: inline; }
   #btn_toggle_setting:not(.collapsed) .text-collapsed { display: none; }
+
+  #imageCropModal .modal-dialog {
+    max-width: 920px;
+    width: 95%;
+    margin: 1.2rem auto;
+  }
+  #imageCropModal .modal-content {
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  #imageCropModal .crop-view-wrapper {
+    width: 100%;
+    height: 540px;
+    background: #0a0a0a;
+    border-radius: 4px;
+    border: 1px solid #333;
+    overflow: hidden;
+  }
+
 </style>
 
 <div class="mb-3">
@@ -31,6 +53,7 @@
     {{ macros.setting_checkbox('western_db_save', '새 메타데이터 DB 자동 저장', value=arg['western_db_save'], desc=['새롭게 파싱되거나 번역된 메타데이터를 DB에 자동으로 저장합니다.']) }}
     {{ macros.setting_checkbox('western_db_save_only_translated', '번역된 메타데이터만 저장', value=arg['western_db_save_only_translated'], desc=['번역이 완료된 메타데이터만 DB에 저장합니다.']) }}
     {{ macros.setting_checkbox('western_db_auto_enrich', 'Import 후 미디어 자동 일괄 채우기', value=arg['western_db_auto_enrich'], desc=['DB Import / 스마트 병합 완료 즉시 비어있는 미디어(이미지/트레일러) 자동 일괄 채우기를 백그라운드에서 실행합니다.']) }}
+    {{ macros.setting_checkbox('western_db_delete_user_images', 'DB 삭제 시 유저 포스터(_user)도 함께 삭제', value=arg['western_db_delete_user_images'], desc=['ON: DB 데이터 삭제 시 수동으로 크롭/업로드한 유저 이미지(_user) 파일까지 디스크에서 완전히 삭제합니다.', 'OFF: DB 데이터를 삭제해도 수동으로 편집한 유저 이미지는 디스크에 안전하게 보존합니다. (기본값: OFF)']) }}
     {{ macros.setting_input_textarea('western_db_image_url_mapping', '웹 리스트 이미지 주소 치환', value=arg['western_db_image_url_mapping'], row='2', desc=['웹 리스트에서 이미지가 열리지 않을 때(localhost, 사설 IP 등) 주소를 치환하여 불러옵니다.', '형식: [기존주소]|[치환주소] (엔터로 여러 개 등록 가능)', '예시: http://localhost/images|https://myddns.com/images']) }}
     {{ macros.m_hr() }}
 
@@ -142,10 +165,96 @@
   </div>
 </div>
 
+<!-- 포스터 수동 크롭 에디터 모달 -->
+<div class="modal fade" id="imageCropModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" role="document" style="max-width: 920px; width: 95%;">
+    <div class="modal-content border border-secondary shadow-lg">
+      <div class="modal-header d-flex justify-content-between align-items-center py-2 border-bottom border-secondary">
+        <h5 class="modal-title font-weight-bold text-info" id="crop_modal_title" style="font-size: 1.05em;">포스터 크롭 에디터</h5>
+        <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+      </div>
+
+      <div class="modal-body p-2">
+        <input type="hidden" id="crop_target_code">
+        <input type="hidden" id="crop_has_user_poster">
+        
+        <div class="d-flex justify-content-between align-items-center mb-2 px-2 py-1 rounded bg-dark border border-secondary flex-wrap">
+          <div class="d-flex align-items-center flex-wrap mb-1 mb-md-0">
+            <!-- 소스 전환 버튼 (PL ⇄ P) -->
+            <div class="btn-group btn-group-sm mr-2" role="group">
+              <button type="button" class="btn btn-primary font-weight-bold" id="btn_source_pl" title="가로 커버(PL)를 소스로 불러옵니다.">PL (가로)</button>
+              <button type="button" class="btn btn-outline-light" id="btn_source_p" title="세로 포스터(P)를 소스로 불러옵니다.">P (세로)</button>
+            </div>
+
+            <!-- 편집 도구 버튼 -->
+            <div class="btn-group btn-group-sm" role="group">
+              <button type="button" class="btn btn-info font-weight-bold" id="btn_crop_ratio_lock">1.4225 고정</button>
+              <button type="button" class="btn btn-outline-light" id="btn_crop_ratio_free">자유 비율</button>
+              <button type="button" class="btn btn-outline-light" id="btn_crop_rotate_left">좌 90°</button>
+              <button type="button" class="btn btn-outline-light" id="btn_crop_rotate_right">우 90°</button>
+              <button type="button" class="btn btn-outline-warning" id="btn_crop_reset">리셋</button>
+            </div>
+          </div>
+          <div class="btn-group btn-group-sm" role="group">
+            <label class="btn btn-outline-success mb-0 font-weight-bold py-1 mr-1" style="cursor: pointer;" title="새 가로 원본 이미지를 불러옵니다. (가로 _pl_user와 크롭된 _p_user 동시 저장)">
+              <span>📁 가로 커버(PL) 불러오기</span>
+              <input type="file" id="input_upload_pl" accept="image/*" style="display: none;">
+            </label>
+            <label class="btn btn-success mb-0 font-weight-bold py-1" style="cursor: pointer;" title="이미 세로형으로 준비된 포스터를 직접 불러와 등록합니다. (_p_user만 단독 교체)">
+              <span>🖼️ 세로 포스터(P) 직접 등록</span>
+              <input type="file" id="input_upload_p" accept="image/*" style="display: none;">
+            </label>
+          </div>
+        </div>
+
+        <!-- 이미지 캔버스 영역 -->
+        <div class="crop-canvas-container">
+          <img id="cropper_image" src="" style="max-width: 100%; max-height: 100%; display: block;" alt="Crop Source">
+        </div>
+      </div>
+      <div class="modal-footer py-2 d-flex justify-content-between border-top border-secondary">
+        <span class="text-muted small">※ 저장 시 <code>_p_user.jpg</code>로 생성되며 기존 시스템 <code>_p.jpg</code>는 삭제됩니다.</span>
+        <div>
+          <button type="button" class="btn btn-secondary" data-dismiss="modal">취소</button>
+          <button type="button" class="btn btn-primary font-weight-bold" id="btn_save_crop_result">포스터로 저장 (_p_user)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script type="text/javascript">
 var package_name = "{{arg['package_name'] }}";
 var sub = "western"; 
 var current_data = null; 
+
+// globalSendCommand 안전 정의 (베이스 템플릿에 부재 시 자체 통신 처리)
+if (typeof globalSendCommand === 'undefined') {
+    window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options) {
+        var postData = {
+            command: command || '',
+            arg1: (arg1 !== undefined && arg1 !== null) ? arg1 : '',
+            arg2: (arg2 !== undefined && arg2 !== null) ? arg2 : '',
+            arg3: (arg3 !== undefined && arg3 !== null) ? arg3 : ''
+        };
+        if (options) {
+            $.extend(postData, options);
+        }
+        $.ajax({
+            url: '/' + package_name + '/ajax/' + sub,
+            type: "POST",
+            cache: false,
+            data: postData,
+            dataType: "json",
+            success: function (data) {
+                if (callback) callback(data);
+            },
+            error: function (request, status, error) {
+                console.warn('[AJAX] 통신 상태:', command, status, error);
+            }
+        });
+    };
+}
 
 $(document).ready(function(){
     var saved_size = localStorage.getItem(sub + '_page_size');
@@ -174,6 +283,8 @@ $(document).ready(function(){
 
     var saved_page = localStorage.getItem(sub + '_current_page') || '1';
     globalRequestSearch(saved_page);
+    
+    check_enrich_status();
 });
 
 $("body").on('click', '#btn_toggle_setting', function(){
@@ -256,9 +367,17 @@ function make_list(data) {
             
             var info_html = '<div style="line-height: 1.4;">';
             
-            // 줄 1: 제목
+            // 줄 1: 제목 + 개봉 연도 괄호 표기
+            var year_val = jd.year || (jd.premiered ? jd.premiered.substring(0, 4) : '');
+            var year_html = '';
+            if (year_val && year_val != 0 && year_val != 1900) {
+                if (row.title.indexOf('(' + year_val + ')') === -1) {
+                    year_html = ' <span class="text-muted small font-weight-normal">(' + year_val + ')</span>';
+                }
+            }
+            
             info_html += '  <div class="mb-1">';
-            info_html += '    <strong class="text-primary" style="font-size: 1.05em; vertical-align: middle;">' + row.title + '</strong>';
+            info_html += '    <strong class="text-primary" style="font-size: 1.05em; vertical-align: middle;">' + row.title + year_html + '</strong>';
             info_html += '  </div>';
             
             // 줄 2: 고유 code 뱃지 + 출처 site 뱃지 + 생성 / 갱신 시간
@@ -279,7 +398,13 @@ function make_list(data) {
             str += '<div class="col-sm-8">' + info_html + '</div>';
             
             // 3. 관리 버튼 영역 (Col-2)
+            var is_image_server = ("{{ arg['western_image_mode'] }}" === "image_server");
             var btns = '<div class="d-flex flex-column align-items-center justify-content-start pt-1">';
+            if (is_image_server) {
+                btns += '  <button class="btn btn-sm btn-outline-primary btn_crop_modal mb-2 w-75 font-weight-bold" data-idx="' + i + '">이미지 편집</button>';
+            } else {
+                btns += '  <button class="btn btn-sm btn-outline-secondary mb-2 w-75 font-weight-bold" disabled title="이미지 서버(image_server) 모드에서만 사용 가능합니다.">이미지 편집</button>';
+            }
             btns += '  <button class="btn btn-sm btn-outline-info btn_edit_db mb-2 w-75" data-idx="' + i + '">JSON 편집</button>';
             btns += '  <button class="btn btn-sm btn-outline-success btn_refresh_image mb-2 w-75" data-code="' + row.code + '">이미지 갱신</button>';
             btns += '  <button class="btn btn-sm btn-outline-danger btn_delete_db w-75" data-code="' + row.code + '">데이터 삭제</button>';
@@ -450,8 +575,6 @@ function check_enrich_status() {
     });
 }
 
-check_enrich_status();
-
 $("body").on('click', '#btn_enrich_start', function(e){
     e.preventDefault();
     var delay = $('#' + sub + '_enrich_delay').val() || '2.0';
@@ -473,6 +596,216 @@ $("body").on('click', '#btn_enrich_stop', function(e){
     globalSendCommand('db_enrich_stop', null, null, null, function(ret){
         notify(ret.msg, 'warning');
         check_enrich_status();
+    });
+});
+
+// --- Cropper.js 인스턴스 및 핸들러 ---
+var cropperInstance = null;
+var custom_upload_payload = null; // { type: 'pl'|'p', data: base64 }
+var modal_pl_url = '';
+var modal_p_url = '';
+var active_source_type = 'pl'; // 'pl' 또는 'p'
+
+function getSameOriginProxyUrl(url) {
+    if (!url) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+        return '/' + package_name + '/normal/jav_image?url=' + encodeURIComponent(url) + '&mode=';
+    }
+    return url;
+}
+
+$("body").on('click', '.btn_crop_modal', function(e){
+    custom_upload_payload = null;
+    active_source_type = 'pl';
+
+    e.preventDefault();
+    var idx = $(this).data('idx');
+    var row = current_data[idx];
+    var jd = row.json_data;
+    if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch(err){ jd = {}; } }
+
+    // 1. PL(가로) URL 확보
+    var raw_pl = '';
+    if (jd.thumb) {
+        for (var t of jd.thumb) {
+            if (t.aspect === 'landscape') { raw_pl = t.value; break; }
+        }
+    }
+    if (!raw_pl && jd.fanart && jd.fanart.length > 0) raw_pl = jd.fanart[0];
+    if (!raw_pl) raw_pl = row.poster_url;
+
+    // 2. P(세로) URL 확보
+    var raw_p = row.poster_url || '';
+
+    modal_pl_url = getSameOriginProxyUrl(raw_pl);
+    modal_p_url = getSameOriginProxyUrl(raw_p);
+
+    if (!modal_pl_url && !modal_p_url) {
+        notify('편집할 원본 이미지 주소를 찾을 수 없습니다.', 'warning');
+        return;
+    }
+
+    // 기본 소스는 PL 우선
+    var initial_url = modal_pl_url || modal_p_url;
+    active_source_type = modal_pl_url ? 'pl' : 'p';
+
+    $('#btn_source_pl').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+    $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+
+    $('#crop_target_code').val(row.code);
+    var has_user = row.poster_url && row.poster_url.indexOf('_p_user') !== -1;
+    $('#crop_has_user_poster').val(has_user ? 'true' : 'false');
+    $('#crop_modal_title').text('[' + row.code + '] ' + (row.title || '') + ' - 포스터 크롭');
+
+    $('#imageCropModal').modal('show');
+
+    $('#imageCropModal').one('shown.bs.modal', function () {
+        var imageElement = document.getElementById('cropper_image');
+        imageElement.src = initial_url;
+
+        if (cropperInstance) {
+            cropperInstance.destroy();
+        }
+
+        cropperInstance = new Cropper(imageElement, {
+            aspectRatio: 1 / 1.4225,
+            viewMode: 1,
+            autoCropArea: 1.0,
+            responsive: true,
+            restore: false,
+            checkCrossOrigin: false,
+            zoomable: true,
+            rotatable: true,
+            scalable: true,
+            wheelZoomRatio: 0.08
+        });
+    });
+});
+
+$('#imageCropModal').on('hidden.bs.modal', function () {
+    if (cropperInstance) {
+        cropperInstance.destroy();
+        cropperInstance = null;
+    }
+    document.getElementById('cropper_image').src = '';
+    $('#input_upload_pl').val('');
+    $('#input_upload_p').val('');
+    custom_upload_payload = null;
+});
+
+$('#btn_crop_ratio_lock').click(function(){
+    if (cropperInstance) {
+        cropperInstance.setAspectRatio(1 / 1.4225);
+    }
+    $(this).removeClass('btn-outline-info').addClass('btn-info font-weight-bold');
+    $('#btn_crop_ratio_free').removeClass('btn-info font-weight-bold').addClass('btn-outline-light');
+});
+
+$('#btn_crop_ratio_free').click(function(){
+    if (cropperInstance) {
+        cropperInstance.setAspectRatio(NaN);
+    }
+    $(this).removeClass('btn-outline-light').addClass('btn-info font-weight-bold');
+    $('#btn_crop_ratio_lock').removeClass('btn-info font-weight-bold').addClass('btn-outline-info');
+});
+
+$('#btn_crop_rotate_left').click(function(){
+    if (cropperInstance) {
+        cropperInstance.rotate(-90);
+    }
+});
+
+$('#btn_crop_rotate_right').click(function(){
+    if (cropperInstance) {
+        cropperInstance.rotate(90);
+    }
+});
+
+$('#btn_crop_reset').click(function(){
+    if (cropperInstance) {
+        cropperInstance.reset();
+        cropperInstance.setAspectRatio(1 / 1.4225);
+    }
+    $('#btn_crop_ratio_lock').removeClass('btn-outline-info').addClass('btn-info font-weight-bold');
+    $('#btn_crop_ratio_free').removeClass('btn-info font-weight-bold').addClass('btn-outline-light');
+});
+
+$('#input_upload_pl').change(function(e){
+    var files = e.target.files;
+    if (files && files.length > 0) {
+        var reader = new FileReader();
+        reader.onload = function(evt) {
+            custom_upload_payload = JSON.stringify({ type: 'pl', data: evt.target.result });
+            if (cropperInstance) {
+                cropperInstance.replace(evt.target.result);
+            }
+        };
+        reader.readAsDataURL(files[0]);
+    }
+});
+
+$('#input_upload_p').change(function(e){
+    var files = e.target.files;
+    if (files && files.length > 0) {
+        var reader = new FileReader();
+        reader.onload = function(evt) {
+            custom_upload_payload = JSON.stringify({ type: 'p', data: evt.target.result });
+            if (cropperInstance) {
+                cropperInstance.replace(evt.target.result);
+            }
+        };
+        reader.readAsDataURL(files[0]);
+    }
+});
+
+$('#btn_source_pl').click(function(){
+    if (!modal_pl_url) { notify('가로 커버(PL) 이미지가 없습니다.', 'warning'); return; }
+    active_source_type = 'pl';
+    $(this).removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+    $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+    if (cropperInstance) cropperInstance.replace(modal_pl_url);
+});
+
+$('#btn_source_p').click(function(){
+    if (!modal_p_url) { notify('세로 포스터(P) 이미지가 없습니다.', 'warning'); return; }
+    active_source_type = 'p';
+    $(this).removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+    $('#btn_source_pl').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+    if (cropperInstance) cropperInstance.replace(modal_p_url);
+});
+
+$('#btn_save_crop_result').click(function(e){
+    e.preventDefault();
+    if (!cropperInstance) return;
+
+    var code = $('#crop_target_code').val();
+    var has_user = $('#crop_has_user_poster').val() === 'true';
+
+    if (has_user) {
+        if (!confirm("⚠️ 이미 수동 설정된 유저 포스터(_p_user)가 존재합니다.\n새로운 이미지로 덮어쓰시겠습니까?")) {
+            return;
+        }
+    }
+
+    var btn = $(this);
+    btn.prop('disabled', true).text('저장 중...');
+
+    var cropData = cropperInstance.getData(true);
+    cropData.source_type = active_source_type; // 'pl' 또는 'p' 전달
+    var cropJson = JSON.stringify(cropData);
+    var uploadPayload = custom_upload_payload || '';
+
+    globalSendCommand('db_crop_save', code, cropJson, uploadPayload, function(ret){
+        btn.prop('disabled', false).text('포스터로 저장 (_p_user)');
+        if (ret.ret === 'success') {
+            notify(ret.msg, 'success');
+            $('#imageCropModal').modal('hide');
+            custom_upload_payload = null;
+            var currentPage = localStorage.getItem(sub + '_current_page') || '1';
+            globalRequestSearch(currentPage);
+        } else {
+            notify('저장 실패: ' + ret.msg, 'warning');
+        }
     });
 });
 
