@@ -21,7 +21,7 @@
 
   {{ macros.setting_checkbox('western_stashdb_use_fingerprint', '비디오 지문(Fingerprint) 탐색 사용', value=arg['western_stashdb_use_fingerprint'], desc=['동영상 파일의 해시(지문)를 계산하여 파일명이 훼손되었어도 100% 일치하는 씬을 탐색합니다. (Fast-Path Score 100)']) }}
   <div id="western_stashdb_use_fingerprint_div" class="collapse">
-    {{ macros.setting_radio_with_value('western_stashdb_fingerprint_type', '지문 계산 알고리즘', [['OSHASH', 'OSHASH (고속)'], ['PHASH', 'PHASH (시각적 5x5 콜라주 / FFmpeg 필요)'], ['BOTH', 'BOTH (OSHASH로 검색 실패시 PHASH로 재시도)']], value=arg['western_stashdb_fingerprint_type'], desc=['OSHASH: 파일 앞/뒤 64KB만 읽어 빠르게 처리합니다.', 'PHASH: 재인코딩/해상도 변환 영상도 시각적 지문으로 탐색 가능합니다.']) }}
+    {{ macros.setting_radio_with_value('western_stashdb_fingerprint_type', '지문 계산 알고리즘', [['OSHASH', 'OSHASH (초고속)'], ['PHASH', 'PHASH (시각적 5x5 콜라주 / FFmpeg 필요)'], ['BOTH', 'BOTH (OSHASH로 검색 실패시 PHASH로 재시도)']], value=arg['western_stashdb_fingerprint_type'], desc=['OSHASH: 파일 앞/뒤 64KB만 읽어 빠르게 처리합니다.', 'PHASH: 재인코딩/해상도 변환 영상도 시각적 지문으로 탐색 가능합니다.']) }}
     {{ macros.setting_input_text('western_stashdb_ffmpeg_path', 'FFmpeg 실행 경로', value=arg['western_stashdb_ffmpeg_path'], placeholder='ffmpeg') }}
   </div>
 
@@ -74,12 +74,10 @@
 
   {{ macros.m_hr() }}
 
-  {{ macros.setting_radio_with_value('western_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['image_server', '이미지 서버']], value=arg['western_image_mode']) }}
+  {{ macros.setting_radio_with_value('western_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['western_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 디스코드 웹훅 및 이미지 서버 기본 설정(URL, 로컬 Root)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
 
   <div id="western_use_image_server_div" class="collapse">
-    {{ macros.setting_input_text('western_image_server_url', '이미지 서버 URL', value=arg['western_image_server_url'], placeholder='예: https://image.example.com') }}
-    {{ macros.setting_input_text('western_image_server_local_path', '로컬 저장 경로 Root', value=arg['western_image_server_local_path'], desc='예: /data/images') }}
-    {{ macros.setting_input_text('western_image_server_save_format', '파일 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['ex: /western/{studio}']) }}
+    {{ macros.setting_input_text('western_image_server_save_format', '파일 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['사용가능: {studio}, {studio_1}', 'ex: /western/{studio_1}/{studio}']) }}
   </div>
 
 </div>

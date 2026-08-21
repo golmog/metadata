@@ -77,6 +77,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_db_save": "False",
             f"{self.name}_db_save_only_translated": "True",
             f"{self.name}_db_auto_enrich": "True",
+            f"{self.name}_db_delete_user_images": "False",
             f"{self.name}_enrich_delay": "2.0",
             f"{self.name}_db_import_path": "",
             f"{self.name}_db_image_url_mapping": "",
@@ -312,9 +313,21 @@ class ModuleJavCensored(PluginModuleBase):
             command = req.form.get('command')
             logger.debug(f"[{self.name}] process_ajax 요청됨 - command: {command}")
             
+            # 1. 폼 검색 목록 요청(command가 없거나 db_list인 경우)
+            if not command or command == 'db_list' or req.form.get('page_size') is not None:
+                from .model_metadata_db import ModelAvMetadata
+                return jsonify(ModelAvMetadata.web_list(req, category=self.category))
+
+            # 2. 백그라운드 미디어 채우기 상태 조회 (최우선 즉시 반환)
+            if command == 'db_enrich_status':
+                return jsonify({'ret': 'success', 'data': self.enrich_status})
+
+            logger.debug(f"[{self.name}] process_ajax 요청됨 - command: {command}")
+            
+            # 3. 기타 커스텀 명령 처리
             custom_commands = [
                 'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum', 'db_import', 'db_export',
-                'db_enrich_start', 'db_enrich_stop', 'db_enrich_status', 'db_refresh_image'
+                'db_enrich_start', 'db_enrich_stop', 'db_enrich_status', 'db_refresh_image', 'db_crop_save'
             ]
             if command in custom_commands:
                 res = self.process_command(command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
@@ -332,7 +345,18 @@ class ModuleJavCensored(PluginModuleBase):
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             ret = {'ret': 'success'}
-            if command == "test":
+            if command == "db_crop_save":
+                from .model_metadata_db import ModelAvMetadata
+                code = arg1
+                crop_data = arg2
+                pl_base64 = arg3
+                success, result_msg = ModelAvMetadata.save_user_cropped_poster(code, crop_data, pl_image_base64_data=pl_base64)
+                if success:
+                    return jsonify({'ret': 'success', 'msg': '포스터(_p_user)가 성공적으로 저장되었습니다.', 'new_url': result_msg})
+                else:
+                    return jsonify({'ret': 'error', 'msg': f'저장 실패: {result_msg}'})
+
+            elif command == "test":
                 code = arg2
                 call = arg1 # 'dmm', 'mgstage', 'javbus' 등
                 db_prefix = f"{self.name}_{call}"
@@ -730,21 +754,57 @@ class ModuleJavCensored(PluginModuleBase):
 
 
     def process_api(self, sub, req):
-        call = req.args.get("call", "")
-        if sub == "search" and call in ["plex", "kodi"]:
-            keyword = req.args.get("keyword").rstrip("-").strip()
-            manual = req.args.get("manual") == "True"
-            return jsonify(self.search(keyword, manual=manual))
-        if sub == "info":
-            data = self.info(req.args.get("code"))
-            if call == "kodi":
-                data = SiteUtil.info_to_kodi(data)
-            return jsonify(data)
+        try:
+            call = req.args.get("call", "")
+            if sub == "search" and call in ["plex", "kodi"]:
+                keyword = req.args.get("keyword").rstrip("-").strip()
+                manual = req.args.get("manual") == "True"
+                return jsonify(self.search(keyword, manual=manual))
 
-        if sub == "user_image_update":
-            return self._api_user_image_update(req)
+            if sub == "info":
+                data = self.info(req.args.get("code"))
+                if call == "kodi":
+                    data = SiteUtil.info_to_kodi(data)
+                return jsonify(data)
 
-        return None
+            if sub == "crop_save":
+                from .model_metadata_db import ModelAvMetadata
+                if req.is_json:
+                    body_json = req.get_json(silent=True) or {}
+                    code = body_json.get("code")
+                    crop_data = body_json.get("crop_data")
+                    pl_base64 = body_json.get("pl_base64")
+                    p_base64 = body_json.get("p_base64")
+                else:
+                    code = req.form.get("code") or req.args.get("code")
+                    crop_data = req.form.get("crop_data") or req.args.get("crop_data")
+                    pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
+                    p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
+
+                if isinstance(crop_data, dict):
+                    crop_data = json.dumps(crop_data)
+
+                if not code or (not crop_data and not p_base64):
+                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭/업로드 데이터가 누락되었습니다.'}), 400
+
+                success, result_msg = ModelAvMetadata.save_user_cropped_poster(
+                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64
+                )
+                if success:
+                    return jsonify({'ret': 'success', 'msg': '포스터가 저장되었습니다.', 'new_url': result_msg}), 200
+                else:
+                    return jsonify({'ret': 'error', 'msg': result_msg}), 500
+
+            if sub == "user_image_update":
+                return self._api_user_image_update(req)
+
+            return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
+
+        except Exception as e:
+            logger.error(f"Exception in process_api (sub={sub}): {e}")
+            logger.error(traceback.format_exc())
+
+            return jsonify({'ret': 'exception', 'msg': str(e)}), 500
 
 
     def process_normal(self, sub, req):
@@ -968,6 +1028,64 @@ class ModuleJavCensored(PluginModuleBase):
     ################################################
     # region SEARCH
 
+    def _reconcile_official_results(self, all_results):
+        """
+        DMM/MGStage가 접두사 차이로 99점을 받고 JavDB/Javbus/Jav321이 접두사 없는 품번으로 100점을 받은 경우,
+        순수 레이블/넘버 및 엄격한 제목 유사도(65% 이상/상호포함)를 대조하여 DMM/MGStage 페널티 제거 (100점 승격)
+        """
+        if not all_results:
+            return all_results
+
+        official_items = [x for x in all_results if x.get('site_key') in ['dmm', 'mgstage'] and int(x.get('original_score', 0)) == 99]
+        secondary_items = [x for x in all_results if x.get('site_key') in ['jav321', 'javbus', 'javdb'] and int(x.get('original_score', 0)) >= 100]
+
+        if not official_items or not secondary_items:
+            return all_results
+
+        import difflib
+
+        for off_item in official_items:
+            off_ui = str(off_item.get('ui_code') or '').upper()
+            off_match = re.match(r'^(\d*)([A-Z]+)-?(\d+.*)$', off_ui)
+            if not off_match:
+                continue
+            off_prefix, off_label, off_num = off_match.group(1), off_match.group(2), (off_match.group(3).lstrip('0') or '0')
+
+            # 1. 제목 노이즈 태그 제거 및 정규화
+            off_title_clean = re.sub(r'\[.*?\]|【.*?】|\(.*?\)|<.*?>|\s+', '', str(off_item.get('title') or ''))
+            off_title_norm = re.sub(r'[^a-zA-Z0-9가-힣\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', off_title_clean).lower()
+
+            for sec_item in secondary_items:
+                sec_ui = str(sec_item.get('ui_code') or '').upper()
+                sec_match = re.match(r'^(\d*)([A-Z]+)-?(\d+.*)$', sec_ui)
+                if not sec_match:
+                    continue
+                sec_prefix, sec_label, sec_num = sec_match.group(1), sec_match.group(2), (sec_match.group(3).lstrip('0') or '0')
+
+                # 2. 순수 레이블 영문 & 넘버 완벽 일치 검사 (예: SPSC == SPSC and 66 == 66)
+                if off_label == sec_label and off_num == sec_num:
+                    sec_title_clean = re.sub(r'\[.*?\]|【.*?】|\(.*?\)|<.*?>|\s+', '', str(sec_item.get('title') or ''))
+                    sec_title_norm = re.sub(r'[^a-zA-Z0-9가-힣\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', sec_title_clean).lower()
+
+                    # 3. 제목 유사도 엄격 검증 (유사도 65% 이상이거나 5글자 이상 핵심 문장 상호 포함)
+                    similarity = difflib.SequenceMatcher(None, off_title_norm, sec_title_norm).ratio() if off_title_norm and sec_title_norm else 0.0
+                    is_contained = (len(off_title_norm) >= 5 and off_title_norm in sec_title_norm) or (len(sec_title_norm) >= 5 and sec_title_norm in off_title_norm)
+                    is_title_matched = is_contained or (similarity >= 0.65)
+
+                    if is_title_matched:
+                        logger.info(
+                            f"[{self.name}] ★ 공식 사이트 품번 승격: "
+                            f"[{off_item.get('site_key', '').upper()}] '{off_ui}'(원점수: 99 ➔ 100) ➔ "
+                            f"[{sec_item.get('site_key', '').upper()}] '{sec_ui}'(100점)와 동일 작품 검증 완료 (유사도: {similarity:.2f}). "
+                            f"접두사 페널티를 제거하여 공식 메타를 100점으로 승격합니다."
+                        )
+                        off_item['original_score'] = 100
+                        off_item['is_reconciled'] = True
+                        break
+
+        return all_results
+
+
     def search(self, keyword, manual=False):
         logger.info(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] =======")
         
@@ -1004,21 +1122,24 @@ class ModuleJavCensored(PluginModuleBase):
                         valid_db_records.append(record)
 
                 for record in valid_db_records:
+                    jd = record.json_data if isinstance(record.json_data, dict) else {}
                     db_item = EntityAVSearch(record.site)
                     db_item.code = record.code
-                    db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
-                    db_item.title = f"📁 [DB 저장됨] {record.title}"
+                    db_item.ui_code = jd.get('ui_code') or record.originaltitle or record.code
+                    db_item.title = f"📁 [DB Cache] {record.title}"
                     db_item.originaltitle = record.originaltitle
                     db_item.title_ko = db_item.title
-                    try: db_item.year = int(record.json_data.get('year', 1900))
-                    except: db_item.year = 1900
+                    try: db_item.year = int(jd.get('year') or 1900)
+                    except Exception: db_item.year = 1900
                     db_item.image_url = record.poster_url or ''
                     
-                    jd = record.json_data or {}
-                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+                    actor_list = jd.get('actor') or []
+                    actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in actor_list if a]
                     actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
+
                     premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
-                    plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
+                    raw_plot = str(jd.get('plot') or '')
+                    plot_snippet = (raw_plot[:120] + "...") if len(raw_plot) > 120 else (raw_plot or "줄거리 없음")
                     
                     db_item.desc = f"출처: {record.site.upper()} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
                     db_item.score = 105
@@ -1036,7 +1157,7 @@ class ModuleJavCensored(PluginModuleBase):
                     logger.debug(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건):")
                     for idx, item in enumerate(all_results):
                         year_str = item.get('year') if item.get('year') != 1900 else '????'
-                        logger.debug(f"  📁 {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
+                        logger.debug(f"  {idx+1}. [{item.get('site_key', '').upper()}] Code={item.get('code')}, UI={item.get('ui_code')}, Title='{item.get('title')}' ({year_str})")
                     return all_results
 
             except Exception as e_db:
@@ -1172,8 +1293,8 @@ class ModuleJavCensored(PluginModuleBase):
                 
                 if not manual:
                     for item in site_results:
-                        if item.get('original_score', 0) >= 100:
-                            logger.debug(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 발견. 검색 중단: {keyword}")
+                        if site_key in ['dmm', 'mgstage'] and item.get('original_score', 0) >= 100:
+                            logger.debug(f"[{self.name}] Early Exit: 공식 사이트 '{site_key}'에서 100점 매칭 확정. 검색 중단: {keyword}")
                             early_exit_triggered = True
                             break
 
@@ -1182,6 +1303,9 @@ class ModuleJavCensored(PluginModuleBase):
         if not all_results:
             logger.debug("======= jav censored search END - No results found. =======")
             return []
+
+        # 공식 사이트(DMM/MGS)와 타 사이트 간의 품번 접두사 차이 검증 및 100점 승격 처리
+        all_results = self._reconcile_official_results(all_results)
 
         priority_string = P.ModelSetting.get('jav_censored_result_priority_order')
         priority_list = [x.strip() for x in priority_string.split(',') if x.strip()]

@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import copy
 import traceback
@@ -53,6 +54,7 @@ class ModelAvMetadata(Base):
     created_time = Column(DateTime, default=datetime.now)
     updated_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+
     def __init__(self, category, code, originaltitle, site, title, poster_url, json_data):
         self.category = category
         self.code = code
@@ -61,6 +63,7 @@ class ModelAvMetadata(Base):
         self.title = title
         self.poster_url = poster_url
         self.json_data = json_data
+
 
     def as_dict(self):
         return {
@@ -75,6 +78,7 @@ class ModelAvMetadata(Base):
             'updated_time': self.updated_time.strftime('%Y-%m-%d %H:%M:%S') if self.updated_time else '',
             'json_data': self.json_data
         }
+
 
     @classmethod
     def save_metadata(cls, category, entity_dict):
@@ -125,10 +129,11 @@ class ModelAvMetadata(Base):
             av_db_session.rollback()
             return False
 
+
     @classmethod
     def get_metadata(cls, code):
         try:
-            logger.debug(f"[MetaDB] get_metadata 조회 시도: {code}")
+            # logger.debug(f"[MetaDB] get_metadata 조회 시도: {code}")
             record = av_db_session.query(cls).filter_by(code=code).first()
             if record:
                 logger.debug(f"[MetaDB] get_metadata 캐시 히트: {code} [{record.category}]")
@@ -138,6 +143,7 @@ class ModelAvMetadata(Base):
             logger.error(f"[MetaDB] get_metadata 에러 ({code}): {e}")
             logger.error(traceback.format_exc())
         return None
+
 
     @classmethod
     def web_list(cls, req, category=None):
@@ -169,7 +175,13 @@ class ModelAvMetadata(Base):
 
             # 상태별 필터
             if search_status == 'no_poster':
-                query = query.filter(or_(cls.poster_url == '', cls.poster_url == None))
+                query = query.filter(or_(
+                    cls.poster_url == '',
+                    cls.poster_url == None,
+                    cls.poster_url.like('%_pl.jpg'),
+                    cls.poster_url.like('%_pl.png'),
+                    cls.poster_url.like('%_pl.webp')
+                ))
             elif search_status == 'no_plot':
                 query = query.filter(or_(
                     func.json_extract(cls.json_data, '$.plot') == '',
@@ -262,22 +274,105 @@ class ModelAvMetadata(Base):
             logger.error(traceback.format_exc())
             return {'success': False, 'paging': None, 'list': []}
 
+
+    @classmethod
+    def _delete_system_images_for_record(cls, record):
+        """이미지 서버에서 해당 레코드의 시스템 생성 이미지 삭제"""
+        try:
+            if not record or not record.code:
+                return
+
+            module_name = 'western' if record.category == 'WEST' else ('jav_censored' if record.category == 'CEN' else 'jav_uncensored')
+
+            # 1. 이미지 서버(image_server) 모드 사용 여부 확인 (미사용 시 디스크 작업 즉시 중단)
+            image_mode = P.ModelSetting.get(f"{module_name}_image_mode")
+            if module_name == 'jav_uncensored' and not image_mode:
+                image_mode = P.ModelSetting.get('jav_censored_image_mode')
+            if image_mode != 'image_server':
+                return
+
+            local_root = P.ModelSetting.get(f"{module_name}_image_server_local_path")
+            server_url = P.ModelSetting.get(f"{module_name}_image_server_url")
+
+            if not local_root or not os.path.exists(local_root):
+                return
+
+            # 2. 대상 폴더 추출
+            target_folders = set()
+            sample_urls = [record.poster_url] + (record.json_data.get('fanart', []) if isinstance(record.json_data, dict) else [])
+            for u in sample_urls:
+                if u and server_url and server_url in u:
+                    rel_path = u.split(server_url, 1)[1].lstrip('/')
+                    folder_path = os.path.join(local_root, os.path.dirname(rel_path))
+                    if os.path.exists(folder_path):
+                        target_folders.add(folder_path)
+
+            # 3. 파일 정리 (옵션에 따라 유저 이미지 포함 여부 결정)
+            delete_user_images = P.ModelSetting.get_bool(f"{module_name}_db_delete_user_images")
+
+            prefixes = [record.code.lower()]
+            if isinstance(record.json_data, dict):
+                if record.json_data.get('ui_code'): prefixes.append(record.json_data['ui_code'].lower())
+                if record.originaltitle: prefixes.append(record.originaltitle.lower())
+            prefixes = list(set(prefixes))
+
+            deleted_count = 0
+            skipped_user_count = 0
+
+            logger.debug(f"[MetaDB] 이미지 정리 시작 -> 레코드: [{record.code}], 폴더: {list(target_folders)}, 유저삭제옵션: {delete_user_images}")
+
+            for folder in target_folders:
+                if not os.path.exists(folder):
+                    continue
+                for fname in os.listdir(folder):
+                    fname_lower = fname.lower()
+                    is_user_file = ('_user.' in fname_lower or '_user_' in fname_lower)
+
+                    for pfx in prefixes:
+                        if fname_lower.startswith(f"{pfx}_") or fname_lower.startswith(f"{pfx}."):
+                            fpath = os.path.join(folder, fname)
+
+                            # 유저 파일 보존 검사
+                            if is_user_file and not delete_user_images:
+                                logger.debug(f"[MetaDB] 유저 이미지 보존 (삭제 건너뜀): {fname}")
+                                skipped_user_count += 1
+                                break
+
+                            try:
+                                os.remove(fpath)
+                                logger.debug(f"[MetaDB] 시스템 이미지 삭제 완료: {fname}")
+                                deleted_count += 1
+                            except Exception as e_rm:
+                                logger.error(f"[MetaDB] 이미지 삭제 실패 ({fpath}): {e_rm}")
+                            break
+            if deleted_count > 0 or skipped_user_count > 0:
+                logger.info(f"[MetaDB] 이미지 파일 정리 완료: [{record.code}] -> 삭제: {deleted_count}개, 보존: {skipped_user_count}개")
+        except Exception as e:
+            logger.error(f"[MetaDB] _delete_system_images_for_record 오류 ({record.code}): {e}")
+
+
     @classmethod
     def delete_record(cls, code):
         try:
-            deleted_count = av_db_session.query(cls).filter_by(code=code).delete()
-            av_db_session.commit()
-            if deleted_count > 0:
-                logger.info(f"[MetaDB] 레코드 삭제 완료: {code}")
-                return True
-            else:
+            record = av_db_session.query(cls).filter_by(code=code).first()
+            if not record:
                 logger.warning(f"[MetaDB] delete_record: 삭제 대상 레코드 없음 ({code})")
                 return False
+
+            # 이미지 서버 시스템 이미지 정리
+            cls._delete_system_images_for_record(record)
+
+            av_db_session.delete(record)
+            av_db_session.commit()
+            cls.checkpoint_wal()
+            logger.info(f"[MetaDB] 레코드 삭제 완료: {code}")
+            return True
         except Exception as e:
             logger.error(f"[MetaDB] delete_record 실패 ({code}): {e}")
             logger.error(traceback.format_exc())
             av_db_session.rollback()
             return False
+
 
     @classmethod
     def update_json(cls, code, new_json_data):
@@ -300,6 +395,7 @@ class ModelAvMetadata(Base):
             av_db_session.rollback()
         return False
 
+
     @classmethod
     def sanitize_for_export(cls, json_data):
         sanitized = copy.deepcopy(json_data)
@@ -310,19 +406,29 @@ class ModelAvMetadata(Base):
             sanitized['image_url'] = ''
         return sanitized
 
+
     @classmethod
     def clear_db(cls, category='CEN'):
         try:
             logger.info(f"[MetaDB] clear_db 실행: Category={category}")
-            count = av_db_session.query(cls).filter_by(category=category).delete()
+            records = av_db_session.query(cls).filter_by(category=category).all()
+            count = len(records)
+            
+            # DB 초기화 시 이미지 파일들도 일괄 정리
+            for r in records:
+                cls._delete_system_images_for_record(r)
+
+            av_db_session.query(cls).filter_by(category=category).delete()
             av_db_session.commit()
-            logger.info(f"[MetaDB] clear_db 완료: [{category}] {count}건 레코드 삭제됨")
+            cls.checkpoint_wal()
+            logger.info(f"[MetaDB] clear_db 완료: [{category}] {count}건 레코드 및 이미지 정리됨")
             return True, count
         except Exception as e:
             logger.error(f"[MetaDB] clear_db 실패 ({category}): {e}")
             logger.error(traceback.format_exc())
             av_db_session.rollback()
             return False, 0
+
 
     @classmethod
     def checkpoint_wal(cls):
@@ -338,6 +444,7 @@ class ModelAvMetadata(Base):
             av_db_session.rollback()
             return False
 
+
     @classmethod
     def vacuum_db(cls):
         try:
@@ -352,6 +459,7 @@ class ModelAvMetadata(Base):
             logger.error(traceback.format_exc())
             av_db_session.rollback()
             return False
+
 
     @classmethod
     def merge_record(cls, category, new_data, mode='update'):
@@ -410,6 +518,7 @@ class ModelAvMetadata(Base):
             logger.error(f"[MetaDB] merge_record 에러 ({new_data.get('code')}): {e}")
             logger.error(traceback.format_exc())
             return 'error'
+
 
     @classmethod
     def update_user_image_by_filename(cls, filename):
@@ -516,3 +625,212 @@ class ModelAvMetadata(Base):
             logger.error(f"[MetaDB] update_user_image_by_filename 에러 ({filename}): {e}")
             logger.error(traceback.format_exc())
             return 'error', None, str(e)
+
+
+    @classmethod
+    def save_user_cropped_poster(cls, code, crop_data_or_base64, pl_image_base64_data=None, p_image_base64_data=None):
+        """
+        웹 에디터에서 전송된 이미지/좌표를 검사하고 24비트 표준 RGB JPEG(_p_user.jpg, _pl_user.jpg)로 정규화 변환하여 저장
+        """
+        try:
+            import base64
+            from io import BytesIO
+            from PIL import Image
+
+            record = av_db_session.query(cls).filter_by(code=code).first()
+            if not record:
+                return False, '해당 품번의 DB 레코드를 찾을 수 없습니다.'
+
+            code_lower = code.lower()
+            module_name = 'western' if record.category == 'WEST' else ('jav_censored' if record.category == 'CEN' else 'jav_uncensored')
+            local_root = P.ModelSetting.get(f"{module_name}_image_server_local_path") or P.ModelSetting.get('jav_censored_image_server_local_path')
+            server_url = P.ModelSetting.get(f"{module_name}_image_server_url") or P.ModelSetting.get('jav_censored_image_server_url')
+
+            if not local_root or not server_url:
+                return False, '이미지 서버 로컬 경로 또는 URL 설정이 비어있습니다.'
+
+            safe_studio = re.sub(r'[^A-Za-z0-9]', '_', record.json_data.get('studio', '')) or 'Unknown'
+            first_char = safe_studio[0].upper() if safe_studio else 'ETC'
+            if first_char.isdigit():
+                first_char = '09'
+
+            save_format = P.ModelSetting.get(f"{module_name}_image_server_save_format") or "/western/{studio_1}/{studio}"
+            format_map = {'studio': safe_studio, 'studio_1': first_char, 'label': safe_studio, 'label_1': first_char}
+            rel_dir = save_format.format_map(format_map).strip('/\\')
+
+            target_folder = os.path.join(local_root, rel_dir)
+            server_url_prefix = f"{server_url.rstrip('/')}/{rel_dir}".rstrip('/')
+            os.makedirs(target_folder, exist_ok=True)
+
+            # [Plex 호환성 보장] 모든 이미지를 24비트 표준 RGB JPEG로 강제 정규화하여 저장하는 헬퍼
+            def save_normalized_jpeg(pil_img, save_filepath):
+                if pil_img.mode not in ('RGB', 'L'):
+                    rgb_converted = pil_img.convert('RGB')
+                    rgb_converted.save(save_filepath, 'JPEG', quality=95, optimize=True)
+                    rgb_converted.close()
+                else:
+                    pil_img.save(save_filepath, 'JPEG', quality=95, optimize=True)
+
+            # 1. 크롭 대상 소스 이미지 확보
+            src_img = None
+            source_type = 'pl'
+            try:
+                if isinstance(crop_data_or_base64, str) and crop_data_or_base64.startswith('{'):
+                    crop_info_tmp = json.loads(crop_data_or_base64)
+                    if isinstance(crop_info_tmp, dict) and crop_info_tmp.get('source_type'):
+                        source_type = str(crop_info_tmp['source_type']).lower()
+            except Exception:
+                pass
+
+            # (Case 1) 사용자가 세로 포스터(P)를 직접 업로드한 경우
+            if p_image_base64_data:
+                raw_b64 = p_image_base64_data.split(',', 1)[1] if ',' in p_image_base64_data else p_image_base64_data
+                src_img = Image.open(BytesIO(base64.b64decode(raw_b64)))
+
+            # (Case 2) 사용자가 가로 커버(PL)를 직접 업로드한 경우
+            elif pl_image_base64_data:
+                raw_b64 = pl_image_base64_data.split(',', 1)[1] if ',' in pl_image_base64_data else pl_image_base64_data
+                src_img = Image.open(BytesIO(base64.b64decode(raw_b64)))
+
+                user_pl_path = os.path.join(target_folder, f"{file_stem}_pl_user.jpg")
+                save_normalized_jpeg(src_img, user_pl_path)
+
+                for ext_cand in ['jpg', 'jpeg', 'png', 'webp']:
+                    old_pl = os.path.join(target_folder, f"{file_stem}_pl.{ext_cand}")
+                    if os.path.exists(old_pl):
+                        try: os.remove(old_pl)
+                        except Exception: pass
+
+            # (Case 3) 소스가 P(세로 포스터)로 선택된 경우
+            elif source_type == 'p':
+                for candidate_name in [f"{file_stem}_p_user.jpg", f"{file_stem}_p.jpg", f"{file_stem}_p.png", f"{file_stem}_p.webp"]:
+                    cand_path = os.path.join(target_folder, candidate_name)
+                    if os.path.exists(cand_path):
+                        src_img = Image.open(cand_path)
+                        break
+                if src_img is None and record.poster_url and record.poster_url.startswith('http'):
+                    from support_site import SiteAvBase
+                    src_img = SiteAvBase.imopen(record.poster_url)
+
+            # (Case 4) 소스가 PL(가로 커버)인 경우 (기본값)
+            else:
+                for candidate_name in [f"{file_stem}_pl_user.jpg", f"{file_stem}_pl.jpg", f"{file_stem}_pl.png", f"{file_stem}_pl.webp"]:
+                    cand_path = os.path.join(target_folder, candidate_name)
+                    if os.path.exists(cand_path):
+                        src_img = Image.open(cand_path)
+                        break
+
+            # (Case 5) 디스크에 없으면 원격 URL에서 로드
+            if src_img is None:
+                target_url = None
+                if source_type == 'p':
+                    target_url = record.poster_url
+                else:
+                    for t in (record.json_data.get('thumb') or []):
+                        if isinstance(t, dict) and t.get('aspect') == 'landscape':
+                            target_url = t.get('value')
+                            break
+                    if not target_url and record.json_data.get('fanart'):
+                        target_url = record.json_data['fanart'][0]
+                    if not target_url:
+                        target_url = record.poster_url
+
+                if target_url and target_url.startswith('http'):
+                    from support_site import SiteAvBase
+                    src_img = SiteAvBase.imopen(target_url)
+
+            if src_img is None:
+                return False, '처리할 원본 이미지를 찾을 수 없습니다.'
+
+            # 2. 정밀 좌표 기반 무손실 크롭 수행
+            cropped_p_img = None
+            try:
+                crop_info = json.loads(crop_data_or_base64) if isinstance(crop_data_or_base64, str) and crop_data_or_base64.startswith('{') else None
+                if crop_info and 'width' in crop_info and 'height' in crop_info:
+                    rotate_angle = crop_info.get('rotate', 0)
+                    working_img = src_img
+                    if rotate_angle != 0:
+                        working_img = src_img.rotate(-rotate_angle, expand=True)
+
+                    img_w, img_h = working_img.size
+                    cx = max(0, int(round(crop_info['x'])))
+                    cy = max(0, int(round(crop_info['y'])))
+                    cw = min(int(round(crop_info['width'])), img_w - cx)
+                    ch = min(int(round(crop_info['height'])), img_h - cy)
+
+                    cropped_p_img = working_img.crop((cx, cy, cx + cw, cy + ch))
+            except Exception as e_parse:
+                logger.debug(f"[MetaDB] 좌표 파싱 실패 -> 원본 폴백: {e_parse}")
+
+            if cropped_p_img is None:
+                cropped_p_img = src_img
+
+            file_stem = None
+            if record.poster_url:
+                parsed_fname = os.path.basename(urlparse(record.poster_url).path)
+                if parsed_fname:
+                    stem_match = re.split(r'_(?:p|pl)(?:_user)?\.', parsed_fname, flags=re.I)
+                    if stem_match and stem_match[0]:
+                        file_stem = stem_match[0].lower()
+
+            if not file_stem:
+                if record.category == 'WEST':
+                    file_stem = record.code.lower()
+                else:
+                    ui_code_val = record.json_data.get('ui_code') if isinstance(record.json_data, dict) else None
+                    file_stem = (ui_code_val or record.originaltitle or record.code).lower()
+
+            # 3. _p_user.jpg로 표준 RGB JPEG 정규화 저장 및 시스템 _p 파일 정리
+            user_poster_path = os.path.join(target_folder, f"{file_stem}_p_user.jpg")
+            save_normalized_jpeg(cropped_p_img, user_poster_path)
+            cropped_p_img.close()
+            src_img.close()
+
+            for ext_cand in ['jpg', 'jpeg', 'png', 'webp']:
+                old_p = os.path.join(target_folder, f"{file_stem}_p.{ext_cand}")
+                if os.path.exists(old_p):
+                    try: os.remove(old_p)
+                    except Exception: pass
+
+            # 4. DB 및 JSON 갱신
+            new_poster_url = f"{server_url_prefix}/{file_stem}_p_user.jpg"
+            record.poster_url = new_poster_url
+
+            jd = copy.deepcopy(record.json_data) if record.json_data else {}
+            thumbs = jd.get('thumb', [])
+
+            updated_p = False
+            for t in thumbs:
+                if isinstance(t, dict) and t.get('aspect') == 'poster':
+                    t['value'] = new_poster_url
+                    updated_p = True
+                    break
+            if not updated_p:
+                thumbs.insert(0, {'aspect': 'poster', 'value': new_poster_url, 'site': record.site})
+
+            if pl_image_base64_data:
+                new_pl_url = f"{server_url_prefix}/{file_stem}_pl_user.jpg"
+                updated_pl = False
+                for t in thumbs:
+                    if isinstance(t, dict) and t.get('aspect') == 'landscape':
+                        t['value'] = new_pl_url
+                        updated_pl = True
+                        break
+                if not updated_pl:
+                    thumbs.append({'aspect': 'landscape', 'value': new_pl_url, 'site': record.site})
+
+            jd['thumb'] = thumbs
+            record.json_data = jd
+            flag_modified(record, "json_data")
+            record.updated_time = datetime.now()
+            av_db_session.commit()
+            cls.checkpoint_wal()
+
+            logger.info(f"[MetaDB] 포스터 정규화 저장 완료: [{record.code}] -> {new_poster_url}")
+            return True, new_poster_url
+
+        except Exception as e:
+            logger.error(f"[MetaDB] save_user_cropped_poster 실패 ({code}): {e}")
+            logger.error(traceback.format_exc())
+            av_db_session.rollback()
+            return False, str(e)
