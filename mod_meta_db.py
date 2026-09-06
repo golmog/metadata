@@ -604,13 +604,24 @@ class ModuleMetaDb(PluginModuleBase):
         if local_path_val and '_user.' in local_path_val.lower() and local_path_val.lower() not in ['null', 'none', '403', '404', 'deprecated', 'unavailable']:
             return cls.format_actor_thumb_url(local_path_val, domain=target_domain)
 
+        # 설정된 배우 이미지 소스 모드에 따라 우선순위 자동 결정
         if not order_str:
             if target_domain == 'WESTERN':
-                order_str = P.ModelSetting.get("western_actor_img_order") or "site_img_url, local_img_path"
+                west_mode = P.ModelSetting.get("western_actor_image_mode") or "site"
+                if west_mode == 'image_server':
+                    order_str = "local_img_path, site_img_url"
+                else:
+                    order_str = "site_img_url, local_img_path"
             elif target_domain == 'GENERAL':
                 order_str = "site_img_url"
             else:
-                order_str = P.ModelSetting.get("jav_censored_avdbs_img_order") or "google_fileid, local_img_path, site_img_url"
+                jav_mode = P.ModelSetting.get("jav_censored_actor_image_mode") or "gds"
+                if jav_mode == 'image_server':
+                    order_str = "local_img_path, google_fileid, site_img_url"
+                elif jav_mode == 'site':
+                    order_str = "site_img_url, google_fileid, local_img_path"
+                else:
+                    order_str = "google_fileid, local_img_path, site_img_url"
 
         parsed_order = [x.strip().lower() for x in re.split(r'[\s,]+', str(order_str)) if x.strip()]
 

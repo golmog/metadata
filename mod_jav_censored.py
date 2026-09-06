@@ -98,6 +98,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_image_server_local_path": "/data/images",
             f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
             f"{self.name}_image_save_mode": "jpeg",
+            f"{self.name}_actor_image_mode": "gds",
             f"{self.name}_image_server_actor_path": "/jav/actors",
             f"{self.name}_image_server_rewrite": "True",
 
@@ -1560,7 +1561,8 @@ class ModuleJavCensored(PluginModuleBase):
                 get_info_success = SiteClass.get_actor_info(entity_actor)
                 if get_info_success and entity_actor.get('site') == 'avdbs_web':
                     image_mode = P.ModelSetting.get('jav_censored_image_mode')
-                    if image_mode == 'image_server':
+                    actor_img_mode = P.ModelSetting.get('jav_censored_actor_image_mode') or 'gds'
+                    if image_mode == 'image_server' and actor_img_mode == 'image_server':
                         try: SiteClass.save_actor_image(entity_actor)
                         except Exception as e: logger.error(f"배우 이미지 저장 실패: {e}")
         except Exception as e:

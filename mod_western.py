@@ -81,7 +81,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_image_mode": "image_server",
             f"{self.name}_image_server_save_format": "/western/scenes/{studio_1}/{studio}",
             f"{self.name}_image_save_mode": "jpeg",
-            f"{self.name}_image_server_save_actor": "False",
+            f"{self.name}_actor_image_mode": "site",
             f"{self.name}_image_server_actor_path": "/western/actors",
             f"{self.name}_actor_img_order": "site_img_url, local_img_path",
         }
@@ -773,7 +773,8 @@ class ModuleWestern(PluginModuleBase):
         # 서양 배우 이미지는 전역 설정 기준대로 로컬 디스크에 정상 보관
         if ret.get('actor'):
             is_img_srv = P.ModelSetting.get(f"{self.name}_image_mode") == 'image_server'
-            save_actor_enabled = is_img_srv and P.ModelSetting.get_bool(f"{self.name}_image_server_save_actor")
+            actor_img_mode = P.ModelSetting.get(f"{self.name}_actor_image_mode") or 'site'
+            save_actor_enabled = is_img_srv and (actor_img_mode == 'image_server')
 
             for a_item in ret['actor']:
                 try:

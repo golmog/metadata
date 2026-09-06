@@ -65,12 +65,10 @@
     </div>
 
     {{ macros.m_hr() }}
-    {{ macros.setting_radio_with_value('jav_uncensored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_uncensored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 이미지 서버 기본 설정(URL, 로컬 Root)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
+    {{ macros.setting_radio_with_value('jav_uncensored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_uncensored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 이미지 서버 기본 설정(URL, 로컬 Root, 저장 방식)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
 
     <div id="jav_uncensored_use_image_server_div" class="collapse">
       {{ macros.setting_input_text('jav_uncensored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_uncensored_image_server_save_format'], desc=['사용가능: {label}, {label_1}, {year}', '기본값: /jav/uncen/{label}']) }}
-
-      {{ macros.setting_radio_with_value('jav_uncensored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_uncensored_image_save_mode'], desc=['이미지 서버 사용 시에만 적용됩니다.']) }}
     </div>
 
   </div><!--tab-content-->
