@@ -48,34 +48,43 @@ setting = {
             },
             {
                 'uri': 'jav_censored',
-                'name': 'JAV Censored',
+                'name': 'JAV Cen',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
                     {'uri': 'avdbs', 'name': 'Avdbs'},
-                    #{'uri': 'hentaku', 'name': 'Hentaku'},
                     {'uri': 'dmm', 'name': 'DMM'},
                     {'uri': 'mgstage', 'name': 'MGStage'},
                     {'uri': 'jav321', 'name': 'Jav321'},
                     {'uri': 'javbus', 'name': 'Javbus'},
                     {'uri': 'javdb', 'name': 'JavDB'},
-                    {'uri': 'db', 'name': '메타 DB 관리'},
+                    {'uri': 'meta_list', 'name': '영상 DB'},
+                    {'uri': 'person_list', 'name': '인물 DB'},
                     {'uri': 'manual/files/jav_censored.md', 'name': '매뉴얼'},
                 ]
             },
             {
                 'uri': 'jav_uncensored',
-                'name': 'JAV Uncensored',
+                'name': 'JAV Uncen',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
-                    {'uri': 'db', 'name': '메타 DB 관리'},
+                    {'uri': 'meta_list', 'name': '영상 DB'},
+                    {'uri': 'person_list', 'name': '인물 DB'},
                 ]
             },
             {
                 'uri': 'western',
-                'name': 'Western AV',
+                'name': 'Western',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
-                    {'uri': 'db', 'name': '메타 DB 관리'},
+                    {'uri': 'meta_list', 'name': '영상 DB'},
+                    {'uri': 'person_list', 'name': '인물 DB'},
+                ]
+            },
+            {
+                'uri': 'meta_db',
+                'name': '메타 DB',
+                'list': [
+                    {'uri': 'setting', 'name': '설정'},
                 ]
             },
             {
@@ -110,10 +119,10 @@ try:
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_uncensored import ModuleJavUncensored
     from .mod_western import ModuleWestern
-    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored, ModuleJavUncensored, ModuleWestern])
+    from .mod_meta_db import ModuleMetaDb
+    P.set_module_list([ModuleRoute, ModuleKtv, ModuleMovie, ModuleFtv, ModuleMusicNormal, ModuleBook, ModuleJavCensored, ModuleJavUncensored, ModuleWestern, ModuleMetaDb])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
-    P.logger.error(traceback.format_exc())
 
 logger = P.logger
 

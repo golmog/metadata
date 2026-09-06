@@ -189,8 +189,9 @@ class ModuleFtv(PluginModuleBase):
                     #if 'is_kor_name' in actor and actor['is_kor_name'] == False:
                     #    actor['name'] = SiteUtil.trans(actor['name_original'], source='en')
                     #    actor['role'] = SiteUtil.trans(actor['role'], source='en')
-                    if SiteUtil.is_include_hangul(actor['name']) == False:
-                        actor['name'] = SiteUtil.trans(actor['name'], source='en')
+                    actor_name = actor.get('name_ko') or actor.get('name_org', '')
+                    if SiteUtil.is_include_hangul(actor_name) == False:
+                        actor['name_ko'] = SiteUtil.trans(actor_name, source='en')
                     if SiteUtil.is_include_hangul(actor['role']) == False:
                         actor['role'] = SiteUtil.trans(actor['role'], source='en')
                 lists = [data['director'], data['producer'], data['writer']]
@@ -345,8 +346,9 @@ class ModuleFtv(PluginModuleBase):
                     data['plot'] = daum_season_info['plot']
                     data['is_plot_kor'] = True
                 for actor in daum_season_info['actor']:
-                    if actor['name'] not in daum_actor_list:
-                        daum_actor_list[actor['name']] = actor
+                    actor_name = actor.get('name_ko') or actor.get('name_org', '')
+                    if actor_name not in daum_actor_list:
+                        daum_actor_list[actor_name] = actor
                 if P.ModelSetting.get_bool('ftv_use_extra_video'):
                     data['extras'] += daum_season_info['extras']
                 if len(daum_actor_list.keys()) > 30:
@@ -355,7 +357,7 @@ class ModuleFtv(PluginModuleBase):
             if option_actor == 'change_daum':
                 data['actor'] = []
                 for key, value in daum_actor_list.items():
-                    data['actor'].append({'name':value['name'], 'role':value['role'], 'image':value['thumb']})
+                    data['actor'].append({'name_ko':value['name'], 'name_org':'', 'role':value['role'], 'image':value['thumb']})
             else:
                 for key, value in daum_actor_list.items():
                     tmp = SiteDaumTv.get_actor_eng_name(key)
@@ -371,7 +373,6 @@ class ModuleFtv(PluginModuleBase):
                         # tmdb에 한글이름 누군가 등록한 상태. 이 이름과 daum이름이 같으면 롤도 업데이트
                         # 예 : 바이킹스 구스타프 스가스가드
                         if actor['name_ko'] != '' and actor['name_ko'].replace(' ', '') == value['name'].replace(' ', ''):
-                            actor['name'] = actor['name_ko']
                             actor['role'] = value['role']
                             actor['is_kor_name']= True
                             del daum_actor_list[key]
@@ -379,8 +380,8 @@ class ModuleFtv(PluginModuleBase):
                         if value['eng_name'] is None:
                             continue
                         for tmp_name in value['eng_name']:
-                            if (actor['name_original'].lower().replace(' ', '') == tmp_name.lower().replace(' ', '')):
-                                actor['name'] = actor['name_ko'] = value['name']
+                            if (actor['name_org'].lower().replace(' ', '') == tmp_name.lower().replace(' ', '')):
+                                actor['name_ko'] = value['name']
                                 actor['role'] = value['role']
                                 actor['is_kor_name']= True
                                 del daum_actor_list[key]

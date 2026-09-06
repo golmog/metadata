@@ -33,7 +33,6 @@
   {{ macros.setting_input_text_and_buttons('western_tpdb_test_code', 'TPDB 검색 테스트', [['western_tpdb_test_btn', '테스트'], ['western_tpdb_nfo_download_btn', 'NFO'], ['western_tpdb_yaml_download_btn', 'YAML'], ['western_tpdb_pl_download_btn', '포스터(원본)'], ['western_tpdb_p_download_btn', '포스터(세로)']], value=arg['western_tpdb_test_code'], placeholder='예: Brazzers 23 05 10 Angela White', desc=['스튜디오 + 날짜 + 배우명 등 파일명 형태']) }}
   
   {{ macros.setting_input_text('western_tpdb_api_token', 'TPDB API Token', value=arg['western_tpdb_api_token'], desc=['ThePornDB 사이트에서 발급받은 API Token을 입력하세요.']) }}
-
   {{ macros.m_hr() }}
   
   {{ macros.setting_input_textarea('western_search_regex_removal', '검색어 불필요 문자열 제거 정규식 (1차)', value=arg['western_search_regex_removal'], row='3', desc=['검색 시 파일명에서 불필요한 패턴을 순차적으로 제거합니다.', '정규식 문법을 사용하며, 줄바꿈(Enter)으로 구분하여 여러 개를 입력할 수 있습니다.']) }}
@@ -41,13 +40,15 @@
   {{ macros.setting_input_textarea('western_search_regex_removal_2nd', '검색어 불필요 문자열 제거 정규식 (2차)', value=arg['western_search_regex_removal_2nd'], row='3', desc=['1차 정제가 끝난 결과물에서 특정 단어나 패턴(예: (solo|vr)$)을 한 번 더 제거합니다.']) }}
 
   {{ macros.setting_checkbox('western_trust_single_result', '단일 검색 결과 무조건 신뢰 (100점)', value=arg['western_trust_single_result'], desc=['검색 결과가 단 1개만 나왔을 경우 강제로 100점을 부여합니다.']) }}
-  
-  {{ macros.m_hr() }}
+
+  {{ macros.setting_checkbox('western_json_include_male', 'JSON 생성시 남자 배우 포함', value=arg['western_json_include_male'], desc=['ON: 최종 생성되는 JSON 및 Plex/Kodi 메타데이터의 출연 배우 목록에 남자 배우를 함께 포함합니다.', 'OFF: 여자 배우만 포함합니다. (여자 배우가 전혀 없을 때만 남자 배우 포함)']) }}
+
+  {{ macros.setting_checkbox('western_include_male', '남자 배우 포함', value=arg['western_include_male'], desc=['ON: 출연 배우 목록 및 제목에 남자 배우를 함께 포함합니다.', 'OFF: 여자 배우만 포함합니다. (여자 배우가 전혀 없을 때만 남자 배우 포함, 기본값: OFF)']) }}
 
   {{ macros.setting_checkbox('western_trans_title', '제목(Title/Tagline) 번역 사용', value=arg['western_trans_title'], desc=['ON: 제목과 줄거리를 모두 번역합니다. (JAV 폴백 매칭 시 유용)', 'OFF: 줄거리(Plot)만 번역하고 제목은 원본 영문을 유지합니다. (기본값: ON)']) }}
   
   {{ macros.setting_checkbox('western_use_proxy', 'API 프록시 사용 (TPDB 등)', value=arg['western_use_proxy'], desc=['ON: API 통신 및 이미지 다운로드 시 프록시를 경유합니다.']) }}
-  
+
   {{ macros.setting_checkbox('western_use_trailer_proxy', '트레일러(예고편) 프록시 사용', value=arg['western_use_trailer_proxy'], desc=['ON: 트레일러 영상을 FF의 내장 프록시 라우터를 통해 재생합니다.']) }}
   
   <div id="western_use_proxy_div" class="collapse">
@@ -77,7 +78,15 @@
   {{ macros.setting_radio_with_value('western_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['western_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 디스코드 웹훅 및 이미지 서버 기본 설정(URL, 로컬 Root)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
 
   <div id="western_use_image_server_div" class="collapse">
-    {{ macros.setting_input_text('western_image_server_save_format', '파일 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['사용가능: {studio}, {studio_1}', 'ex: /western/{studio_1}/{studio}']) }}
+    {{ macros.setting_input_text('western_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['사용가능: {studio}, {studio_1}', 'ex: /western/{studio_1}/{studio}']) }}
+
+    {{ macros.setting_radio_with_value('western_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['western_image_save_mode'], desc=['이미지 서버 사용 시에만 적용됩니다.']) }}
+
+    {{ macros.setting_checkbox('western_image_server_save_actor', '배우 이미지 서버 저장 사용', value=arg['western_image_server_save_actor'], desc=['ON: 배우 프로필 사진을 로컬 이미지 서버에 저장합니다.', 'OFF: 로컬에 저장하지 않고 사이트 원본 URL(site_img_url)을 그대로 사용합니다.']) }}
+    <div id="western_image_server_save_actor_div" class="collapse">
+      {{ macros.setting_input_text('western_image_server_actor_path', '배우 이미지 폴더', value=arg['western_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 배우 폴더 경로를 설정합니다. (기본값: /western/actors)']) }}
+      {{ macros.setting_input_text('western_actor_img_order', '배우 이미지 소스 우선순위', value=arg['western_actor_img_order'], desc=['배우 프로필 사진으로 사용할 소스 우선순위를 쉼표(,)로 구분하여 입력합니다.', '사용 가능 키: site_img_url, local_img_path', '기본값: site_img_url, local_img_path']) }}
+    </div>
   </div>
 
 </div>
@@ -90,6 +99,7 @@ $(document).ready(function(){
   use_collapse("western_use_proxy");
   use_collapse("western_use_smart_crop");
   use_collapse("western_stashdb_use_fingerprint");
+  use_collapse("western_image_server_save_actor");
 });
 
 $('input[type=radio][name=western_image_mode]').change(function() {
@@ -112,6 +122,9 @@ $('#western_stashdb_use_fingerprint').change(function() {
   use_collapse('western_stashdb_use_fingerprint');
 });
 
+$('#western_image_server_save_actor').change(function() {
+  use_collapse('western_image_server_save_actor');
+});
 
 function use_image_server(value) {
   if (value == 'image_server') {

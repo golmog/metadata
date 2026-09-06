@@ -415,9 +415,10 @@ class ModuleMovie(PluginModuleBase):
         if mode == 'all':
             for actor in data['actor']:
                 #logger.debug(actor['name'])e
-                if SiteUtil.is_include_hangul(actor['name']) == False:
-                    actor['name'] = SiteUtil.trans(actor['name'], source='en')
-                    #logger.info(f"{actor['name']}")
+                actor_name = actor.get('name_ko') or actor.get('name_org', '')
+                if SiteUtil.is_include_hangul(actor_name) == False:
+                    actor['name_ko'] = SiteUtil.trans(actor_name, source='en')
+                    #logger.info(f"{actor['name_ko']}")
                 if actor['role'].strip() == '': continue
                 #logger.debug(f"{actor['role']}")                    
                 if actor['role'].strip() != '' and SiteUtil.is_include_hangul(actor['role']) == False:

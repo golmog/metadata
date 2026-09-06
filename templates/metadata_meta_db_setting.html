@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+{{ macros.m_hr_black() }}
+
+<link rel="stylesheet" href="{{ url_for('.static', filename='meta_db.css') }}">
+
+<form id='setting' name='setting'>
+<div class="tab-content mb-4">
+  
+  <!-- 메타 DB 마스터 사용 설정 -->
+  {{ macros.setting_checkbox('meta_db_use', '메타 DB 인프라 사용', value=arg['meta_db_use'], desc=['작품 메타데이터 및 인물 정보를 로컬 메타 DB(SQLite/PostgreSQL)에 통합 관리하고 고속 캐시로 활용합니다.', '체크 해제 시 메타 DB의 모든 기능(저장, 캐시 조회, 백그라운드 워커)이 완전히 비활성화됩니다.']) }}
+
+  <div id="meta_db_use_div" class="collapse">
+    {{ macros.setting_checkbox('meta_db_save', '새 메타데이터 DB 자동 저장', value=arg['meta_db_save'], desc=['새롭게 파싱되거나 번역된 메타데이터를 DB에 자동으로 저장합니다.']) }}
+    {{ macros.setting_checkbox('meta_db_save_only_translated', '번역 완료된 메타데이터만 DB에 저장', value=arg['meta_db_save_only_translated'], desc=['ON: 번역이 성공적으로 완료된 메타데이터만 DB에 저장하며, 번역 실패 또는 번역 생략 수집 시에는 저장을 건너뜁니다.']) }}
+    {{ macros.setting_checkbox('meta_db_include_original', '번역 전 원문 텍스트 보관 (original)', value=arg['meta_db_include_original'], desc=['ON: 제목, 줄거리, 제작사 등의 번역 전 원본 텍스트를 DB와 JSON에 백업 보관합니다. (재번역 및 오프라인 복구 시 유용)', 'OFF: 원문 백업을 제외하고 최종 번역 데이터만 저장합니다.']) }}
+    {{ macros.setting_checkbox('meta_db_delete_user_images', 'DB 삭제 시 유저 포스터(_user)도 함께 삭제', value=arg['meta_db_delete_user_images'], desc=['ON: DB 데이터 삭제 시 수동으로 크롭/업로드한 유저 이미지(_user) 파일까지 디스크에서 완전히 삭제합니다.']) }}
+    {{ macros.setting_checkbox('meta_db_use_ff_proxy', '메타 DB 외부 이미지/트레일러 FF Proxy 사용', value=arg['meta_db_use_ff_proxy'], desc=['목록과 모달에 표시되는 외부 이미지 및 트레일러에만 적용됩니다.', 'DB와 JSON에 저장되는 원본 URL은 변경하지 않습니다. JAV/Western 모두 적용됩니다.']) }}
+    {{ macros.setting_input_textarea('meta_db_image_url_mapping', '웹 리스트 이미지 주소 치환', value=arg['meta_db_image_url_mapping'], row='2', desc=['웹 리스트에서 이미지가 열리지 않을 때(localhost, 사설 IP 등) 주소를 치환하여 불러옵니다.', '형식: [기존주소]|[치환주소] (엔터로 여러 개 등록 가능)']) }}
+    {{ macros.m_hr() }}
+
+    <!-- DB 엔진 설정 -->
+    {{ macros.setting_radio_with_value('meta_db_engine_type', 'DB 엔진 선택', [['sqlite', 'SQLite3 (도메인별 분할 로컬 파일)'], ['postgres', 'PostgreSQL']], value=arg['meta_db_engine_type'], desc=['SQLite: 도메인(jav_cen, jav_uncen, western, person)별 전용 .db 파일로 분산 저장됩니다.', '※ PostgreSQL: 아직 제대로 테스트를 거치지 않았으니 당분간 사용을 권장하지 않습니다.']) }}
+
+    <!-- SQLite 선택 시 표시되는 저장 경로 설정 -->
+    <div id="meta_db_engine_sqlite_div" class="collapse">
+      {{ macros.setting_input_text('meta_db_sqlite_dir', 'SQLite DB 저장 경로', value=arg['meta_db_sqlite_dir'], placeholder='/data/db/meta_db', desc=['도메인별 SQLite DB 파일들이 생성되고 저장될 로컬 디렉토리 경로입니다. (기본값: /data/db/meta_db)']) }}
+    </div>
+
+    <!-- PostgreSQL 선택 시 표시되는 연결 정보 설정 -->
+    <div id="meta_db_engine_postgres_div" class="collapse">
+      {{ macros.setting_input_text('meta_db_pg_host', 'Host (서버 주소)', value=arg['meta_db_pg_host'], placeholder='postgres 또는 IP') }}
+      {{ macros.setting_input_text('meta_db_pg_port', 'Port', value=arg['meta_db_pg_port'], placeholder='5432') }}
+      {{ macros.setting_input_text('meta_db_pg_name', 'DB 이름', value=arg['meta_db_pg_name'], placeholder='metadata') }}
+      {{ macros.setting_input_text('meta_db_pg_user', 'DB 유저명', value=arg['meta_db_pg_user'], placeholder='metadata') }}
+      {{ macros.setting_input_text('meta_db_pg_pass', 'DB 비밀번호', value=arg['meta_db_pg_pass'], type='password') }}
+      {{ macros.info_text_and_buttons('meta_db_pg_helper', 'PostgreSQL 제어', [['btn_test_db_conn', 'DB 연결 테스트'], ['btn_open_pg_admin_modal', '⚡ PostgreSQL 자동 세팅']], value='연결 제어 및 전용 DB/유저 생성', desc=['※ PostgreSQL 사용 시 Python 환경에 psycopg2-binary가 설치되어 있어야 합니다. (pip install psycopg2-binary)']) }}
+    </div>
+    {{ macros.m_hr() }}
+
+    <!-- SQLite ↔ Postgres 실시간 데이터 복제 -->
+    {{ macros.setting_select_and_buttons('meta_db_transfer_direction', 'SQLite ↔ Postgres 전송', [['sqlite_to_pg', 'SQLite3 ➔ PostgreSQL 전체 데이터 복제'], ['pg_to_sqlite', 'PostgreSQL ➔ SQLite3 전체 데이터 복제']], [['btn_transfer_start', '전송 시작'], ['btn_transfer_stop', '전송 중단']], value=arg['meta_db_transfer_direction'], desc=['양쪽 DB 간에 온전한 데이터(이미지/트레일러 URL 포함)를 100% 상호 복제하여 이중 백업합니다.']) }}
+    {{ macros.m_hr() }}
+
+    <!-- 백업 & 스마트 Import / Export -->
+    {{ macros.setting_input_textarea_and_buttons('meta_db_import_path', 'JSON/DB Import & Export', [
+      ['btn_db_import_merge', '스마트 병합 Import'],
+      ['btn_db_import_missing', '없는 것만 Import'],
+      ['btn_db_import_stop', '임포트 중단'],
+      ['btn_db_export_full_all', '전체 백업 Export (Full)'],
+      ['btn_db_export_clean', '공유용 Export (Clean)']
+    ], value=arg['meta_db_import_path'], row='4', desc=[
+      'JSON 폴더 경로 또는 .db 파일 경로를 입력하세요. (엔터로 여러 줄 입력 가능)',
+      '형식: [카테고리]|[경로] (예: JAV_CEN|/mnt/cen_json, JAV_UNCEN|/mnt/uncen_db.db, WESTERN|/mnt/west_json)',
+      '※ 경로 입력후 실행전 반드시 설정을 저장하세요',
+      '※ 지원 카테고리: JAV_CEN, JAV_UNCEN, WESTERN (카테고리 접두사 필수 입력)',
+      '※ 전체 백업: 모든 이미지 URL이 포함된 100% 온전한 Standalone DB로 다운로드됩니다.',
+      '※ 공유용 Export: 이미지/서버 주소가 정제된 배포용 DB로 다운로드됩니다.'
+    ]) }}
+
+    <!-- 실시간 임포트 진행률 프로그레스 바 패널 -->
+    <div id="import_progress_div" class="p-3 mb-3 rounded mx-auto" style="width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255,255,255,0.08); display: none;">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="small font-weight-bold text-info" id="import_progress_status_text">임포트 진행 중...</span>
+        <span class="small font-weight-bold text-white" id="import_progress_percent">0.0%</span>
+      </div>
+      <div class="progress mb-2" style="height: 18px; background: #0c0e11; border-radius: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success font-weight-bold" id="import_progress_bar" role="progressbar" style="width: 0%; font-size: 0.75rem;">0%</div>
+      </div>
+      <div class="d-flex justify-content-between align-items-center small text-muted">
+        <span id="import_progress_stats">신규: 0 | 갱신: 0 | 건너뜀: 0 | 실패: 0</span>
+        <span id="import_progress_code" class="text-truncate text-info" style="max-width: 220px;">-</span>
+      </div>
+    </div>
+
+    {{ macros.m_hr() }}
+
+    <!-- 인물(PERSON) DB 통합 동기화 표준 설정 매크로 -->
+    {{ macros.setting_checkbox('meta_db_person_jav_auto_sync_actors', 'JAV 배우 배포 DB 시작 시 자동 업데이트', value=arg['meta_db_person_jav_auto_sync_actors'], desc=['플러그인 시작 시 배포된 최신 jav_actors_YYYYMMDD.db 버전을 비교하여 새 버전이 있을 때만 메타 인물 DB로 자동 동기화합니다.']) }}
+
+    {{ macros.info_text_and_buttons(
+      'meta_db_person_jav_actors_version_info', 
+      '배우 배포 DB 동기화 & 중복 통합', 
+      [
+        ['btn_check_jav_actors_version', '파일 버전 확인'], 
+        ['btn_sync_jav_actors_setting', '배우 DB 동기화 & 통합 실행']
+      ], 
+      value='파일 버전: ' + (arg.get('meta_db_person_jav_file_version') | default('없음', true)) + ' / DB 반영 버전: ' + (arg.get('meta_db_person_jav_last_synced_version') | default('0', true)), 
+      desc=[
+        '배포 경로(/metadata/files/)의 최신 jav_actors_YYYYMMDD.db 버전을 확인하고 인물 DB로 동기화합니다.',
+        '동기화 실행 시 동일 인물로 파편화된 복수 ID(PA...) 레코드들을 1단계(이름+원문+사진 일치) 및 2단계(이름+영문/원문+생일 일치) 안전 규칙에 따라 단일 마스터 레코드로 자동 병합합니다.'
+      ]
+    ) }}
+    {{ macros.m_hr() }}
+
+  </div>
+
+</div>
+</form>
+
+<!-- PostgreSQL 자동세팅 관리자 설정 모달 -->
+<div class="modal fade" id="pgAdminModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg" role="document">
+    <div class="modal-content border border-secondary shadow-lg">
+      <div class="modal-header py-2 bg-dark text-white">
+        <h6 class="modal-title font-weight-bold text-info">PostgreSQL 관리자(Superuser) 세팅</h6>
+        <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+      </div>
+      <div class="modal-body p-3">
+        <!-- 사용 안내 배너 -->
+        <div class="alert alert-secondary small py-2 px-3 mb-3 border-0" style="background: #1e2227; line-height: 1.5;">
+          <div class="font-weight-bold text-info mb-1">💡 자동 세팅 안내</div>
+          PostgreSQL 서버에 최고 관리자(<code>postgres</code> 등)로 임시 접속하여, 본 플러그인이 사용할 <strong>전용 데이터베이스와 유저 계정을 자동으로 생성/부여</strong>하는 도구입니다.<br>생성이 완료되면 메타 DB 설정창에 접속 정보가 자동 반영됩니다.
+        </div>
+
+        <!-- 1. 관리자(Superuser) 접속 정보 -->
+        <div class="p-2 mb-3 rounded" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="small font-weight-bold text-white">1단계: PostgreSQL 최고 관리자 계정</span>
+            <button type="button" class="btn btn-xs btn-outline-info font-weight-bold py-1 px-2" id="btn_pg_test_admin">관리자 접속 확인</button>
+          </div>
+          <div class="form-row">
+            <div class="col-md-6">
+              <label class="small font-weight-bold text-muted mb-1">관리자 아이디 (Superuser)</label>
+              <input type="text" class="form-control form-control-sm" id="pg_admin_user" value="postgres">
+            </div>
+            <div class="col-md-6">
+              <label class="small font-weight-bold text-muted mb-1">관리자 비밀번호</label>
+              <input type="password" class="form-control form-control-sm" id="pg_admin_pass" placeholder="관리자 패스워드 입력">
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. 생성 및 삭제 대상 정보 확인/수정 -->
+        <div class="p-2 mb-2 rounded" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
+          <div class="small font-weight-bold text-white mb-2">2단계: 생성 / 삭제 대상 데이터베이스 및 유저 정보</div>
+          <div class="form-row mb-2">
+            <div class="col-md-8">
+              <label class="small font-weight-bold text-muted mb-1">대상 서버 주소 (Host)</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_host" placeholder="postgres 또는 IP">
+            </div>
+            <div class="col-md-4">
+              <label class="small font-weight-bold text-muted mb-1">포트 (Port)</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_port" placeholder="5432">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="col-md-4">
+              <label class="small font-weight-bold text-muted mb-1">생성/삭제할 DB명</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_db" placeholder="metadata">
+            </div>
+            <div class="col-md-4">
+              <label class="small font-weight-bold text-muted mb-1">생성/삭제할 유저명</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_user" placeholder="metadata">
+            </div>
+            <div class="col-md-4">
+              <label class="small font-weight-bold text-muted mb-1">전용 유저 비밀번호</label>
+              <input type="password" class="form-control form-control-sm" id="pg_target_pass" placeholder="유저 비밀번호">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer py-2 d-flex justify-content-between">
+        <button type="button" class="btn btn-sm btn-outline-danger" id="btn_pg_drop_db" title="지정된 DB와 유저를 완전히 삭제합니다.">DB & 유저 삭제 (DROP)</button>
+        <div>
+          <button type="button" class="btn btn-sm btn-secondary" data-dismiss="modal">닫기</button>
+          <button type="button" class="btn btn-sm btn-primary font-weight-bold px-3 ml-1" id="btn_pg_create_db">DB & 유저 생성 실행</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "meta_db";
+</script>
+<script src="{{ url_for('.static', filename='common.js') }}"></script>
+<script src="{{ url_for('.static', filename='main_db.js') }}"></script>
+<script type="text/javascript">
+function updatePersonVersionInfo(text) {
+  var el = $('#meta_db_person_jav_actors_version_info');
+  if (!el.length) return;
+  if (el.is('input, textarea, select')) {
+    el.val(text);
+  } else {
+    el.text(text);
+  }
+}
+
+function refreshPersonVersionInfo(isManualClick) {
+  globalSendCommand('person_version_status', null, null, null, function(ret){
+    if (ret && ret.version_info) {
+      updatePersonVersionInfo(ret.version_info);
+
+      if (typeof notify === 'function') {
+        if (isManualClick) {
+          var statusMsg = (ret.file_version && ret.file_version !== "0") 
+            ? ('배포 파일 버전: ' + ret.file_version) 
+            : '배포 DB 파일을 찾을 수 없습니다.';
+          notify(statusMsg, ret.ret === 'success' ? 'success' : 'warning');
+        } else if (ret.has_update) {
+          notify('새로운 배우 DB 파일(' + ret.file_version + ')이 감지되었습니다. 동기화를 진행해주세요.', 'info');
+        }
+      }
+    }
+  });
+}
+
+$(document).ready(function(){
+  use_collapse("meta_db_use");
+  refreshPersonVersionInfo(false);
+});
+
+$('#meta_db_use').change(function() {
+  use_collapse('meta_db_use');
+});
+
+// 파일 버전 즉시 확인 버튼 클릭 핸들러
+$(document).on('click', '#btn_check_jav_actors_version', function(e){
+  e.preventDefault();
+  refreshPersonVersionInfo(true);
+});
+
+// 수동 동기화 실행 버튼 클릭 핸들러
+$(document).on('click', '#btn_sync_jav_actors_setting', function(e){
+  e.preventDefault();
+  if (!confirm("배우 배포 DB 데이터를 동기화하고 중복 레코드를 단일 마스터 인물로 통합하시겠습니까?")) return;
+
+  var btn = $(this);
+  var origText = btn.text();
+  btn.prop('disabled', true).text('동기화 & 통합 중...');
+  
+  globalSendCommand('person_sync_jav_actors', null, null, null, function(ret){
+    btn.prop('disabled', false).text(origText);
+    notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
+    if (ret && ret.version_info) {
+      updatePersonVersionInfo(ret.version_info);
+    } else {
+      refreshPersonVersionInfo(false);
+    }
+  });
+});
+
+</script>
+{% endblock %}

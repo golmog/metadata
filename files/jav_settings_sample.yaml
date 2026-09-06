@@ -276,7 +276,7 @@ meta_custom_path:
   규칙:
     - 이름: uncen_year4
       모듈: uncensored
-      레이블: '(1pon|10mu|carib)'  # 정규식 패턴
+      레이블: '(1pon|10mu|carib|paco)'  # 정규식 패턴
       폴더포맷: '{label}/{year4}'  # 템플릿
     - 이름: uncen_num_3_7
       모듈: uncensored

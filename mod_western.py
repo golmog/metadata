@@ -2,28 +2,35 @@
 import os
 import re
 import traceback
+import threading
+import time
 import json
 import sqlite3
 from datetime import datetime
-import requests
-
-from flask import jsonify, send_file
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs, quote
-from sqlalchemy import func
+
+from flask import send_from_directory, send_file, jsonify, Response, abort
+import requests
+from sqlalchemy import or_
 
 from .setup import *
 from support_site.site_av.site_tpdb import SiteTpdb
 from support_site.site_av.site_stashdb import SiteStashdb
 from support_site.site_av.site_av_base import SiteAvBase
 from support_site.entity_av import EntityAVSearch
-from support_site import UtilNfo
+from support_site import SiteUtil, UtilNfo
+
+from .mod_meta_db import ModuleMetaDb
+from .util_metadata import MetaImageUtil, MetaWorkerUtil, MetaResponseUtil
+
 
 class ModuleWestern(PluginModuleBase):
     
     def __init__(self, P):
         super(ModuleWestern, self).__init__(P, name='western', first_menu='setting')
-        self.category = 'WEST'
+        self.category = 'WESTERN'
+        self.web_list_model = None
         self.site_map = {
             "stashdb": SiteStashdb,
             "tpdb": SiteTpdb,
@@ -50,6 +57,7 @@ class ModuleWestern(PluginModuleBase):
             # 공통 메타 설정
             f"{self.name}_trans_option": "using",
             f"{self.name}_trans_title": "True",
+            f"{self.name}_include_male": "False",
             f"{self.name}_title_format": "[{studio}] {actor} - {title}",
             f"{self.name}_tag_option": "studio",
             f"{self.name}_use_extras": "False",
@@ -58,6 +66,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_search_regex_removal_2nd": r"(?:solo|vr)$",
 
             f"{self.name}_trust_single_result": "False",
+            f"{self.name}_json_include_male": "False",
 
             f"{self.name}_use_proxy": "False",
             f"{self.name}_proxy_url": "",
@@ -70,50 +79,90 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_poster_force_studios": "",
 
             f"{self.name}_image_mode": "image_server",
-            f"{self.name}_image_server_save_format": "/western/{studio_1}/{studio}",
-            
-            # 로컬 DB 캐시 설정
-            f"{self.name}_db_use": "False",
-            f"{self.name}_db_save": "False",
-            f"{self.name}_db_save_only_translated": "True",
-            f"{self.name}_db_auto_enrich": "True",
-            f"{self.name}_db_delete_user_images": "False",
-            f"{self.name}_enrich_delay": "2.0",
-            f"{self.name}_db_import_path": "",
-            f"{self.name}_db_image_url_mapping": "",
+            f"{self.name}_image_server_save_format": "/western/scenes/{studio_1}/{studio}",
+            f"{self.name}_image_save_mode": "jpeg",
+            f"{self.name}_image_server_save_actor": "False",
+            f"{self.name}_image_server_actor_path": "/western/actors",
+            f"{self.name}_actor_img_order": "site_img_url, local_img_path",
         }
 
-        self.enrich_status = {
-            'is_running': False, 'status': '대기 중', 'total': 0,
-            'current': 0, 'success': 0, 'fail': 0, 'current_code': '', 'stop_flag': False
-        }
+        # 백그라운드 작업 상태 관리
+        self.enrich_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'success': 0, 'fail': 0, 'current_code': '', 'stop_flag': False}
+        self.sync_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'updated': 0, 'rescued': 0, 'current_code': '', 'stop_flag': False}
 
         try:
             self.keyword_cache = F.get_cache(f"{P.package_name}_{self.name}_keyword_cache")
         except Exception:
             self.keyword_cache = {}
 
-
     ################################################
     # region PluginModuleBase 메서드 오버라이드
 
     def plugin_load(self):
         try:
-            from .model_metadata_db import engine, Base, ModelAvMetadata
-            Base.metadata.create_all(bind=engine)
-            self.web_list_model = ModelAvMetadata
+            for key, value in self.db_default.items():
+                if P.ModelSetting.get(key) is None:
+                    P.ModelSetting.set(key, value)
+        except Exception as e_db_sync:
+            logger.error(f"[{self.name}] DB Sync Error: {e_db_sync}")
+
+        try:
+            ModuleMetaDb.init_engines()
+            self.web_list_model = ModuleMetaDb
+            logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
         except Exception as e:
             logger.error(f"[{self.name}] DB Init Error: {e}")
         self._set_site_setting()
 
-
     def plugin_load_celery(self):
         self._set_site_setting()
 
+    def setting_save(self, req):
+        """
+        FF 프레임워크의 일괄 덮어쓰기 방어:
+        현재 제출된 폼(req.form)에 실제로 존재하는 설정 및 해당 서브페이지 관련 체크박스만 안전하게 갱신
+        """
+        try:
+            change_list = []
+            form_keys = set(req.form.keys())
+
+            # 1. 폼에 전송된 모든 텍스트/라디오/체크된 항목 갱신
+            for key in form_keys:
+                if key in ['sub', 'package_name', 'module_name']: continue
+                if key in self.db_default:
+                    val = req.form[key].strip()
+                    if P.ModelSetting.set(key, val):
+                        change_list.append(key)
+
+            # 2. 폼에 없는 체크박스 처리 (현재 전송된 페이지 그룹의 체크박스만 'False' 판단)
+            submitted_prefixes = set()
+            for k in form_keys:
+                if '_db_' in k: submitted_prefixes.add('_db_')
+                if '_stashdb_' in k: submitted_prefixes.add('_stashdb_')
+                if '_tpdb_' in k: submitted_prefixes.add('_tpdb_')
+                if k in ['western_order', 'western_title_format', 'western_trans_option']:
+                    submitted_prefixes.add('main_setting')
+
+            for key, default_val in self.db_default.items():
+                if default_val in ['True', 'False'] and key not in form_keys:
+                    should_turn_off = False
+                    if '_db_' in key and '_db_' in submitted_prefixes: should_turn_off = True
+                    elif '_stashdb_' in key and '_stashdb_' in submitted_prefixes: should_turn_off = True
+                    elif '_tpdb_' in key and '_tpdb_' in submitted_prefixes: should_turn_off = True
+                    elif 'main_setting' in submitted_prefixes and not any(p in key for p in ['_db_', '_stashdb_', '_tpdb_']):
+                        should_turn_off = True
+
+                    if should_turn_off and P.ModelSetting.set(key, 'False'):
+                        change_list.append(key)
+
+            self.setting_save_after(change_list)
+            return jsonify(True)
+        except Exception as e:
+            logger.error(f"[{self.name}] setting_save 에러: {e}")
+            return jsonify(False)
 
     def setting_save_after(self, change_list):
         self._set_site_setting()
-
 
     def _set_site_setting(self):
         for site_key, site_cls in self.site_map.items():
@@ -123,79 +172,94 @@ class ModuleWestern(PluginModuleBase):
             except Exception as e:
                 P.logger.error(f"[{self.name}] Error initializing site {site_key}: {e}")
 
-
     def process_ajax(self, sub, req):
         try:
             command = req.form.get('command')
-            
-            # 1. 폼 검색 목록 요청(command가 없거나 db_list인 경우)
-            if not command or command == 'db_list' or req.form.get('page_size') is not None:
-                from .model_metadata_db import ModelAvMetadata
-                return jsonify(ModelAvMetadata.web_list(req, category=self.category))
+            arg1 = req.form.get('arg1', '') or ''
+            arg2 = req.form.get('arg2', '') or ''
+            arg3 = req.form.get('arg3', '') or ''
+            list_type = (req.form.get('list_type') or '').strip().lower()
 
-            # 2. 백그라운드 미디어 채우기 상태 조회 (최우선 즉시 반환)
-            if command == 'db_enrich_status':
-                return jsonify({'ret': 'success', 'data': self.enrich_status})
+            # 인물(배우) DB 요청 판별 및 meta_db 자동 위임
+            is_person_req = (
+                sub in ['person_list'] or 
+                req.form.get('category') == 'PERSON' or 
+                req.form.get('search_domain') is not None or 
+                'search_domain=' in arg1 or 
+                'category=PERSON' in arg1 or
+                (isinstance(command, str) and command.startswith('person_'))
+            )
 
-            logger.debug(f"[{self.name}] process_ajax 요청됨 - command: {command}")
-            
-            # 3. 기타 커스텀 명령 처리
-            custom_commands = [
-                'test', 'db_edit_save', 'db_delete', 'db_clear', 'db_vacuum',
-                'db_import', 'db_export', 'db_enrich_start', 'db_enrich_stop',
-                'db_refresh_image', 'db_crop_save'
-            ]
-            if command in custom_commands:
-                res = self.process_command(command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
+            if is_person_req:
+                if command in ['web_list', 'list', 'person_web_list'] or 'search_domain=' in arg1 or req.form.get('search_domain') is not None:
+                    default_dom = req.form.get('search_domain', 'WESTERN') or 'WESTERN'
+                    return jsonify(ModuleMetaDb.person_web_list(req, default_domain=default_dom))
+
+                if command and (command.startswith('person_') or command == 'db_vacuum'):
+                    meta_module = P.get_module('meta_db')
+                    if meta_module:
+                        res = meta_module.process_command(command, arg1, arg2, arg3, req)
+                        if res is not None:
+                            return res
+                    return jsonify({'ret': 'error', 'msg': f'인물 명령 처리 실패: {command}'})
+
+            # 영상 목록(web_list) 요청 처리
+            if list_type == 'meta' or command in ['web_list', 'list'] or sub in ['web_list', 'list'] or req.form.get('search_site') is not None:
+                category = req.form.get('category') or getattr(self, 'category', 'WESTERN')
+                if str(category).upper() == 'PERSON':
+                    return jsonify(ModuleMetaDb.person_web_list(req, default_domain=req.form.get('search_domain', 'WESTERN')))
+                return jsonify(ModuleMetaDb.web_list(req, category=category))
+
+            # 백그라운드 상태 폴링
+            if command == 'db_enrich_status': return jsonify({'ret': 'success', 'data': self.enrich_status})
+            if command == 'db_sync_status': return jsonify({'ret': 'success', 'data': self.sync_status})
+
+            # 모듈 커맨드 우선 처리
+            if command:
+                res = self.process_command(command, arg1, arg2, arg3, req)
                 if res is not None:
                     return res
-                return jsonify({'ret': 'success'})
-                
+
+            # 프레임워크 기본 AJAX 처리
             res = super(ModuleWestern, self).process_ajax(sub, req)
             if res is not None:
                 return res
-            return jsonify({'ret': 'success'})
+
+            return jsonify({'ret': 'error', 'msg': f'미처리된 AJAX 요청: sub={sub}, command={command}'})
+
         except Exception as e:
             logger.error(f"[{self.name}] Exception in process_ajax: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'ret': 'error', 'msg': str(e)})
 
-
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
             ret = {'ret': 'success'}
 
-            # --- 0. 포스터 수동 크롭/업로드 저장 ---
+            # --- 포스터 수동 크롭/업로드 저장 (MetaImageUtil 위임) ---
             if command == "db_crop_save":
-                from .model_metadata_db import ModelAvMetadata
                 code = arg1
                 crop_data = arg2
                 upload_payload = arg3
-
-                pl_base64 = None
-                p_base64 = None
+                pl_base64, p_base64 = None, None
 
                 if upload_payload:
                     try:
                         p_json = json.loads(upload_payload)
-                        if p_json.get('type') == 'p':
-                            p_base64 = p_json.get('data')
-                        elif p_json.get('type') == 'pl':
-                            pl_base64 = p_json.get('data')
+                        if isinstance(p_json, dict):
+                            if p_json.get('type') == 'p': p_base64 = p_json.get('data')
+                            elif p_json.get('type') == 'pl': pl_base64 = p_json.get('data')
                     except Exception:
                         pl_base64 = upload_payload
 
-                success, result_msg = ModelAvMetadata.save_user_cropped_poster(
-                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64
+                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
-                if success:
-                    return jsonify({'ret': 'success', 'msg': '포스터(_p_user)가 성공적으로 저장되었습니다.', 'new_url': result_msg})
-                else:
-                    return jsonify({'ret': 'error', 'msg': f'저장 실패: {result_msg}'})
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
 
-            # --- 1. 웹 UI 검색 테스트 ---
+            # --- 웹 UI 검색 테스트 ---
             elif command == "test":
-                call = arg1 # 'stashdb' 또는 'tpdb'
+                call = arg1
                 code = arg2
                 P.ModelSetting.set(f"{self.name}_{call}_test_code", code)
                 SiteClass = self.site_map.get(call)
@@ -213,259 +277,222 @@ class ModuleWestern(PluginModuleBase):
                 }
                 return jsonify(ret)
 
-            # --- 2. 로컬 DB 리스트 조회 ---
-            elif command == 'db_list':
-                from .model_metadata_db import ModelAvMetadata
-                return jsonify(ModelAvMetadata.web_list(req, category=self.category))
-
-            # --- 3. 로컬 DB JSON 직접 수정 저장 ---
+            # --- 폼 기반 DB 메타데이터 수정 저장 ---
             elif command == 'db_edit_save':
-                from .model_metadata_db import ModelAvMetadata
                 code = arg1
                 raw_json_str = arg2
-                logger.info(f"[{self.name}] DB Edit Save 요청 - code: {code}")
                 if not raw_json_str:
-                    return jsonify({'ret': 'error', 'msg': '수정할 JSON 데이터가 전달되지 않았습니다.'})
+                    return jsonify({'ret': 'error', 'msg': '수정할 데이터가 없습니다.'})
                 try:
                     new_json = json.loads(raw_json_str)
-                    success = ModelAvMetadata.update_json(code, new_json)
-                    if success:
-                        return jsonify({'ret': 'success', 'msg': 'DB에 성공적으로 반영되었습니다.'})
-                    else:
-                        return jsonify({'ret': 'error', 'msg': 'DB 업데이트 실패 (해당 코드 없음)'})
-                except json.JSONDecodeError as je:
-                    logger.error(f"[{self.name}] JSON 문법 에러: {je}")
-                    return jsonify({'ret': 'error', 'msg': '올바른 JSON 형식이 아닙니다.'})
+                    success = ModuleMetaDb.save_metadata(self.category, new_json)
+                    return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB에 성공적으로 저장되었습니다.' if success else '업데이트 실패'})
                 except Exception as e:
-                    logger.error(f"[{self.name}] DB Edit Save 예외: {e}")
                     return jsonify({'ret': 'error', 'msg': str(e)})
 
-            # --- 4. 로컬 DB 단일 레코드 삭제 ---
+            # --- 단일 레코드 삭제 ---
             elif command == 'db_delete':
-                from .model_metadata_db import ModelAvMetadata
-                code = arg1
-                success = ModelAvMetadata.delete_record(code)
-                return jsonify({'ret': 'success'} if success else {'ret': 'error', 'msg': '삭제 실패'})
+                success = ModuleMetaDb.delete_record(arg1, category=self.category)
+                return jsonify({'ret': 'success' if success else 'error'})
 
-            # --- 5. 로컬 DB 전체 초기화 ---
+            elif command == 'db_delete_selected':
+                success, count = ModuleMetaDb.delete_records(arg1, category=self.category)
+                msg = f"{count}건의 메타데이터가 삭제되었습니다." if success else "선택 항목 삭제 실패"
+                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+
+            # --- 카테고리 DB 초기화 및 최적화 ---
             elif command == 'db_clear':
-                from .model_metadata_db import ModelAvMetadata
-                success, count = ModelAvMetadata.clear_db(self.category)
-                return jsonify({'ret': 'success', 'msg': f'{count}건의 메타데이터가 삭제되었습니다.'} if success else {'ret': 'error', 'msg': '초기화 실패'})
+                success, count = ModuleMetaDb.clear_db(self.category)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건의 메타데이터가 삭제되었습니다.' if success else '초기화 실패'})
 
-            # --- 6. 로컬 DB VACUUM 최적화 ---
             elif command == 'db_vacuum':
-                from .model_metadata_db import ModelAvMetadata
-                success = ModelAvMetadata.vacuum_db()
-                return jsonify({'ret': 'success', 'msg': 'DB 최적화(VACUUM) 완료'} if success else {'ret': 'error', 'msg': '최적화 실패'})
+                success = ModuleMetaDb.vacuum_db()
+                return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB 최적화(VACUUM) 완료' if success else '최적화 실패'})
 
-            # --- 7. 스마트 병합 / 누락분 Import ---
-            elif command == 'db_import':
-                from .model_metadata_db import ModelAvMetadata, av_db_session
-                raw_paths = arg1
-                mode = arg2 # 'update' or 'missing'
-                auto_enrich = (arg3 == 'true')
-                delay = float(req.form.get('delay', 2.0))
-                
-                import_paths = [p.strip() for p in raw_paths.split('\n') if p.strip()]
-                
-                try:
-                    insert_count, update_count, skip_count = 0, 0, 0
-                    batch_size = 500
-                    processed_in_batch = 0
-                    
-                    for import_path in import_paths:
-                        if not os.path.exists(import_path):
-                            logger.warning(f"[{self.name}] Import 경로 없음: {import_path}")
-                            continue
-
-                        # Case A: .db 파일 병합
-                        if os.path.isfile(import_path) and import_path.lower().endswith(('.db', '.sqlite')):
-                            try:
-                                conn = sqlite3.connect(import_path)
-                                c = conn.cursor()
-                                c.execute("SELECT category, code, json_data FROM av_metadata_cache WHERE category = ?", (self.category,))
-                                rows = c.fetchall()
-                                total_rows = len(rows)
-                                conn.close()
-
-                                logger.info(f"[{self.name}] DB 파일 내 {total_rows}개 레코드 병합 시작 -> {import_path}")
-
-                                for idx, (r_cat, r_code, r_json) in enumerate(rows, 1):
-                                    try:
-                                        jd = json.loads(r_json) if isinstance(r_json, str) else r_json
-                                        res = ModelAvMetadata.merge_record(self.category, jd, mode=mode)
-                                        if res == 'inserted': insert_count += 1
-                                        elif res == 'updated': update_count += 1
-                                        else: skip_count += 1
-
-                                        processed_in_batch += 1
-                                        if processed_in_batch >= batch_size:
-                                            av_db_session.commit()
-                                            processed_in_batch = 0
-                                            percent = (idx / total_rows) * 100 if total_rows > 0 else 100
-                                            logger.info(f"[{self.name}] DB Import 진행 중: {idx}/{total_rows} ({percent:.1f}%) | 신규: {insert_count}, 갱신: {update_count}, 스킵: {skip_count}")
-                                    except Exception as e_row:
-                                        logger.error(f"Row 파싱 에러 ({r_code}): {e_row}")
-
-                                if processed_in_batch > 0:
-                                    av_db_session.commit()
-                                    processed_in_batch = 0
-                                    logger.info(f"[{self.name}] DB Import 진행 중: {total_rows}/{total_rows} (100.0%) | 최종 커밋 완료")
-
-                            except Exception as e_db_file:
-                                logger.error(f"[{self.name}] DB 파일 읽기 실패: {e_db_file}")
-
-                        # Case B: 폴더 내 .json 파일들 병합
-                        else:
-                            json_files = []
-                            if os.path.isfile(import_path) and import_path.lower().endswith('.json'):
-                                json_files.append(import_path)
-                            else:
-                                for root, _, files in os.walk(import_path):
-                                    for f in files:
-                                        if f.lower().endswith('.json'):
-                                            json_files.append(os.path.join(root, f))
-                            
-                            total_files = len(json_files)
-                            logger.info(f"[{self.name}] JSON 파일 {total_files}개 병합 시작 -> {import_path}")
-
-                            for idx, jf in enumerate(json_files, 1):
-                                try:
-                                    with open(jf, 'r', encoding='utf-8') as file:
-                                        data = json.load(file)
-                                        res = ModelAvMetadata.merge_record(self.category, data, mode=mode)
-                                        if res == 'inserted': insert_count += 1
-                                        elif res == 'updated': update_count += 1
-                                        else: skip_count += 1
-
-                                        processed_in_batch += 1
-                                        if processed_in_batch >= batch_size:
-                                            av_db_session.commit()
-                                            processed_in_batch = 0
-                                            percent = (idx / total_files) * 100 if total_files > 0 else 100
-                                            logger.info(f"[{self.name}] JSON Import 진행 중: {idx}/{total_files} ({percent:.1f}%) | 신규: {insert_count}, 갱신: {update_count}, 스킵: {skip_count}")
-                                except Exception as e_jf:
-                                    logger.error(f"JSON 파일 파싱 에러 ({jf}): {e_jf}")
-
-                            if processed_in_batch > 0:
-                                av_db_session.commit()
-                                processed_in_batch = 0
-                                logger.info(f"[{self.name}] JSON Import 진행 중: {total_files}/{total_files} (100.0%) | 최종 커밋 완료")
-
-                    ModelAvMetadata.checkpoint_wal()
-
-                    final_msg = f"병합 완료! (신규 등록: {insert_count}건, 번역/메타 갱신: {update_count}건, 건너뜀: {skip_count}건)"
-                    logger.info(f"[{self.name}] {final_msg}")
-
-                    if auto_enrich:
-                        if not self.enrich_status['is_running']:
-                            import threading
-                            t = threading.Thread(target=self._run_enrichment_worker, args=(delay,))
-                            t.daemon = True
-                            t.start()
-                            final_msg += " ➔ [미디어 일괄 채우기] 작업을 백그라운드에서 시작했습니다."
-
-                    return jsonify({'ret': 'success', 'msg': final_msg})
-
-                except Exception as e:
-                    logger.error(f"[{self.name}] DB Import 치명적 오류: {e}")
-                    av_db_session.rollback()
-                    return jsonify({'ret': 'error', 'msg': str(e)})
-
-            # --- 8. 로컬 DB Export ---
-            elif command == 'db_export':
-                from .model_metadata_db import ModelAvMetadata
-                mode = arg1 # 'current' or 'all'
-                try:
-                    tmp_dir = os.path.join(path_data, 'tmp')
-                    os.makedirs(tmp_dir, exist_ok=True)
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    category_suffix = "WEST" if mode == 'current' else "ALL"
-                    filename = f"metadata_av_{category_suffix}_{timestamp}.db"
-                    filepath = os.path.join(tmp_dir, filename)
-
-                    new_conn = sqlite3.connect(filepath)
-                    new_c = new_conn.cursor()
-                    new_c.execute('''CREATE TABLE av_metadata_cache (
-                        id INTEGER PRIMARY KEY,
-                        category VARCHAR(20) NOT NULL,
-                        code VARCHAR(100) NOT NULL,
-                        originaltitle VARCHAR(255) NOT NULL,
-                        site VARCHAR(50) NOT NULL,
-                        title VARCHAR(255) NOT NULL,
-                        poster_url VARCHAR(500),
-                        json_data JSON NOT NULL,
-                        created_time DATETIME,
-                        updated_time DATETIME
-                    )''')
-
-                    records = ModelAvMetadata.query.filter_by(category=self.category).all() if mode == 'current' else ModelAvMetadata.query.all()
-                    count = 0
-                    for r in records:
-                        clean_data = ModelAvMetadata.sanitize_for_export(r.json_data)
-                        c_time = r.created_time.strftime('%Y-%m-%d %H:%M:%S') if r.created_time else None
-                        u_time = r.updated_time.strftime('%Y-%m-%d %H:%M:%S') if r.updated_time else None
-                        new_c.execute('''INSERT INTO av_metadata_cache
-                        (category, code, originaltitle, site, title, poster_url, json_data, created_time, updated_time)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (r.category, r.code, r.originaltitle, r.site, r.title, '', json.dumps(clean_data, ensure_ascii=False), c_time, u_time))
-                        count += 1
-
-                    new_conn.commit()
-                    new_conn.close()
-                    return jsonify({'ret': 'success', 'msg': f'{count}개의 데이터가 포함된 DB 파일 준비 완료', 'filename': filename})
-                except Exception as e:
-                    logger.error(f"[{self.name}] DB Export Error: {e}")
-                    return jsonify({'ret': 'error', 'msg': str(e)})
-
-            # --- 9. 미디어 일괄 채우기 (Enrichment) 제어 ---
+            # --- 미디어 일괄 채우기 (공용 워커 호출) ---
             elif command == 'db_enrich_start':
                 if self.enrich_status['is_running']:
-                    return jsonify({'ret': 'warning', 'msg': '이미 일괄 작업이 진행 중입니다.'})
+                    return jsonify({'ret': 'warning', 'msg': '이미 미디어 채우기 작업이 진행 중입니다.'})
                 delay = float(arg1) if arg1 else 2.0
-                import threading
-                t = threading.Thread(target=self._run_enrichment_worker, args=(delay,))
+                t = threading.Thread(
+                    target=MetaWorkerUtil.run_enrichment_worker,
+                    args=(self.category, self.enrich_status, self.info, delay)
+                )
                 t.daemon = True
                 t.start()
                 return jsonify({'ret': 'success', 'msg': '일괄 미디어 채우기 작업을 시작했습니다.'})
 
             elif command == 'db_enrich_stop':
                 self.enrich_status['stop_flag'] = True
-                return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다. 현재 처리 중인 항목 완료 후 멈춥니다.'})
+                return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다.'})
 
-            elif command == 'db_enrich_status':
-                return jsonify({'ret': 'success', 'data': self.enrich_status})
+            # --- 로컬 이미지 동기화 & 잔여 파일 정리 (공용 워커 호출) ---
+            elif command == 'db_sync_local_start':
+                if self.sync_status['is_running']:
+                    return jsonify({'ret': 'warning', 'msg': '이미 로컬 동기화 작업이 진행 중입니다.'})
+                custom_root = arg1.strip() if arg1 else None
+                auto_rescue = (arg2 == 'true')
+                t = threading.Thread(
+                    target=MetaWorkerUtil.run_sync_worker,
+                    args=(self.category, self.sync_status, self.info, custom_root, auto_rescue)
+                )
+                t.daemon = True
+                t.start()
+                return jsonify({'ret': 'success', 'msg': '로컬 이미지 동기화 및 정리 작업을 시작했습니다.'})
 
-            # --- 10. 단일 항목 이미지 최신 갱신 ---
-            elif command == 'db_refresh_image':
-                from .model_metadata_db import ModelAvMetadata
+            elif command == 'db_sync_local_stop':
+                self.sync_status['stop_flag'] = True
+                return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다.'})
+
+            # --- 이미지/미디어만 재동기화 ---
+            elif command == 'db_refresh_image_only':
                 code = arg1
-                cached_json = ModelAvMetadata.get_metadata(code)
+                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
                 if not cached_json:
                     return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
-                
-                # 식별자 판별 (S: stashdb, P: tpdb)
-                site_key = 'stashdb' if len(code) > 1 and code[1] == 'S' else 'tpdb'
-                SiteClass = self.site_map.get(site_key)
-                if not SiteClass:
-                    return jsonify({'ret': 'error', 'msg': f"사이트 클래스를 찾을 수 없습니다: {site_key}"})
-                
-                res = SiteClass.info(code, fp_meta_mode=False, skip_trans=True)
-                if res and res.get('ret') == 'success' and res.get('data'):
-                    fresh_ret = res['data']
-                    cached_json['thumb'] = fresh_ret.get('thumb', [])
-                    cached_json['fanart'] = fresh_ret.get('fanart', [])
-                    if fresh_ret.get('extras'):
-                        for extra in fresh_ret['extras']:
-                            if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
-                            elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
-                        cached_json['extras'] = fresh_ret['extras']
-                    
-                    ModelAvMetadata.save_metadata(self.category, cached_json)
-                    return jsonify({'ret': 'success', 'msg': f"[{cached_json.get('originaltitle', code)}] 이미지 정보가 갱신되었습니다."})
+
+                ui_code = cached_json.get('originaltitle') or cached_json.get('title') or code
+                try: self.keyword_cache.set(f"BYPASS_{code}", "1")
+                except: pass
+
+                fresh_media = self.info(code, keyword=ui_code, skip_trans=True)
+                if fresh_media and (fresh_media.get('thumb') or fresh_media.get('original', {}).get('thumb')):
+                    cached_json['thumb'] = fresh_media.get('thumb', [])
+                    cached_json['fanart'] = fresh_media.get('fanart', [])
+
+                    # 원본 썸네일 및 팬아트 원천 주소 전체 최신화
+                    if fresh_media.get('original'):
+                        fresh_orig = fresh_media['original']
+                        if 'original' not in cached_json or not isinstance(cached_json['original'], dict):
+                            cached_json['original'] = {}
+                        if fresh_orig.get('thumb'):
+                            cached_json['original']['thumb'] = fresh_orig['thumb']
+                        if fresh_orig.get('fanart'):
+                            cached_json['original']['fanart'] = fresh_orig['fanart']
+                        if fresh_orig.get('extras'):
+                            cached_json['original']['extras'] = fresh_orig['extras']
+
+                    if fresh_media.get('extras'):
+                        cached_json['extras'] = fresh_media.get('extras', [])
+
+                    ModuleMetaDb.save_metadata(self.category, cached_json)
+                    logger.info(f"[{self.name}] [{code}] 이미지 및 팬아트 주소 갱신 완료 (Arts: {len(cached_json.get('fanart', []))}개)")
+                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 동기화 완료"})
                 else:
-                    return jsonify({'ret': 'warning', 'msg': '사이트에서 최신 이미지 정보를 가져오지 못했습니다.'})
+                    return jsonify({'ret': 'warning', 'msg': '미디어 정보를 가져오지 못했습니다.'})
+
+            # 현재 사이트 정보 제자리 갱신
+            elif command == 'db_refresh_in_place':
+                code = arg1
+                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
+                if not cached_json:
+                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+
+                ui_code = cached_json.get('originaltitle') or cached_json.get('title') or code
+                try: self.keyword_cache.set(f"BYPASS_{code}", "1")
+                except: pass
+
+                fresh_data = self.info(code, keyword=ui_code, skip_trans=False)
+                if fresh_data:
+                    ModuleMetaDb.save_metadata(self.category, fresh_data)
+                    logger.info(f"[{self.name}] [{code}] 메타데이터 및 팬아트 갱신 완료")
+                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 메타데이터가 성공적으로 갱신되었습니다."})
+                else:
+                    return jsonify({'ret': 'warning', 'msg': '정보 조회에 실패했습니다.'})
+
+            # --- 자동 재검색 갱신 ---
+            elif command == 'db_refresh_auto_search':
+                code = arg1
+                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
+                if not cached_json:
+                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+
+                ui_code = cached_json.get('originaltitle') or cached_json.get('title') or code
+                logger.info(f"[{self.name}] 전체 우선순위 자동 재검색 갱신 시작: [{code}] ➔ 키워드: '{ui_code}'")
+
+                search_res = self.search(ui_code, manual=False, use_db=False)
+                if not search_res:
+                    return jsonify({'ret': 'warning', 'msg': '검색 결과가 없습니다.'})
+
+                best_item = next((item for item in search_res if not item.get('is_db_cached') and item.get('score', 0) >= 90), None)
+                if not best_item:
+                    return jsonify({'ret': 'warning', 'msg': '일치하는 메타데이터를 찾지 못했습니다.'})
+
+                new_code = best_item['code']
+                logger.info(f"[{self.name}] 자동 재검색 채택: [{best_item.get('site_key', '').upper()}] Code: {new_code} (기존: {code})")
+
+                try:
+                    self.keyword_cache.set(f"BYPASS_{new_code}", "1")
+                    self.keyword_cache.set(f"BYPASS_{code}", "1")
+                except: pass
+
+                fresh_data = self.info(new_code, keyword=ui_code, skip_trans=False)
+                if fresh_data:
+                    # 기존 출처 데이터는 보존하고, 신규/갱신 메타데이터를 DB에 확정 저장
+                    ModuleMetaDb.save_metadata(self.category, fresh_data)
+
+                    title_log = fresh_data.get('title', '')
+                    if new_code != code:
+                        logger.info(f"[{self.name}] 자동 재검색 신규 출처 메타 저장 완료 ({code} ➔ {new_code}): {title_log}")
+                    else:
+                        logger.info(f"[{self.name}] [{new_code}] 자동 재검색 기존 메타 갱신 완료: {title_log}")
+
+                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 메타데이터가 성공적으로 갱신되었습니다."})
+                else:
+                    return jsonify({'ret': 'warning', 'msg': '정보 조회에 실패했습니다.'})
+
+            # --- 배우 검색/선택 명령 ---
+            elif command == 'person_search':
+                kw = arg1 or ''
+                domain = arg2 or 'JAV'
+                results = ModuleMetaDb.person_search(kw, domain=domain)
+                return jsonify({'ret': 'success', 'data': results})
+
+            elif command == 'person_web_list':
+                return jsonify(ModuleMetaDb.person_web_list(req))
+
+            elif command == 'person_save':
+                p_data = json.loads(arg1) if arg1 else {}
+                success, msg = ModuleMetaDb.person_save(p_data)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+
+            elif command == 'person_crop_save':
+                meta_module = P.get_module('meta_db')
+                if meta_module:
+                    return meta_module.process_command(command, arg1, arg2, arg3, req)
+                return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
+
+            elif command == 'person_delete':
+                success = ModuleMetaDb.person_delete(arg1)
+                return jsonify({'ret': 'success' if success else 'error'})
+
+            elif command == 'person_clear':
+                domain = arg1 or 'WESTERN'
+                success, count = ModuleMetaDb.person_clear_db(domain)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건 삭제 완료' if success else '인물 DB 초기화 실패'})
+
+            elif command == 'person_sync_jav_actors':
+                success, msg = ModuleMetaDb.sync_jav_actors_db()
+                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+
+            elif command == 'person_version_status':
+                _, detected_ver = ModuleMetaDb.find_latest_jav_actors_db()
+                file_ver = P.ModelSetting.get("person_jav_file_version") or detected_ver or "0"
+                last_ver = P.ModelSetting.get("person_jav_last_synced_version") or "0"
+                version_info = f"파일 버전: {file_ver} / DB 반영 버전: {last_ver}"
+                return jsonify({'ret': 'success', 'version_info': version_info, 'file_version': file_ver, 'db_version': last_ver})
+
+            elif command in ['person_sub_set_master', 'person_sub_split', 'person_crop_save']:
+                meta_module = P.get_module('meta_db')
+                if meta_module:
+                    return meta_module.process_command(command, arg1, arg2, arg3, req)
+                return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
+
+            elif command == 'get_meta_by_code':
+                meta_module = P.get_module('meta_db')
+                if meta_module:
+                    return meta_module.process_command('get_meta_by_code', arg1, arg2, arg3, req)
+                return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
 
             return jsonify(ret)
                 
@@ -477,11 +504,10 @@ class ModuleWestern(PluginModuleBase):
     # endregion PluginModuleBase 메서드 오버라이드
     ################################################
 
-
     ################################################
     # region SEARCH & INFO
 
-    def search(self, keyword, manual=False, media_path=None):
+    def search(self, keyword, manual=False, media_path=None, use_db=True):
         target_video_file = media_path
         if not target_video_file and os.path.isabs(keyword) and os.path.exists(keyword):
             target_video_file = keyword
@@ -489,16 +515,13 @@ class ModuleWestern(PluginModuleBase):
         else:
             cleaned_keyword = self._clean_search_keyword(keyword)
 
-        logger.info(f"======= Western search START - keyword:[{cleaned_keyword}] video:[{target_video_file}] manual:[{manual}] =======")
+        logger.info(f"======= Western search START - keyword:[{cleaned_keyword}] video:[{target_video_file}] manual:[{manual}] use_db:[{use_db}] =======")
         all_results = []
         
-        # 1. Local DB 캐시 선행 검색
-        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
-        if use_db and not manual:
+        # 1. Local DB 캐시 선행 검색 (전역 meta_db_use 기준)
+        has_db_match = False
+        if use_db and P.ModelSetting.get_bool("meta_db_use"):
             try:
-                from .model_metadata_db import ModelAvMetadata, av_db_session
-                
-                # (1) 비디오 파일이 있거나 검색어가 해시 문자열일 때 로컬 DB 해시 매칭 대조
                 target_hash = None
                 if target_video_file and os.path.exists(target_video_file):
                     target_hash = SiteAvBase.calculate_oshash(target_video_file)
@@ -506,89 +529,89 @@ class ModuleWestern(PluginModuleBase):
                     target_hash = keyword.strip().lower()
 
                 if target_hash:
-                    db_hash_record = av_db_session.query(ModelAvMetadata).filter(
-                        ModelAvMetadata.category == 'WEST',
-                        func.json_extract(ModelAvMetadata.json_data, '$.extra_info.oshash') == target_hash
-                    ).first()
-                    
-                    if not db_hash_record:
-                        db_hash_record = av_db_session.query(ModelAvMetadata).filter(
-                            ModelAvMetadata.category == 'WEST',
-                            func.json_extract(ModelAvMetadata.json_data, '$.extra_info.phash') == target_hash
-                        ).first()
+                    sess, _, _ = ModuleMetaDb.get_session_and_domain(self.category)
+                    from .mod_meta_db import MetaItem
+                    try:
+                        db_items = sess.query(MetaItem).filter(MetaItem.category == self.category).all()
+                        for m in db_items:
+                            e_info = m.extra_info or {}
+                            hash_matched = False
+                            m_oshash = e_info.get('oshash') or e_info.get('hash')
+                            m_phash = e_info.get('phash')
+                            if (m_oshash and str(m_oshash).lower() == target_hash.lower()) or (m_phash and str(m_phash).lower() == target_hash.lower()):
+                                hash_matched = True
 
-                    if db_hash_record:
-                        logger.info(f"[{self.name}] ★★★ Local DB Fingerprint Match Hit! (Hash: {target_hash})")
-                        db_item = self._create_search_item_from_record(db_hash_record, 105)
+                            if not hash_matched and isinstance(e_info.get('fingerprints'), list):
+                                for fp_item in e_info['fingerprints']:
+                                    if isinstance(fp_item, dict) and str(fp_item.get('hash', '')).lower() == target_hash.lower():
+                                        hash_matched = True
+                                        break
+
+                            if hash_matched:
+                                logger.info(f"[{self.name}] Local DB Fingerprint Match Hit! (Hash: {target_hash})")
+                                meta_dict = ModuleMetaDb.to_entity_dict(m)
+                                db_item = self._create_search_item_from_dict(meta_dict, 105)
+                                item_dict = db_item.as_dict()
+                                item_dict['original_score'] = 105
+                                item_dict['is_db_cached'] = True
+                                all_results.append(item_dict)
+                                
+                    finally:
+                        sess.remove()
+
+                valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, cleaned_keyword)
+                if valid_db_records:
+                    for record in valid_db_records:
+                        db_item = self._create_search_item_from_dict(record['json_data'], 105)
                         item_dict = db_item.as_dict()
-                        item_dict['score'] = 100
-                        return [item_dict]
-
-                # (2) 텍스트 기반 로컬 DB 검색
-                kw_norm = re.sub(r'[^a-zA-Z0-9]', '', cleaned_keyword).lower()
-                query_kw = f"%{cleaned_keyword.replace('-', '%')}%"
-                db_records = av_db_session.query(ModelAvMetadata).filter(
-                    ModelAvMetadata.category == 'WEST',
-                    ModelAvMetadata.originaltitle.ilike(query_kw)
-                ).all()
-
-                for record in db_records:
-                    record_orig_norm = re.sub(r'[^a-zA-Z0-9]', '', record.originaltitle).lower()
-                    if kw_norm == record_orig_norm:
-                        db_item = self._create_search_item_from_record(record, 105)
-                        item_dict = db_item.as_dict()
-                        item_dict['score'] = 100
+                        item_dict['original_score'] = 105
+                        item_dict['is_db_cached'] = True
                         all_results.append(item_dict)
 
-                if all_results:
-                    return all_results
+                if any(x.get('original_score', 0) >= 100 for x in all_results):
+                    has_db_match = True
+                    logger.info(f"[{self.name}] Local DB 일치 확인 ({len(all_results)}건)")
+
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
 
-        # 2. 사이트 순환 검색 (western_order: "stashdb, tpdb")
+        skip_external_search = (has_db_match and not manual and use_db)
         site_order_list = [s.strip().lower() for s in P.ModelSetting.get_list(f"{self.name}_order", ",") if s.strip()]
-        early_exit_triggered = False
 
-        for idx, site_key in enumerate(site_order_list):
-            if early_exit_triggered: break
-            SiteClass = self.site_map.get(site_key)
-            if not SiteClass: continue
+        if not skip_external_search:
+            early_exit_triggered = False
 
-            try:
-                data = SiteClass.search(cleaned_keyword, manual=manual, media_path=target_video_file)
-                if data and data.get("ret") == "success" and data.get("data"):
-                    results = data["data"]
-                    for item in results:
-                        item['site_key'] = site_key
-                        all_results.append(item)
-                        
-                        # 자동 검색 시 100점 매칭 발견 시 조기 확정
-                        if not manual and item.get('score', 0) >= 100:
-                            if idx < len(site_order_list) - 1:
-                                remaining_site = site_order_list[idx + 1]
-                                logger.debug(f"[{self.name}] Early Exit: '{site_key}'에서 100점 매칭 확정 ('{remaining_site}' 검색 생략): {cleaned_keyword}")
-                            else:
-                                # 마지막 사이트인 경우 일반 매칭 완료 로그 출력
-                                logger.info(f"[{self.name}] '{site_key}'에서 100점 매칭 완료: {cleaned_keyword}")
-                            early_exit_triggered = True
-                            break
+            for idx, site_key in enumerate(site_order_list):
+                if early_exit_triggered: break
+                SiteClass = self.site_map.get(site_key)
+                if not SiteClass: continue
 
-            except Exception as e_site:
-                logger.error(f"[{self.name}] Error searching on {site_key}: {e_site}")
+                try:
+                    data = SiteClass.search(cleaned_keyword, manual=manual, media_path=target_video_file, filename=target_video_file)
+                    if data and data.get("ret") == "success" and data.get("data"):
+                        results = data["data"]
+                        for item in results:
+                            item['site_key'] = site_key
+                            all_results.append(item)
+                            
+                            if not manual and item.get('score', 0) >= 100:
+                                logger.info(f"[{self.name}] '{site_key}'에서 100점 매칭 확정: {cleaned_keyword}")
+                                early_exit_triggered = True
+                                break
 
-        # 3. 우선순위 정렬 및 동점자 처리
+                except Exception as e_site:
+                    logger.error(f"[{self.name}] Error searching on {site_key}: {e_site}")
+
+        # 3. 우선순위 정렬 및 동점자 분리
         if all_results:
-            # (1) 사이트 우선순위 맵 생성 (stashdb=0, tpdb=1)
             priority_map = {site: idx for idx, site in enumerate(site_order_list)}
             default_prio = len(site_order_list)
 
-            # (2) 1차 정렬: 점수 높은 순(내림차순) -> 사이트 우선순위 앞선 순(오름차순)
             all_results_sorted = sorted(
                 all_results,
                 key=lambda x: (-int(x.get('score', 0)), priority_map.get(x.get('site_key', '').lower(), default_prio))
             )
 
-            # (3) 동점자 순위 분리 (Plex 화면에서 1위가 명확히 선택되도록 1점씩 차감)
             for i, item in enumerate(all_results_sorted):
                 raw_score = int(round(item.get('score', 0)))
                 raw_score = max(0, min(100, raw_score))
@@ -597,10 +620,7 @@ class ModuleWestern(PluginModuleBase):
                     item['score'] = raw_score
                 else:
                     prev_score = all_results_sorted[i-1]['score']
-                    if raw_score >= prev_score:
-                        item['score'] = max(0, prev_score - 1)
-                    else:
-                        item['score'] = raw_score
+                    item['score'] = max(0, prev_score - 1) if raw_score >= prev_score else raw_score
 
                 if manual:
                     try: self.keyword_cache.set(f"BYPASS_{item['code']}", "1")
@@ -609,39 +629,41 @@ class ModuleWestern(PluginModuleBase):
                         self.keyword_cache[f"BYPASS_{item['code']}"] = "1"
 
             all_results = all_results_sorted
-
             logger.info(f"[{self.name}] 최종 검색 결과(우선순위 정렬 완료, 총 {len(all_results)}건):")
             for idx, item_log in enumerate(all_results[:10]):
                 logger.info(f"  {idx+1}. [{item_log.get('site_key', '').upper()}] 점수={item_log.get('score')} | UI={item_log.get('ui_code')} | Title='{item_log.get('title')}'")
         else:
-            logger.info(f"======= Western search END - No results found for: {cleaned_keyword} =======")
+            logger.info(f"======= Western search END - No results found: {cleaned_keyword} =======")
 
         return all_results
 
-
-    def _create_search_item_from_record(self, record, score):
-        db_item = EntityAVSearch(record.site)
-        db_item.code = record.code
-        db_item.ui_code = record.json_data.get('ui_code', record.originaltitle)
-        db_item.title = f"📁 [DB Cache] {record.title}"
-        db_item.originaltitle = record.originaltitle
+    def _create_search_item_from_dict(self, jd, score):
+        db_item = EntityAVSearch(jd.get('site', 'stashdb'))
+        db_item.code = jd.get('code')
+        db_item.ui_code = jd.get('ui_code') or jd.get('originaltitle') or jd.get('code')
+        db_item.title = f"📁 [Meta DB] {jd.get('title', '')}"
+        db_item.originaltitle = jd.get('originaltitle', '')
         db_item.title_ko = db_item.title
-        try: db_item.year = int(record.json_data.get('year', 1900))
+        try: db_item.year = int(jd.get('year', 1900))
         except: db_item.year = 1900
-        db_item.image_url = record.poster_url or ''
         
-        jd = record.json_data or {}
+        poster_url = ""
+        for t in jd.get('thumb', []):
+            if isinstance(t, dict) and t.get('aspect') == 'poster':
+                poster_url = t.get('value', '')
+                break
+        db_item.image_url = poster_url
+        
         studio_str = jd.get('studio', 'Unknown')
-        actor_names = [a.get('name') if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
+        actor_names = [(a.get('name_ko') or a.get('name_org', '')) if isinstance(a, dict) else str(a) for a in jd.get('actor', []) if a]
         actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
         premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
         plot_snippet = (jd.get('plot', '')[:120] + "...") if len(jd.get('plot', '')) > 120 else (jd.get('plot', '') or "줄거리 없음")
 
         db_item.desc = f"스튜디오: {studio_str} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
         db_item.score = score
-        db_item.content_type = jd.get('content_type', 'movie')
+        db_item.content_type = jd.get('content_type', 'scene')
         return db_item
-
 
     def _clean_search_keyword(self, keyword):
         cleaned = keyword
@@ -664,7 +686,6 @@ class ModuleWestern(PluginModuleBase):
 
         return re.sub(r'\s+', ' ', cleaned).strip()
 
-
     def search2(self, keyword, site, manual=False):
         SiteClass = self.site_map.get(site)
         if SiteClass:
@@ -674,13 +695,17 @@ class ModuleWestern(PluginModuleBase):
                 return res["data"]
         return None
 
+    def info(self, code, keyword=None, extra_opts=None, **kwargs):
+        opts = dict(extra_opts or {})
+        opts.update(kwargs)
 
-    def info(self, code, keyword=None, fp_meta_mode=False, skip_trans=False, media_path=None):
+        skip_trans = opts.get('skip_trans', False)
+        media_path = opts.get('media_path', None)
+
         if len(code) < 3 or code[0] != 'W':
             logger.error(f"[{self.name}] 처리할 수 없는 코드: {code}")
             return None
 
-        # 식별자 판별 (S: stashdb, P: tpdb)
         site_key = 'stashdb' if code[1] == 'S' else 'tpdb'
         SiteClass = self.site_map.get(site_key)
         if not SiteClass:
@@ -693,34 +718,40 @@ class ModuleWestern(PluginModuleBase):
             if self.keyword_cache.get(f"BYPASS_{code}") == "1":
                 bypass_cache = True
                 self.keyword_cache.set(f"BYPASS_{code}", "0")
-        except Exception:
-            pass
+        except Exception: pass
 
-        use_db = P.ModelSetting.get_bool(f"{self.name}_db_use")
-        save_db = P.ModelSetting.get_bool(f"{self.name}_db_save")
+        use_db = P.ModelSetting.get_bool("meta_db_use")
+        save_db = P.ModelSetting.get_bool("meta_db_save")
         
+        # 캐시 히트 시: DB 마스터는 보존하고 반환 직전 임시 가공 적용
         if use_db and not bypass_cache:
-            from .model_metadata_db import ModelAvMetadata
-            cached_json = ModelAvMetadata.get_metadata(code)
-            
+            cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
+
             if cached_json:
                 is_db_untranslated = False
                 db_plot = cached_json.get('plot', '')
                 if db_plot and not skip_trans:
-                    from support_site import SiteUtil
                     if not SiteUtil.is_include_hangul(db_plot):
                         is_db_untranslated = True
 
                 if not is_db_untranslated:
-                    logger.info(f"[{self.name}] DB 캐시 로드: {code}")
-                    return cached_json
+                    logger.info(f"[{self.name}] DB 캐시 로드: {code} -> {cached_json.get('title', '')}")
+
+                    include_male_opt = P.ModelSetting.get_bool(f"{self.name}_json_include_male")
+                    if include_male_opt is None:
+                        include_male_opt = P.ModelSetting.get_bool(f"{self.name}_include_male") or False
+
+                    if not include_male_opt and cached_json.get('actor'):
+                        females_only = [a for a in cached_json['actor'] if str(a.get('gender')).lower() == 'female']
+                        if females_only:
+                            cached_json['actor'] = females_only
+
+                    return MetaResponseUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
         data = None
         try:
-            if site_key == 'stashdb':
-                data = SiteClass.info(code, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans, media_path=media_path)
-            else:
-                data = SiteClass.info(code, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+            scrape_opts = {'skip_trans': skip_trans, 'media_path': media_path}
+            data = SiteClass.info(code, extra_opts=scrape_opts)
         except Exception as e:
             logger.exception(f"[{self.name}] Info 조회 중 오류: {e}")
             return None
@@ -734,58 +765,105 @@ class ModuleWestern(PluginModuleBase):
         ret["plex_is_landscape_to_art"] = True
         ret["plex_art_count"] = len(ret.get("fanart", []))
 
-        # --- 사용자 타이틀 포맷팅 및 태그 처리 (StashDB / TPDB 공통 적용) ---
         original_calculated_title = ret.get("title", "")
         safe_studio = ret.get("studio", "Unknown")
         type_char = code[2] if len(code) > 2 else 'S'
         content_type = 'movie' if type_char == 'M' else 'scene'
 
-        actor_names = []
-        for a in ret.get('actor', []):
-            name = ""
-            if isinstance(a, dict): name = str(a.get('name') or a.get('originalname') or "")
-            elif hasattr(a, 'name'): name = str(a.name or a.originalname or "")
-            if name: actor_names.append(name)
+        # 서양 배우 이미지는 전역 설정 기준대로 로컬 디스크에 정상 보관
+        if ret.get('actor'):
+            is_img_srv = P.ModelSetting.get(f"{self.name}_image_mode") == 'image_server'
+            save_actor_enabled = is_img_srv and P.ModelSetting.get_bool(f"{self.name}_image_server_save_actor")
 
-        actor_str = ", ".join(actor_names[:3]) if actor_names else ""
+            for a_item in ret['actor']:
+                try:
+                    raw_thumb = a_item.get('thumb') if isinstance(a_item, dict) else getattr(a_item, 'thumb', '')
+                    if raw_thumb:
+                        if isinstance(a_item, dict):
+                            if not a_item.get('extra_info'): a_item['extra_info'] = {}
+                            a_item['extra_info']['site_img_url'] = raw_thumb
+                            a_item['site_img_url'] = raw_thumb
+                        elif hasattr(a_item, 'extra_info'):
+                            if not a_item.extra_info: a_item.extra_info = {}
+                            a_item.extra_info['site_img_url'] = raw_thumb
+                            setattr(a_item, 'site_img_url', raw_thumb)
+
+                    if save_actor_enabled:
+                        SiteAvBase.save_western_actor_image(a_item)
+                except Exception as e_act_img:
+                    logger.debug(f"[{self.name}] 배우 이미지 처리 예외: {e_act_img}")
+
+        # --- DB 저장용 완전체 배우 목록과 최종 반환용 배우 목록 분리 ---
+        actors_for_db_save = []
+        for a_obj in ret.get('actor', []):
+            if isinstance(a_obj, dict):
+                actors_for_db_save.append({
+                    'name_org': a_obj.get('name_org', ''),
+                    'name_ko': a_obj.get('name_ko', ''),
+                    'name_en': a_obj.get('name_en', ''),
+                    'thumb': a_obj.get('thumb', ''),
+                    'actor_idx': a_obj.get('actor_idx', '') or a_obj.get('person_idx', ''),
+                    'role': a_obj.get('role', '출연'),
+                    'gender': (a_obj.get('extra_info') or {}).get('gender') or a_obj.get('gender', ''),
+                    'extra_info': a_obj.get('extra_info', {})
+                })
+            else:
+                extra_d = getattr(a_obj, 'extra_info', {}) or {}
+                actors_for_db_save.append({
+                    'name_org': getattr(a_obj, 'name_org', ''),
+                    'name_ko': getattr(a_obj, 'name_ko', ''),
+                    'name_en': getattr(a_obj, 'name_en', ''),
+                    'thumb': getattr(a_obj, 'thumb', ''),
+                    'actor_idx': getattr(a_obj, 'actor_idx', '') or getattr(a_obj, 'person_idx', ''),
+                    'role': getattr(a_obj, 'role', '출연'),
+                    'gender': extra_d.get('gender') or getattr(a_obj, 'gender', ''),
+                    'extra_info': extra_d
+                })
+
+        ret['actor'] = actors_for_db_save
+
+        # 타이틀 포맷에 사용할 배우명 추출 (한국어 표기가 있으면 한국어, 없으면 원문명)
+        include_male_opt = P.ModelSetting.get_bool(f"{self.name}_json_include_male")
+        if include_male_opt is None:
+            include_male_opt = P.ModelSetting.get_bool(f"{self.name}_include_male") or False
+
+        females_for_title = [(a['name_ko'] or a['name_org']) for a in actors_for_db_save if str(a.get('gender')).lower() == 'female' and (a.get('name_ko') or a.get('name_org'))]
+        males_for_title = [(a['name_ko'] or a['name_org']) for a in actors_for_db_save if str(a.get('gender')).lower() != 'female' and (a.get('name_ko') or a.get('name_org'))]
+
+        if include_male_opt:
+            selected_names_for_title = (females_for_title + males_for_title)[:3]
+        else:
+            selected_names_for_title = females_for_title[:3] if females_for_title else males_for_title[:3]
+
+        actor_str = ", ".join(selected_names_for_title) if selected_names_for_title else ""
         year_val = ret.get("year", "")
         if not year_val and ret.get("premiered"):
             year_val = str(ret.get("premiered"))[:4]
 
-        # JAV 표준 품번 파서 엔진(_parse_ui_code_uncensored / _parse_ui_code)을 통한 정규화
         studio_code = ""
         raw_code_candidate = ret.get('original', {}).get('code') or ""
         if not raw_code_candidate and original_calculated_title:
             match_code = re.search(r'\b([a-zA-Z0-9]{2,8}[-_]\d{2,7}|[a-zA-Z]{2,6}\d{3,5})\b', original_calculated_title)
-            if match_code:
-                raw_code_candidate = match_code.group(0)
+            if match_code: raw_code_candidate = match_code.group(0)
 
         if raw_code_candidate:
-            # (1) Uncensored 파서 우선 시도 (FC2, 1pondo, Heyzo, Carib 등)
             uncen_parsed = SiteAvBase._parse_ui_code_uncensored(raw_code_candidate)
             if uncen_parsed and '-' in uncen_parsed and not uncen_parsed.startswith(raw_code_candidate.upper()):
                 studio_code = uncen_parsed.upper()
             else:
-                # (2) Censored 파서 시도 (DMM/MGS 일반 품번: ssni00123 -> SSNI-123 등)
                 cen_parsed, _, _ = SiteAvBase._parse_ui_code(raw_code_candidate)
-                if cen_parsed and '-' in cen_parsed:
-                    studio_code = cen_parsed.upper()
-                else:
-                    studio_code = uncen_parsed.upper() if uncen_parsed else raw_code_candidate.upper()
+                studio_code = cen_parsed.upper() if cen_parsed and '-' in cen_parsed else (uncen_parsed.upper() if uncen_parsed else raw_code_candidate.upper())
 
-        # JAV 표준 장르 번역 (av_tags.json 사전 및 trans 엔진 적용)
+        # 장르 번역
         if ret.get('genre'):
             translated_genres = []
             for g in ret['genre']:
                 t_g = SiteAvBase.get_translated_tag(g)
-                if t_g and t_g not in translated_genres:
-                    translated_genres.append(t_g)
+                if t_g and t_g not in translated_genres: translated_genres.append(t_g)
             ret['genre'] = translated_genres
 
-        # 제목 번역 옵션(western_trans_title)에 따른 포맷팅 대상 제목 결정
         trans_title_enabled = P.ModelSetting.get_bool(f"{self.name}_trans_title")
-        if trans_title_enabled is None:
-            trans_title_enabled = True
+        if trans_title_enabled is None: trans_title_enabled = True
 
         translated_title = ret.get("tagline") if trans_title_enabled else original_calculated_title
         effective_title = translated_title or original_calculated_title
@@ -802,7 +880,6 @@ class ModuleWestern(PluginModuleBase):
             'ui_code': studio_code
         }
 
-        # Movie 포맷은 TPDB 전용으로만 분기 적용
         use_movie_format = P.ModelSetting.get_bool(f"{self.name}_use_movie_title_format")
         if site_key == 'tpdb' and content_type == 'movie' and use_movie_format:
             title_format = P.ModelSetting.get(f"{self.name}_movie_title_format") or "[{studio}] {title}"
@@ -828,10 +905,9 @@ class ModuleWestern(PluginModuleBase):
                     if isinstance(extra, dict) and extra.get('content_type') == 'trailer':
                         extra['title'] = final_title
         except Exception as e_fmt:
-            logger.error(f"[{self.name}] 타이틀 포맷 오류: {e_fmt}")
             ret["title"] = original_calculated_title
 
-        # 태그(컬렉션) 옵션 처리
+        # 태그(컬렉션) 옵션
         tag_option = P.ModelSetting.get(f"{self.name}_tag_option")
         ret["tag"] = []
         if tag_option != "not_using":
@@ -845,23 +921,77 @@ class ModuleWestern(PluginModuleBase):
                 if safe_network and safe_network != 'Unknown' and safe_network not in ret["tag"]:
                     ret["tag"].append(safe_network)
 
-        logger.info(f"[{self.name}] Info Success: {code} -> {ret['title']} ({ret.get('year', '')})")
-
-        # DB 저장
-        save_only_trans = P.ModelSetting.get_bool(f"{self.name}_db_save_only_translated")
-        should_save = save_db and ret
-        if should_save and save_only_trans and skip_trans:
-            should_save = False
+        # 메타 DB 단일 저장 (남녀 배우 전원 및 extra_info가 포함된 상태로 저장하여 MetaPerson 구축)
+        save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
+        should_save = use_db and save_db and ret
+        if should_save:
+            if skip_trans:
+                should_save = False
+            elif save_only_trans:
+                plot_val = ret.get('plot', '')
+                if plot_val and not SiteUtil.is_include_hangul(plot_val):
+                    should_save = False
 
         if should_save:
-            from .model_metadata_db import ModelAvMetadata
-            ModelAvMetadata.save_metadata(self.category, ret)
+            ModuleMetaDb.save_metadata(self.category, ret)
 
-        return ret
+        final_clean_actors = []
+        candidate_actors = actors_for_db_save
+        if not include_male_opt:
+            females_only = [a for a in actors_for_db_save if str(a.get('gender')).lower() == 'female']
+            candidate_actors = females_only if females_only else actors_for_db_save
+
+        for act_it in candidate_actors:
+            final_clean_actors.append({
+                'name_org': act_it.get('name_org', ''),
+                'name_ko': act_it.get('name_ko', ''),
+                'name_en': act_it.get('name_en', ''),
+                'thumb': act_it.get('thumb', ''),
+                'actor_idx': act_it.get('actor_idx', ''),
+                'role': act_it.get('role', '출연')
+            })
+
+        ret['actor'] = final_clean_actors
+
+        logger.info(f"[{self.name}] Info Success: {code} -> {ret['title']} ({ret.get('year', '')})")
+
+        return MetaResponseUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
+
+
+    def _finalize_info_return(self, entity_dict, extra_opts=None):
+        """호출자에게 메타데이터를 반환하기 직전, 최종 가공(줄거리 폴백 및 옵션 오버라이드)을 적용합니다."""
+        if not entity_dict or not isinstance(entity_dict, dict):
+            return entity_dict
+
+        import copy
+        opts = dict(extra_opts or {})
+        res = copy.deepcopy(entity_dict)
+
+        # 줄거리가 비어있으면 부제(tagline)로 동적 폴백 (DB 사용 여부와 무관하게 항상 동작)
+        current_plot = str(res.get('plot') or '').strip()
+        fallback_tagline = str(res.get('tagline') or '').strip()
+        if not current_plot and fallback_tagline:
+            res['plot'] = fallback_tagline
+
+        # meta_db 활성화 상태에서 공유 라이브러리 등 임시 오버라이드 요청이 있는 경우에만 위임
+        if P.ModelSetting.get_bool("meta_db_use"):
+            try:
+                res = ModuleMetaDb.apply_transient_overrides(res, opts, category=self.category)
+            except Exception as e_override:
+                logger.debug(f"[{self.name}] apply_transient_overrides 예외: {e_override}")
+
+        # 이미지 필드 제거 옵션 처리 (공유 라이브러리 전용)
+        if opts.get('strip_images'):
+            res['poster_url'] = ''
+            res['landscape_url'] = ''
+            res['thumb'] = []
+            res['fanart'] = []
+
+        return res
+
 
     # endregion SEARCH & INFO
     ################################################
-
 
     ################################################
     # region API & DOWNLOADS
@@ -882,7 +1012,6 @@ class ModuleWestern(PluginModuleBase):
                 return jsonify(data)
 
             if sub == "crop_save":
-                from .model_metadata_db import ModelAvMetadata
                 if req.is_json:
                     body_json = req.get_json(silent=True) or {}
                     code = body_json.get("code")
@@ -895,19 +1024,14 @@ class ModuleWestern(PluginModuleBase):
                     pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
                     p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
 
-                if isinstance(crop_data, dict):
-                    crop_data = json.dumps(crop_data)
-
+                if isinstance(crop_data, dict): crop_data = json.dumps(crop_data)
                 if not code or (not crop_data and not p_base64):
-                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭/업로드 데이터가 누락되었습니다.'}), 400
+                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭 데이터 누락'}), 400
 
-                success, result_msg = ModelAvMetadata.save_user_cropped_poster(
-                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64
+                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
-                if success:
-                    return jsonify({'ret': 'success', 'msg': '포스터가 저장되었습니다.', 'new_url': result_msg}), 200
-                else:
-                    return jsonify({'ret': 'error', 'msg': result_msg}), 500
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
 
             if sub == "user_image_update":
                 return self._api_user_image_update(req)
@@ -916,59 +1040,41 @@ class ModuleWestern(PluginModuleBase):
         
         except Exception as e:
             logger.error(f"[{self.name}] Exception in process_api (sub={sub}): {e}")
-            logger.error(traceback.format_exc())
             return jsonify({'ret': 'exception', 'msg': str(e)}), 500
-
 
     def process_normal(self, sub, req):
         def get_download_filename(info, ext, suffix=""):
             safe_studio = info.get('studio', 'Unknown')
             combined_title = f"[{safe_studio}] {info.get('originaltitle', '')}"
             safe_filename = SiteTpdb._make_safe_filename(combined_title)
-            
             scene_id = info.get('code', '')[2:] if len(info.get('code', '')) > 2 else ''
             if scene_id: safe_filename += f"_{scene_id}"
             if suffix: safe_filename += f"_{suffix}"
-                
             return f"{safe_filename}.{ext}"
 
         if sub == "nfo_download":
             keyword = req.args.get("code")
             call = req.args.get("call")
             if call in self.site_map:
-                db_prefix = f"{self.name}_{call}"
-                P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
-
                 SiteClass = self.site_map.get(call)
                 search_result_dict = SiteClass.search(keyword, manual=True)
-                
                 if search_result_dict and search_result_dict.get('ret') == 'success' and search_result_dict.get('data'):
-                    search_results = search_result_dict['data']
-                    real_code = search_results[0]['code']
-                    
+                    real_code = search_result_dict['data'][0]['code']
                     info = self.info(real_code, keyword=keyword)
                     if info:
-                        filename = get_download_filename(info, "nfo")
-                        return UtilNfo.make_nfo_movie(info, output="file", filename=filename)
+                        return UtilNfo.make_nfo_movie(info, output="file", filename=get_download_filename(info, "nfo"))
 
         elif sub == "yaml_download":
             keyword = req.args.get("code")
             call = req.args.get("call")
             if call in self.site_map:
-                db_prefix = f"{self.name}_{call}"
-                P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
-
                 SiteClass = self.site_map.get(call)
                 search_result_dict = SiteClass.search(keyword, manual=True)
-                
                 if search_result_dict and search_result_dict.get('ret') == 'success' and search_result_dict.get('data'):
-                    search_results = search_result_dict['data']
-                    real_code = search_results[0]['code']
-
+                    real_code = search_result_dict['data'][0]['code']
                     info = self.info(real_code, keyword=keyword)
                     if info:
-                        filename = get_download_filename(info, "yaml")
-                        return UtilNfo.make_yaml_movie(info, output="file", filename=filename)
+                        return UtilNfo.make_yaml_movie(info, output="file", filename=get_download_filename(info, "yaml"))
 
         elif sub == "image_download":
             try:                
@@ -977,25 +1083,17 @@ class ModuleWestern(PluginModuleBase):
                 image_type = req.args.get("type") 
                 
                 if call in self.site_map:
-                    db_prefix = f"{self.name}_{call}"
-                    P.ModelSetting.set(f"{db_prefix}_test_code", keyword)
-                    
                     SiteClass = self.site_map.get(call)
                     search_result_dict = SiteClass.search(keyword, manual=True)
-                    
                     if not search_result_dict or search_result_dict.get('ret') != 'success' or not search_result_dict.get('data'):
                         return "Search failed", 404
                     
-                    search_results = search_result_dict['data']
-                    real_code = search_results[0]['code']
-
+                    real_code = search_result_dict['data'][0]['code']
                     info = self.info(real_code, keyword=keyword)
-                    if not info:
-                        return "Info failed", 404
+                    if not info: return "Info failed", 404
 
                     target_url = None
                     target_aspect = 'poster' if image_type == 'p' else 'landscape'
-                    
                     for thumb in info.get('thumb', []):
                         if thumb.get('aspect') == target_aspect:
                             target_url = thumb.get('value')
@@ -1004,28 +1102,13 @@ class ModuleWestern(PluginModuleBase):
                     if not target_url and image_type == 'pl' and info.get('fanart'):
                         target_url = info['fanart'][0]
                     
-                    if not target_url:
-                        return f"Image type '{image_type}' not found in metadata", 404
+                    if not target_url: return f"Image '{image_type}' not found", 404
 
-                    try:
-                        img_res = requests.get(target_url, verify=False, timeout=30)
-                        if img_res.status_code != 200:
-                            return f"Failed to download image from {target_url}", 500
-                    except Exception as e_req:
-                        return f"Request error for {target_url}: {e_req}", 500
+                    img_res = requests.get(target_url, verify=False, timeout=30)
+                    if img_res.status_code != 200: return "Download failed", 500
 
-                    filename = get_download_filename(info, "jpg", suffix=image_type)
-                    
-                    return send_file(
-                        BytesIO(img_res.content),
-                        as_attachment=True,
-                        download_name=filename,
-                        mimetype='image/jpeg'
-                    )
-                
+                    return send_file(BytesIO(img_res.content), as_attachment=True, download_name=get_download_filename(info, "jpg", suffix=image_type), mimetype='image/jpeg')
             except Exception as e:
-                logger.error(f"Image download error: {e}")
-                logger.error(traceback.format_exc())
                 return f"Error: {e}", 500
 
         elif sub == "db_download":
@@ -1038,21 +1121,14 @@ class ModuleWestern(PluginModuleBase):
 
         return None
 
-
     def _api_user_image_update(self, req):
-        ret = {
-            'ret': 'success', 'msg': '', 'total_input': 0, 'updated_count': 0,
-            'skipped_count': 0, 'not_found_count': 0, 'updated_items': [],
-            'not_found_files': [], 'errors': []
-        }
+        ret = {'ret': 'success', 'msg': '', 'total_input': 0, 'updated_count': 0, 'errors': []}
         try:
-            from .model_metadata_db import ModelAvMetadata, av_db_session
             files = []
             if req.is_json:
                 json_body = req.get_json(silent=True) or {}
                 if isinstance(json_body, list): files = json_body
-                elif isinstance(json_body, dict):
-                    files = json_body.get('files') or json_body.get('filenames') or []
+                elif isinstance(json_body, dict): files = json_body.get('files') or []
             
             if not files:
                 raw_files = req.form.get('files') or req.args.get('files')
@@ -1063,104 +1139,30 @@ class ModuleWestern(PluginModuleBase):
                     except:
                         files = [f.strip() for f in re.split(r'[\n,]', raw_files) if f.strip()]
 
-            if not files:
-                ret['ret'] = 'warning'
-                ret['msg'] = '업데이트할 파일 목록(files)이 전달되지 않았습니다.'
-                return jsonify(ret), 200
-
             ret['total_input'] = len(files)
-            batch_size = 100
-            processed_in_batch = 0
+            sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(self.category)
+            from .mod_meta_db import MetaItem
+            try:
+                for f in files:
+                    clean_name = os.path.basename(f).strip()
+                    stem = re.split(r'_(?:p|pl)(?:_user)?\.', clean_name, flags=re.I)[0]
+                    if not stem: continue
+                    meta = sess.query(MetaItem).filter(
+                        MetaItem.category == std_cat,
+                        or_(MetaItem.originaltitle.ilike(stem), MetaItem.code.ilike(stem))
+                    ).first()
+                    if meta:
+                        res, _ = MetaImageUtil.sync_single_record_disk_images(meta)
+                        if res == 'updated': ret['updated_count'] += 1
+                sess.commit()
+                ModuleMetaDb.checkpoint_wal()
+            finally:
+                sess.remove()
 
-            for filename in files:
-                if not filename or not isinstance(filename, str): continue
-                res, code, detail = ModelAvMetadata.update_user_image_by_filename(filename)
-                
-                if res == 'updated':
-                    ret['updated_count'] += 1
-                    ret['updated_items'].append(detail)
-                    processed_in_batch += 1
-                elif res == 'not_found':
-                    ret['not_found_count'] += 1
-                    ret['not_found_files'].append(filename)
-                elif res == 'skipped':
-                    ret['skipped_count'] += 1
-                elif res == 'error':
-                    ret['errors'].append({'file': filename, 'error': detail})
-
-                if processed_in_batch >= batch_size:
-                    av_db_session.commit()
-                    processed_in_batch = 0
-
-            if processed_in_batch > 0:
-                av_db_session.commit()
-
-            ModelAvMetadata.checkpoint_wal()
-
-            ret['msg'] = f"총 {len(files)}개 중 {ret['updated_count']}개 DB 레코드 업데이트 완료"
-            logger.info(f"[{self.name}] User Image API: {ret['msg']}")
             return jsonify(ret), 200
-
         except Exception as e:
-            logger.error(f"[{self.name}] user_image_update API Exception: {e}")
-            ret['ret'] = 'error'
-            ret['code'] = 'INTERNAL_EXCEPTION'
-            ret['msg'] = str(e)
+            ret['ret'] = 'error'; ret['msg'] = str(e)
             return jsonify(ret), 200
-
-
-    def _run_enrichment_worker(self, delay):
-        from .model_metadata_db import ModelAvMetadata, av_db_session
-        import time
-
-        try:
-            records = av_db_session.query(ModelAvMetadata).filter_by(category=self.category).all()
-            targets = [r for r in records if not r.json_data.get('thumb')]
-
-            self.enrich_status.update({
-                'is_running': True, 'status': '작업 중', 'total': len(targets),
-                'current': 0, 'success': 0, 'fail': 0, 'current_code': '', 'stop_flag': False
-            })
-
-            logger.info(f"[{self.name}] 일괄 미디어 채우기 시작 - 대상: {len(targets)}건, 딜레이: {delay}초")
-
-            if not targets:
-                self.enrich_status.update({'is_running': False, 'status': '채울 항목 없음 (완료)'})
-                return
-
-            for idx, record in enumerate(targets):
-                if self.enrich_status['stop_flag']:
-                    logger.info(f"[{self.name}] 일괄 작업이 사용자에 의해 중단되었습니다.")
-                    self.enrich_status['status'] = '중단됨'
-                    break
-
-                code = record.code
-                self.enrich_status['current'] = idx + 1
-                self.enrich_status['current_code'] = record.originaltitle
-
-                try:
-                    res = self.info(code, skip_trans=True)
-                    if res and res.get('thumb'):
-                        self.enrich_status['success'] += 1
-                    else:
-                        self.enrich_status['fail'] += 1
-                except Exception as e_item:
-                    logger.error(f"[{self.name}] Enrichment 실패 ({code}): {e_item}")
-                    self.enrich_status['fail'] += 1
-
-                time.sleep(delay)
-
-            if not self.enrich_status['stop_flag']:
-                self.enrich_status['status'] = '완료'
-                logger.info(f"[{self.name}] 일괄 작업 완료 (성공: {self.enrich_status['success']}, 실패: {self.enrich_status['fail']})")
-
-            ModelAvMetadata.checkpoint_wal()
-
-        except Exception as e_main:
-            logger.error(f"[{self.name}] 일괄 작업 치명적 오류: {e_main}")
-            self.enrich_status['status'] = f'오류 발생: {e_main}'
-        finally:
-            self.enrich_status['is_running'] = False
 
     # endregion API & DOWNLOADS
     ################################################

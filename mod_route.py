@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import traceback
 from urllib.parse import unquote_plus
@@ -30,7 +31,11 @@ class ModuleRoute(PluginModuleBase):
             if not rule_exists:
                 def serve_global_images(filename):
                     try:
-                        image_root_dir = os.path.join(path_data, 'images')
+                        image_root_dir = (
+                            P.ModelSetting.get('jav_censored_image_server_local_path') or
+                            P.ModelSetting.get('western_image_server_local_path') or
+                            os.path.join(path_data, 'images')
+                        )
                         abs_target_path = os.path.abspath(os.path.join(image_root_dir, filename))
                         
                         if os.path.commonpath([image_root_dir, abs_target_path]) == image_root_dir:
@@ -45,9 +50,107 @@ class ModuleRoute(PluginModuleBase):
                         abort(500)
                 
                 app.add_url_rule('/images/<path:filename>', 'serve_global_images', serve_global_images, methods=['GET'])
-                logger.info("[Metadata] Successfully injected global route '/images' into Flask Core.")
+                logger.debug("[Metadata] Successfully injected global route '/images' into Flask Core.")
             else:
                 logger.debug("[Metadata] Global route '/images' already exists in Flask Core. Injection skipped.")
+
+            person_api_rule = f'/{P.package_name}/person_api'
+            person_api_endpoint = f'{P.package_name}_person_api'
+            person_api_exists = False
+            for rule in app.url_map.iter_rules():
+                if rule.rule == person_api_rule:
+                    person_api_exists = True
+                    break
+
+            if not person_api_exists:
+                def person_api():
+                    try:
+                        from .mod_meta_db import ModuleMetaDb
+
+                        command = request.form.get('command')
+                        search_domain = request.form.get('search_domain')
+
+                        # 목록 조회 명령 또는 인물 카테고리 요청 처리
+                        if command in ['web_list', 'list', 'person_web_list'] or search_domain is not None or request.form.get('category') == 'PERSON':
+                            default_domain = search_domain or 'ALL'
+                            return current_app.response_class(
+                                response=json.dumps(ModuleMetaDb.person_web_list(request, default_domain=default_domain), ensure_ascii=False),
+                                status=200,
+                                mimetype='application/json'
+                            )
+
+                        # 인물 및 메타 DB 관련 모든 커맨드 동적 위임
+                        meta_module = P.get_module('meta_db')
+                        if meta_module is None:
+                            return current_app.response_class(
+                                response=json.dumps({'ret': 'error', 'msg': 'meta_db module not available'}, ensure_ascii=False),
+                                status=500,
+                                mimetype='application/json'
+                            )
+
+                        res = meta_module.process_command(
+                            command,
+                            request.form.get('arg1'),
+                            request.form.get('arg2'),
+                            request.form.get('arg3'),
+                            request
+                        )
+                        if res is not None:
+                            return res
+
+                        return current_app.response_class(
+                            response=json.dumps({'ret': 'error', 'msg': f'Unknown person command: {command}'}, ensure_ascii=False),
+                            status=400,
+                            mimetype='application/json'
+                        )
+                    except Exception as e:
+                        logger.error(f"[Metadata Person API] Error: {e}")
+                        logger.error(traceback.format_exc())
+                        return current_app.response_class(
+                            response=json.dumps({'ret': 'error', 'msg': str(e)}, ensure_ascii=False),
+                            status=500,
+                            mimetype='application/json'
+                        )
+
+                app.add_url_rule(person_api_rule, person_api_endpoint, person_api, methods=['POST'])
+                logger.debug(f"[Metadata] Successfully injected route '{person_api_rule}'.")
+
+            else:
+                logger.debug(f"[Metadata] Route '{person_api_rule}' already exists. Injection skipped.")
+
+            meta_api_rule = f'/{P.package_name}/meta_api'
+            meta_api_endpoint = f'{P.package_name}_meta_api'
+            meta_api_exists = any(rule.rule == meta_api_rule for rule in app.url_map.iter_rules())
+
+            if not meta_api_exists:
+                def meta_api():
+                    try:
+                        from .mod_meta_db import ModuleMetaDb
+
+                        return current_app.response_class(
+                            response=json.dumps(
+                                ModuleMetaDb.web_list(
+                                    request,
+                                    category=request.form.get('category') or 'JAV_CEN'
+                                ),
+                                ensure_ascii=False
+                            ),
+                            status=200,
+                            mimetype='application/json'
+                        )
+                    except Exception as e:
+                        logger.error(f"[Metadata Meta API] Error: {e}")
+                        logger.error(traceback.format_exc())
+                        return current_app.response_class(
+                            response=json.dumps({'success': False, 'paging': None, 'list': [], 'msg': str(e)}, ensure_ascii=False),
+                            status=500,
+                            mimetype='application/json'
+                        )
+
+                app.add_url_rule(meta_api_rule, meta_api_endpoint, meta_api, methods=['POST'])
+                logger.debug(f"[Metadata] Successfully injected route '{meta_api_rule}'.")
+            else:
+                logger.debug(f"[Metadata] Route '{meta_api_rule}' already exists. Injection skipped.")
                 
         except Exception as e_inject:
             logger.error(f"[Metadata] Failed to inject global image route: {e_inject}")

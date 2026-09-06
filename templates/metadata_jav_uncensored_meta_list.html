@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['btn_delete_selected', '선택항목 삭제'], ['btn_db_clear', '현재 카테고리 DB 초기화'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']]) }}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('.static', filename='meta_db.css') }}">
+
+<div>
+  <form id="form_search" class="form-inline" style="text-align:left" onsubmit="return false;">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-7">
+          <div class="input-group input-group-sm">
+            <select id="search_site" name="search_site" class="form-control form-control-sm">
+              <option value="all">전체 사이트</option>
+              <option value="1pondo">1Pondo</option>
+              <option value="10musume">10Musume</option>
+              <option value="paco">Pacopacomama</option>
+              <option value="heyzo">Heyzo</option>
+              <option value="carib">Caribbean</option>
+              <option value="fc2com">FC2</option>
+            </select>
+            <select id="search_status" name="search_status" class="form-control form-control-sm">
+              <option value="all">전체 상태</option>
+              <option value="no_poster">포스터 누락</option>
+              <option value="no_plot">줄거리 누락</option>
+              <option value="complete">정상 완료</option>
+            </select>
+            <select id="search_order" name="search_order" class="form-control form-control-sm">
+              <option value="desc">최근 생성순</option>
+              <option value="asc">과거 생성순</option>
+              <option value="code_asc">품번순 (A-Z)</option>
+              <option value="code_desc">품번 역순 (Z-A)</option>
+            </select>
+            <select id="page_size" name="page_size" class="form-control form-control-sm">
+              <option value="10">10개씩</option>
+              <option value="25">25개씩</option>
+              <option value="50">50개씩</option>
+              <option value="100">100개씩</option>
+            </select>
+          </div>
+        </span>
+        <span class="col-md-5 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="품번 또는 제목 검색" aria-label="Search">
+          <button id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+
+  <div id='page1'></div>
+  {{ macros.m_hr_head_top() }}
+  <div class="row align-items-center text-center font-weight-bold py-1 px-1">
+    <div class="col-sm-2 d-flex align-items-center justify-content-center px-1">
+      <input type="checkbox" id="check_all_meta" class="mr-2" style="cursor: pointer; transform: scale(1.4);" title="전체 선택 / 해제">
+      <span>포스터</span>
+    </div>
+    <div class="col-sm-8 pl-1 pr-2 text-center">메타데이터 정보</div>
+    <div class="col-sm-2 pl-1 pr-2 text-center">관리</div>
+  </div>
+  {{ macros.m_hr_head_bottom() }}
+  <div id="list_div" data-list-type="meta" data-list-category="JAV_UNCEN"></div>
+  <div id='page2'></div>
+</div>
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "jav_uncensored";
+</script>
+<script src="{{ url_for('.static', filename='common.js') }}"></script>
+<script src="{{ url_for('.static', filename='common_jav.js') }}"></script>
+<script src="{{ url_for('.static', filename='main_db.js') }}"></script>
+{% endblock %}

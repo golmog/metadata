@@ -1,0 +1,469 @@
+/* static/meta_db.css */
+
+#btn_toggle_setting.collapsed .text-expanded { display: none; }
+#btn_toggle_setting.collapsed .text-collapsed { display: inline; }
+#btn_toggle_setting:not(.collapsed) .text-expanded { display: inline; }
+#btn_toggle_setting:not(.collapsed) .text-collapsed { display: none; }
+
+/* 이미지 크롭 모달 기본 다이얼로그 및 레이아웃 */
+#imageCropModal .modal-dialog {
+  max-width: 950px;
+  width: 95%;
+  margin: 1.2rem auto;
+}
+
+#imageCropModal .modal-content {
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+#imageCropModal .crop-view-wrapper {
+  width: 100%;
+  height: 540px;
+  background: #0a0a0a;
+  border-radius: 4px;
+  border: 1px solid #333;
+  overflow: hidden;
+}
+
+#imageCropModal .btn-group-sm > .btn {
+  font-size: 0.8rem !important;
+  padding: 0.25rem 0.55rem !important;
+}
+
+#crop_url_bar {
+  background-color: #1a1d21 !important;
+  border: 1px solid #30363d !important;
+}
+
+#crop_url_bar input.form-control {
+  background-color: #0d1117 !important;
+  color: #58a6ff !important;
+  border: 1px solid #30363d !important;
+}
+
+#crop_url_bar input.form-control:focus {
+  background-color: #0d1117 !important;
+  border-color: #1f6feb !important;
+  box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.3) !important;
+}
+
+/* 비디오 미리보기 모달 자유 리사이즈 스타일 */
+#videoPreviewModal .modal-dialog {
+  max-width: none !important;
+  width: auto !important;
+  margin: auto !important;
+}
+
+#videoPreviewModal .modal-content {
+  min-width: 380px !important;
+  min-height: 260px !important;
+  max-width: 96vw !important;
+  max-height: 94vh !important;
+  resize: both !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* 이미지 및 썸네일 부드러운 전환 효과 */
+#preview_modal_img, 
+#p_modal_preview_img, 
+#enlarged_image {
+  transition: opacity 0.22s ease-in-out !important;
+}
+
+.modal-image-spinner {
+  background: rgba(15, 18, 22, 0.65) !important;
+  border-radius: 50% !important;
+  padding: 8px !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(3px) !important;
+  pointer-events: none !important;
+}
+
+.enlarge-img, .enlarge-person-photo {
+  max-height: 150px;
+  max-width: 100%;
+  object-fit: contain;
+  object-position: top;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
+  cursor: zoom-in;
+}
+
+.no-image-box {
+  height: 130px;
+  font-size: 0.85em;
+  border: 1px dashed rgba(128, 128, 128, 0.3);
+}
+
+/* 드래그 및 리사이즈 지원 모달 공통 스타일 */
+#dbEditModal .modal-dialog,
+#personEditModal .modal-dialog,
+#actorSearchModal .modal-dialog,
+.dynamic-modal-clone .modal-dialog {
+  transition: none !important;
+  transform: none !important;
+}
+
+#dbEditModal .modal-header, 
+#personEditModal .modal-header, 
+#actorSearchModal .modal-header,
+.dynamic-modal-clone .modal-header {
+  cursor: move;
+  user-select: none;
+}
+
+#dbEditModal .modal-content, 
+.db-modal-content {
+  resize: both;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 860px;
+  min-height: 560px;
+  max-height: 90vh;
+}
+
+#personEditModal .modal-content, 
+.person-modal-content {
+  resize: both;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 760px;
+  min-height: 520px;
+  max-height: 90vh;
+}
+
+#actorSearchModal .modal-content {
+  resize: both;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 620px;
+  min-height: 500px;
+  max-height: 90vh;
+}
+
+#dbEditModal .modal-header,
+#personEditModal .modal-header,
+#actorSearchModal .modal-header,
+.dynamic-modal-clone .modal-header {
+  flex-shrink: 0 !important;
+  z-index: 10;
+}
+
+#dbEditModal .modal-body,
+#personEditModal .modal-body,
+#actorSearchModal .modal-body,
+.dynamic-modal-clone .modal-body {
+  overflow-y: auto !important;
+  flex: 1 1 auto !important;
+  min-height: 0;
+}
+
+#dbEditModal .modal-footer,
+#personEditModal .modal-footer,
+#actorSearchModal .modal-footer,
+.dynamic-modal-clone .modal-footer {
+  flex-shrink: 0 !important;
+  z-index: 10;
+}
+
+/* 클릭 가능한 배우 및 소장 출연작 뱃지 인터랙션 */
+.actor-badge-clickable {
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.actor-badge-clickable:hover {
+  filter: brightness(1.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 123, 255, 0.4);
+}
+
+.work-badge-clickable {
+  cursor: pointer;
+  font-size: 0.82rem !important;
+  line-height: 1.35;
+  transition: all 0.15s ease-in-out;
+  user-select: none;
+}
+
+.work-badge-clickable:hover {
+  filter: brightness(1.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(40, 167, 69, 0.4);
+}
+
+#p_modal_works_container {
+  max-height: 120px;
+  min-height: 32px;
+  overflow-y: auto;
+}
+
+/* 이미지 확대 라이트박스 네비게이션 스타일 */
+.enlarge-nav-wrapper {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  height: auto;
+}
+
+.enlarge-nav-wrapper.nav-hidden {
+  display: none !important;
+}
+
+.enlarge-side-btn {
+  width: 56px !important;
+  height: 100% !important;
+  min-height: 100px !important;
+  background: rgba(20, 24, 30, 0.45) !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  backdrop-filter: blur(4px);
+  transition: all 0.2s ease-in-out !important;
+  user-select: none !important;
+  padding: 0 !important;
+}
+
+.enlarge-side-icon {
+  font-size: 3rem;
+  line-height: 1;
+  font-weight: 300;
+  transition: transform 0.2s ease-in-out;
+}
+
+.enlarge-side-btn:hover {
+  background: rgba(0, 123, 255, 0.75) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 16px rgba(0, 123, 255, 0.5) !important;
+}
+
+#btn_enlarge_prev:hover .enlarge-side-icon {
+  transform: translateX(-4px);
+}
+
+#btn_enlarge_next:hover .enlarge-side-icon {
+  transform: translateX(4px);
+}
+
+/* 드롭다운 및 모달 푸터 드롭업 스타일 */
+#list_div .dropdown,
+.modal-footer .dropdown {
+  position: relative !important;
+}
+
+/* 모달 푸터 내부 드롭다운 메뉴: 상단 방향(Dropup) 열림 및 마우스 이동 영역 밀착 */
+.modal-footer .dropdown-menu {
+  display: none;
+  position: absolute !important;
+  top: auto !important;
+  bottom: 100% !important;
+  right: auto !important;
+  left: 0 !important;
+  float: none !important;
+  background-color: #23272d !important;
+  border: 1px solid #495057 !important;
+  border-radius: 4px !important;
+  box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.75) !important;
+  z-index: 1065 !important;
+  min-width: 210px !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding: 0.3rem 0 !important;
+}
+
+/* 버튼과 서브 메뉴 사이 공백을 채워 마우스 이동 시 호버 풀림을 방지하는 투명 브릿지 */
+.modal-footer .dropdown-menu::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 12px;
+  background: transparent;
+  pointer-events: auto;
+}
+
+/* 목록 드롭다운 메뉴: 하단 방향(Dropdown) 열림 */
+#list_div .dropdown-menu {
+  display: none;
+  position: absolute !important;
+  top: 100% !important;
+  bottom: auto !important;
+  right: 0 !important;
+  left: auto !important;
+  float: none !important;
+  background-color: #23272d !important;
+  border: 1px solid #495057 !important;
+  border-radius: 4px !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7) !important;
+  z-index: 1050 !important;
+  min-width: 210px !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding: 0.3rem 0 !important;
+}
+
+/* 목록은 클릭 시 활성화, 모달은 마우스 롤오버(:hover) 및 클릭 시 모두 팝업 활성화 */
+#list_div .dropdown.show > .dropdown-menu,
+#list_div .dropdown.open > .dropdown-menu,
+#list_div .dropdown-menu.show,
+#list_div .dropdown-menu.open,
+.modal-footer .dropdown:hover > .dropdown-menu,
+.modal-footer .dropdown.show > .dropdown-menu,
+.modal-footer .dropdown.open > .dropdown-menu,
+.modal-footer .dropdown-menu.show,
+.modal-footer .dropdown-menu.open {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+#list_div .dropdown-item,
+.modal-footer .dropdown-item {
+  display: block !important;
+  width: 100% !important;
+  clear: both !important;
+  text-align: left !important;
+  color: #e9ecef !important;
+  font-size: 0.85rem !important;
+  padding: 0.5rem 0.9rem !important;
+  background: transparent !important;
+  border: 0 !important;
+  text-decoration: none !important;
+  cursor: pointer !important;
+  transition: background 0.15s ease-in-out;
+}
+
+#list_div .dropdown-item:hover, 
+#list_div .dropdown-item:focus,
+.modal-footer .dropdown-item:hover,
+.modal-footer .dropdown-item:focus {
+  background-color: #343a40 !important;
+  color: #ffffff !important;
+}
+
+/* 클릭 가능한 타이틀 및 복사 뱃지 인터랙션 스타일 */
+.item-title-clickable,
+.person-name-clickable {
+  transition: color 0.15s ease-in-out, filter 0.15s ease-in-out;
+  user-select: text;
+}
+
+.item-title-clickable:hover,
+.person-name-clickable:hover {
+  text-decoration: underline !important;
+  filter: brightness(1.25);
+}
+
+/* 기호(하이픈) 및 단어 경계 우선 줄바꿈 뱃지 스타일 */
+.badge-copy-code {
+  transition: transform 0.12s ease-in-out, filter 0.12s ease-in-out, box-shadow 0.12s ease-in-out;
+  user-select: none;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+  max-width: 100%;
+  display: inline-block;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.badge-copy-code:hover {
+  filter: brightness(1.3);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 123, 255, 0.45);
+}
+
+.badge-copy-code:active {
+  transform: translateY(0);
+}
+
+/* 목록 내 트레일러 재생 뱃지 버튼 인터랙션 스타일 */
+.btn-play-trailer-modal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.btn-play-trailer-modal:hover {
+  filter: brightness(1.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(23, 162, 184, 0.4);
+}
+
+.btn-play-trailer-modal:active {
+  transform: translateY(0);
+}
+
+/* PostgreSQL 제어 버튼 그룹 전용 오버라이드 */
+#btn_test_db_conn {
+  font-size: 0.88rem !important;
+  padding: 0.35rem 0.85rem !important;
+  font-weight: bold !important;
+  margin-right: 8px !important;
+}
+
+/* PostgreSQL 원클릭 자동 세팅 버튼 강조 스타일 */
+#btn_open_pg_admin_modal {
+  background: linear-gradient(135deg, #17a2b8, #007bff) !important;
+  color: #ffffff !important;
+  border: none !important;
+  font-size: 0.88rem !important;
+  font-weight: bold !important;
+  padding: 0.35rem 1rem !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 6px rgba(0, 123, 255, 0.4) !important;
+  transition: all 0.2s ease-in-out !important;
+}
+
+#btn_open_pg_admin_modal:hover {
+  filter: brightness(1.15) !important;
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.6) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* 목록 및 카드 스켈레톤 UI 스타일 */
+.skeleton-box {
+  background-color: #1e2227;
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.skeleton-box::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.04) 20%,
+    rgba(255, 255, 255, 0.08) 60%,
+    rgba(255, 255, 255, 0)
+  );
+  animation: skeleton-shimmer 1.8s infinite;
+  content: '';
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
