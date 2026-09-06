@@ -65,7 +65,13 @@
     </div>
 
     {{ macros.m_hr() }}
-    {{ macros.info_text('JAV Uncensored', '이미지 처리 및 서버 설정', desc=['이미지 URL 처리 방법(기본/디스코드/이미지 서버), 이미지 서버 URL, 로컬 저장 경로 Root 등은 [JAV Censored] 설정을 공통으로 공유합니다.', '이미지 서버 모드 사용 시, Uncensored 항목은 고정된 폴더 포맷(/jav/uncen/{label})으로 자동 저장 및 라우팅됩니다.']) }}
+    {{ macros.setting_radio_with_value('jav_uncensored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_uncensored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 이미지 서버 기본 설정(URL, 로컬 Root)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
+
+    <div id="jav_uncensored_use_image_server_div" class="collapse">
+      {{ macros.setting_input_text('jav_uncensored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_uncensored_image_server_save_format'], desc=['사용가능: {label}, {label_1}, {year}', '기본값: /jav/uncen/{label}']) }}
+
+      {{ macros.setting_radio_with_value('jav_uncensored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_uncensored_image_save_mode'], desc=['이미지 서버 사용 시에만 적용됩니다.']) }}
+    </div>
 
   </div><!--tab-content-->
 </form>
@@ -85,9 +91,20 @@ $(document).ready(function(){
   use_collapse("jav_uncensored_fc2com_use_fc2_com");
   use_collapse('jav_uncensored_fc2com_use_javten_web');
   use_collapse("jav_uncensored_fc2com_use_javten_proxy");
-  use_collapse("jav_uncensored_fc2com_use_javten_db");
-  use_collapse("jav_uncensored_fc2com_use_image_server_url");
+  use_image_server("{{arg['jav_uncensored_image_mode']}}");
 });
+
+$('input[type=radio][name=jav_uncensored_image_mode]').change(function() {
+  use_image_server(this.value);
+});
+
+function use_image_server(value) {
+  if (value == 'image_server') {
+    $('#jav_uncensored_use_image_server_div').collapse('show');
+  } else {
+    $('#jav_uncensored_use_image_server_div').collapse('hide');
+  }
+}
 
 $("body").on('click', 'button[id^="jav_uncensored_"][id$="_btn"]', function(e){
   e.preventDefault();
@@ -120,7 +137,6 @@ $("body").on('click', 'button[id^="jav_uncensored_"][id$="_btn"]', function(e){
   }
 });
 
-
 $('input[id$="_test_code"]').on('keypress', function(e) {
   if (e.which === 13) {
     e.preventDefault();
@@ -140,42 +156,6 @@ $('#jav_uncensored_fc2com_use_javten_web').change(function() {
 
 $('#jav_uncensored_fc2com_use_javten_proxy').change(function() {
   use_collapse('jav_uncensored_fc2com_use_javten_proxy');
-});
-
-$('#jav_uncensored_fc2com_use_javten_db').change(function() {
-  use_collapse('jav_uncensored_fc2com_use_javten_db');
-});
-
-$('#jav_uncensored_fc2com_use_image_server_url').change(function() {
-  use_collapse('jav_uncensored_fc2com_use_image_server_url');
-});
-
-
-$("body").on('click', '#btn_refresh_gds_path', function(e){
-  e.preventDefault();
-  var source_path = $('#jav_uncensored_fc2com_javten_db_gds_path').val();
-  if(!source_path || !source_path.trim()) { notify('GDS 경로를 입력하세요.', 'warning'); return; }
-  
-  globalSendCommand('refresh_gds_path', source_path, null, null, function(result){
-  });
-});
-
-$("body").on('click', '#btn_check_javten_db_version', function(e){
-  e.preventDefault();
-  var source_path = $('#jav_uncensored_fc2com_javten_db_gds_path').val();
-  if(!source_path || !source_path.trim()) { notify('GDS 경로를 입력하세요.', 'warning'); return; 
-  }
-
-  globalSendCommand('check_javten_db_version', source_path);
-});
-
-$("body").on('click', '#btn_copy_javten_db', function(e){
-  e.preventDefault();
-  var source_path = $('#jav_uncensored_fc2com_javten_db_gds_path').val();
-  if(!source_path) { notify('경로를 입력하세요', 'warning'); return; }
-  
-  globalSendCommand('copy_javten_db', source_path, null, null, function(result){
-  });
 });
 
 </script>

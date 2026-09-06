@@ -204,8 +204,8 @@ class ModuleKtv(PluginModuleBase):
                             continue
                         if tmps[0] == show['title']:
                             for actor in show['actor']:
-                                if actor['name'] == tmps[1]:
-                                    actor['name'] = tmps[2]
+                                if (actor.get('name_ko') or actor.get('name_org')) == tmps[1]:
+                                    actor['name_ko'] = tmps[2]
                                     break
                 except Exception as e:
                     P.logger.error(f"Exception:{str(e)}")

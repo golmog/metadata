@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['btn_person_db_clear', '배우 DB 초기화'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+{{ macros.m_hr() }}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('.static', filename='meta_db.css') }}">
+
+<div>
+  <form id="form_search_person" class="form-inline" style="text-align:left" onsubmit="return false;">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-7">
+          <div class="input-group input-group-sm">
+            <input type="hidden" id="search_category" name="category" value="PERSON">
+            <input type="hidden" id="search_domain" name="search_domain" value="JAV">
+            <select id="search_status" name="search_status" class="form-control form-control-sm">
+              <option value="all">전체 상태</option>
+              <option value="has_photo">사진 등록</option>
+              <option value="no_photo">사진 누락</option>
+              <option value="merged_only">중복 통합됨</option>
+            </select>
+            <select id="search_order" name="search_order" class="form-control form-control-sm">
+              <option value="desc">최근 등록순</option>
+              <option value="asc">과거 등록순</option>
+              <option value="match">정확도/일치순</option>
+              <option value="id_asc">코드/ID 번호순 (1-9)</option>
+              <option value="id_desc">코드/ID 번호순 (9-1)</option>
+              <option value="name_asc">이름순 (ㄱ-ㅎ/A-Z)</option>
+              <option value="name_desc">이름 역순 (ㅎ-ㄱ/Z-A)</option>
+            </select>
+            <select id="page_size" name="page_size" class="form-control form-control-sm">
+              <option value="30" selected>30개씩</option>
+              <option value="60">60개씩</option>
+              <option value="90">90개씩</option>
+            </select>
+          </div>
+        </span>
+        <span class="col-md-5 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="이름, 원문명, 별칭 검색" aria-label="Search">
+          <button type="button" id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button type="button" id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+
+  <div id='page1'></div>
+  {{ macros.m_hr() }}
+  <div id="list_div" class="row px-2" data-list-type="person" data-list-domain="JAV"></div>
+  {{ macros.m_hr() }}
+  <div id='page2'></div>
+</div>
+
+<script type="text/javascript">
+  var package_name = "{{arg['package_name'] }}";
+  var sub = "jav_uncensored";
+</script>
+<script src="{{ url_for('.static', filename='common.js') }}"></script>
+<script src="{{ url_for('.static', filename='common_jav.js') }}"></script>
+<script src="{{ url_for('.static', filename='main_db.js') }}"></script>
+{% endblock %}
