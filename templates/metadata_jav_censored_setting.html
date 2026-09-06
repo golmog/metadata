@@ -89,11 +89,15 @@
     
     {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc='예: /data/images') }}
 
+    {{ macros.setting_radio_with_value('jav_censored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_censored_image_save_mode'], desc=['이미지 서버에 파일을 저장할 때 포맷 변환 방식을 지정합니다. (기본: JPEG 변환 저장, 모든 카테고리 공통 적용)']) }}
+
     {{ macros.setting_input_text('jav_censored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
 
-    {{ macros.setting_radio_with_value('jav_censored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_censored_image_save_mode'], desc=['이미지 서버 사용 시에만 적용됩니다.']) }}
+    {{ macros.setting_radio_with_value('jav_censored_actor_image_mode', '배우 이미지 소스', [['gds', 'GDS 구글 File ID'], ['image_server', '이미지 서버'], ['site', '사이트 원본 URL']], value=(arg.get('jav_censored_actor_image_mode') or 'gds'), desc=['GDS 구글 File ID: 배포 DB의 구글 드라이브 이미지를 대표 사진으로 연결합니다. (기본값)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.', '사이트 원본 URL: 사이트 원본 이미지를 직접 연결합니다. (※ 사이트 차단 가능성이 있으므로 주의)']) }}
 
-    {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 경로를 설정합니다. (예: /jav/actors)']) }}
+    <div id="jav_censored_actor_image_server_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 경로를 설정합니다. (예: /jav/actors)']) }}
+    </div>
 
     {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일이 있어도 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
   </div>
@@ -154,11 +158,24 @@
 <script type="text/javascript">
 $(document).ready(function(){
   use_image_server("{{arg['jav_censored_image_mode']}}");
+  use_actor_image_mode("{{arg['jav_censored_actor_image_mode']}}");
   use_collapse("jav_censored_use_smart_crop");
   use_collapse("jav_censored_use_pose_landmarker");
   use_collapse("jav_censored_mgs_label_priority");
   use_collapse("jav_censored_use_ollama");
 });
+
+$('input[type=radio][name=jav_censored_actor_image_mode]').change(function() {
+  use_actor_image_mode(this.value);
+});
+
+function use_actor_image_mode(value) {
+  if (value === 'image_server') {
+    $('#jav_censored_actor_image_server_div').collapse('show');
+  } else {
+    $('#jav_censored_actor_image_server_div').collapse('hide');
+  }
+}
 
 $('#jav_censored_use_smart_crop').change(function() {
   use_collapse('jav_censored_use_smart_crop');
