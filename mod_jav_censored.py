@@ -918,7 +918,7 @@ class ModuleJavCensored(PluginModuleBase):
         
         # 1. DB 선행 검색 (전역 meta_db_use 기준)
         has_db_perfect_match = False
-        if use_db and P.ModelSetting.get_bool("meta_db_use"):
+        if use_db and P.ModelSetting.get_bool("meta_db_use") and not manual:
             try:
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, keyword)
                 if valid_db_records:
@@ -956,9 +956,10 @@ class ModuleJavCensored(PluginModuleBase):
                         item_dict['is_priority_label_site'] = True 
                         all_results.append(item_dict)
 
-                    if any(x.get('original_score', 0) >= 99 for x in all_results):
+                    # 오직 품번과 레이블이 100% 완벽히 일치(100점)할 때만 외부 검색 생략
+                    if any(x.get('original_score', 0) >= 100 for x in all_results):
                         has_db_perfect_match = True
-                        logger.info(f"[{self.name}] DB 선행 검색 매칭 확인 ({len(all_results)}건)")
+                        logger.info(f"[{self.name}] DB 선행 검색 100점 완벽 매칭 확인 ({len(all_results)}건)")
 
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
@@ -1032,6 +1033,15 @@ class ModuleJavCensored(PluginModuleBase):
                         item['site_key'] = item.get("site_key", site_key)
                         item['is_priority_label_site'] = (special_priority_site and site_key == special_priority_site)
                         if 'code' in item: self.keyword_cache.set(item['code'], keyword)
+
+                        # 수동 검색 시 DB에 이미 존재하는 레코드인지 확인하여 뱃지 표시 부여
+                        if manual and use_db and P.ModelSetting.get_bool("meta_db_use") and item.get('code'):
+                            if ModuleMetaDb.get_metadata(item['code'], category=self.category):
+                                item['is_db_cached'] = True
+                                if not item.get('title', '').startswith('📁'):
+                                    item['title'] = f"📁 [DB] {item.get('title', '')}"
+                                    item['title_ko'] = item['title']
+
                         results.append(item)
                 return results
 
@@ -1236,10 +1246,21 @@ class ModuleJavCensored(PluginModuleBase):
             logger.error("처리할 수 없는 코드: code=%s", code)
             return None
 
+        # 시스템 코드(CD...)로 직접 인포 요청이 인입되었을 때 실제 품번 키워드 복원
         if keyword is None:
             keyword = self.keyword_cache.get(code)
             if keyword:
                 logger.debug(f"info: Found keyword '{keyword}' in cache for code '{code}'.")
+            else:
+                raw_cid = code[2:]
+                from support_site import SiteAvBase
+                parsed_ui, _, _ = SiteAvBase._parse_ui_code(raw_cid)
+                keyword = parsed_ui or raw_cid
+                try:
+                    self.keyword_cache.set(code, keyword)
+                except AttributeError:
+                    self.keyword_cache[code] = keyword
+                logger.debug(f"info: Restored keyword '{keyword}' from system code '{code}'.")
 
         cached_json = None
         ps_url = opts.get('ps_url')
@@ -1297,9 +1318,11 @@ class ModuleJavCensored(PluginModuleBase):
                     
                     return MetaResponseUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
+        # 복원된 품번 키워드로 사이트 검색을 수행하여 썸네일 안전 탐색
         if not ps_url and site != 'javdb':
             site_class = self.site_map.get(site)
-            search_results = site_class.search(keyword or code, do_trans=False, manual=False) if site_class else []
+            search_res = site_class.search(keyword, do_trans=False, manual=False) if site_class else {}
+            search_results = search_res.get('data', []) if isinstance(search_res, dict) and isinstance(search_res.get('data'), list) else []
             site_cache = getattr(site_class, '_ps_url_cache', {}).get(code, {}) if site_class else {}
             if isinstance(site_cache, dict):
                 ps_url = (
@@ -1311,7 +1334,7 @@ class ModuleJavCensored(PluginModuleBase):
             matching_result = next(
                 (
                     item for item in search_results
-                    if not ps_url and item.get('site_key') == site and item.get('code') == code
+                    if not ps_url and isinstance(item, dict) and item.get('site_key') == site and item.get('code') == code
                 ),
                 None
             )
