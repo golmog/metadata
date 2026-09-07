@@ -1652,9 +1652,11 @@ class ModuleMetaDb(PluginModuleBase):
                             p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_ko=a_name_ko).first()
 
                         p_gender = (p_rec.extra_info.get('gender') if (p_rec and p_rec.extra_info) else '') or a_entry.get('gender') or ''
+                        display_name = (p_rec.name_ko or p_rec.name_org or '') if p_rec else (a_name_ko or a_name_org or '')
 
                         if p_rec:
                             d['actor'].append({
+                                'name': display_name,
                                 'name_org': p_rec.name_org or '',
                                 'name_ko': p_rec.name_ko or '',
                                 'name_en': p_rec.name_en or '',
@@ -1665,6 +1667,7 @@ class ModuleMetaDb(PluginModuleBase):
                             })
                         else:
                             d['actor'].append({
+                                'name': display_name,
                                 'name_org': a_name_org,
                                 'name_ko': a_name_ko,
                                 'name_en': a_name_en,

@@ -1278,8 +1278,10 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
 
     var modalActors = $m.data('edit_actors') || current_edit_actors || [];
     payload.actor = modalActors.map(function(a){
-        if (typeof a === 'string') return { name_org: a, name_ko: '', name_en: '', gender: '', role: '출연' };
+        if (typeof a === 'string') return { name: a, name_org: a, name_ko: '', name_en: '', gender: '', role: '출연' };
+        var dName = a.name || a.name_ko || a.name_org || '';
         return {
+            name: dName,
             name_org: a.name_org || '',
             name_ko: a.name_ko || '',
             name_en: a.name_en || '',
