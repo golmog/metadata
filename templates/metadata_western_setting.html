@@ -79,9 +79,10 @@
 
   <div id="western_use_image_server_div" class="collapse">
     {{ macros.setting_input_text('western_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['western_image_server_save_format'], desc=['사용가능: {studio}, {studio_1}', 'ex: /western/{studio_1}/{studio}']) }}
-    {{ macros.setting_radio_with_value('western_actor_image_mode', '배우 이미지 소스', [['site', '사이트 원본 URL'], ['image_server', '이미지 서버']], value=(arg.get('western_actor_image_mode') or 'site'), desc=['사이트 원본 URL: 사이트 원본 이미지를 그대로 사용합니다. (기본값)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.']) }}
+    {{ macros.setting_radio_with_value('western_actor_image_mode', '배우 이미지 소스', [['site', '사이트 원본 URL'], ['image_server', '이미지 서버']], value=(arg.get('western_actor_image_mode') or 'site'), desc=['사이트 원본 URL: 사이트 원본 이미지를 그대로 사용합니다. (기본값, GDS 없음)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.']) }}
     <div id="western_actor_image_server_div" class="collapse">
       {{ macros.setting_input_text('western_image_server_actor_path', '배우 이미지 폴더', value=arg['western_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 배우 폴더 경로를 설정합니다. (기본값: /western/actors)']) }}
+      {{ macros.setting_input_text('western_actor_img_order', '배우 이미지 소스 우선순위', value=arg['western_actor_img_order'], desc=['서양 배우 프로필 사진으로 사용할 소스 우선순위를 쉼표(,)로 구분하여 입력합니다.', '사용 가능 키: site_img_url, local_img_path', '기본값: site_img_url, local_img_path (※ 구글 GDS 파일 ID 없음)']) }}
     </div>
   </div>
 

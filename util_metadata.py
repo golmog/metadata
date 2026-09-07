@@ -460,8 +460,7 @@ class MetaImageUtil:
                 meta_record.domain, meta_record.category, stem, studio=studio, year=year
             )
             if custom_root_path:
-                module_pfx = 'western' if meta_record.category == 'WESTERN' else ('jav_uncensored' if meta_record.category == 'JAV_UNCEN' else 'jav_censored')
-                default_root = P.ModelSetting.get(f"{module_pfx}_image_server_local_path") or P.ModelSetting.get("jav_censored_image_server_local_path") or ""
+                default_root = P.ModelSetting.get("jav_censored_image_server_local_path") or ""
                 if default_root and target_folder and target_folder.startswith(default_root):
                     rel_path = os.path.relpath(target_folder, default_root)
                     target_folder = os.path.join(custom_root_path, rel_path)
@@ -697,6 +696,16 @@ class MetaResponseUtil:
 
         opts = dict(extra_opts or {})
         res = copy.deepcopy(entity_dict)
+
+        # 포스터(p)가 완전히 누락된 경우 랜드스케이프(pl)를 포스터로 폴백하여 Plex 정상 인식 보장
+        thumbs = res.get('thumb') or []
+        has_poster = any(isinstance(t, dict) and t.get('aspect') == 'poster' and t.get('value') for t in thumbs)
+        if not has_poster:
+            pl_thumb = next((t for t in thumbs if isinstance(t, dict) and t.get('aspect') == 'landscape' and t.get('value')), None)
+            if pl_thumb:
+                fallback_poster = copy.deepcopy(pl_thumb)
+                fallback_poster['aspect'] = 'poster'
+                res.setdefault('thumb', []).append(fallback_poster)
 
         # 줄거리가 비어있으면 부제(tagline)로 동적 폴백 (DB에는 순수 빈값 보존)
         current_plot = str(res.get('plot') or '').strip()

@@ -79,8 +79,6 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_poster_force_studios": "",
 
             f"{self.name}_image_mode": "image_server",
-            f"{self.name}_image_server_save_format": "/western/scenes/{studio_1}/{studio}",
-            f"{self.name}_image_save_mode": "jpeg",
             f"{self.name}_actor_image_mode": "site",
             f"{self.name}_image_server_actor_path": "/western/actors",
             f"{self.name}_actor_img_order": "site_img_url, local_img_path",

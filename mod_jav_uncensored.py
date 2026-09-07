@@ -76,7 +76,6 @@ class ModuleJavUncensored(PluginModuleBase):
 
             f"{self.name}_image_mode": "image_server",
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
-            f"{self.name}_image_save_mode": "jpeg",
 
             f'{self.name}_1pondo_use_proxy': 'False',
             f'{self.name}_1pondo_proxy_url': '',
