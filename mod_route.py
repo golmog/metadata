@@ -158,6 +158,7 @@ class ModuleRoute(PluginModuleBase):
 
 
     def process_normal(self, sub, req):
+        from werkzeug.exceptions import HTTPException
         try:
             if sub == 'image_process.jpg':
                 mode = request.args.get('mode')
@@ -333,6 +334,8 @@ class ModuleRoute(PluginModuleBase):
                 target_site_cls = self._get_site_class(site)
                 return target_site_cls.jav_video(video_url)
 
+        except HTTPException:
+            raise
         except Exception as e: 
             logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
