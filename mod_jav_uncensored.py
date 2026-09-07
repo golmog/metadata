@@ -991,7 +991,9 @@ class ModuleJavUncensored(PluginModuleBase):
         clean_actors = []
         for act_it in (ret.get('actor') or []):
             if isinstance(act_it, dict):
+                act_name = act_it.get('name') or act_it.get('name_ko') or act_it.get('name_org', '')
                 clean_actors.append({
+                    'name': act_name,
                     'name_org': act_it.get('name_org', ''),
                     'name_ko': act_it.get('name_ko', ''),
                     'name_en': act_it.get('name_en', ''),
@@ -1000,7 +1002,9 @@ class ModuleJavUncensored(PluginModuleBase):
                     'role': act_it.get('role', '출연')
                 })
             else:
+                act_name = getattr(act_it, 'name', '') or getattr(act_it, 'name_ko', '') or getattr(act_it, 'name_org', '')
                 clean_actors.append({
+                    'name': act_name,
                     'name_org': getattr(act_it, 'name_org', ''),
                     'name_ko': getattr(act_it, 'name_ko', ''),
                     'name_en': getattr(act_it, 'name_en', ''),

@@ -943,7 +943,9 @@ class ModuleWestern(PluginModuleBase):
             candidate_actors = females_only if females_only else actors_for_db_save
 
         for act_it in candidate_actors:
+            act_name = act_it.get('name') or act_it.get('name_ko') or act_it.get('name_org', '')
             final_clean_actors.append({
+                'name': act_name,
                 'name_org': act_it.get('name_org', ''),
                 'name_ko': act_it.get('name_ko', ''),
                 'name_en': act_it.get('name_en', ''),
