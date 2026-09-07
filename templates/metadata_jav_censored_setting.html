@@ -93,7 +93,7 @@
 
     {{ macros.setting_input_text('jav_censored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['/jav/cen/{label_1}/{label}', '사용가능: {label_1} {label} {CODE} {code}']) }}
 
-    {{ macros.setting_radio_with_value('jav_censored_actor_image_mode', '배우 이미지 소스', [['gds', 'GDS 구글 File ID'], ['image_server', '이미지 서버'], ['site', '사이트 원본 URL']], value=(arg.get('jav_censored_actor_image_mode') or 'gds'), desc=['GDS 구글 File ID: 배포 DB의 구글 드라이브 이미지를 대표 사진으로 연결합니다. (기본값)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.', '사이트 원본 URL: 사이트 원본 이미지를 직접 연결합니다. (※ 사이트 차단 가능성이 있으므로 주의)']) }}
+    {{ macros.setting_radio_with_value('jav_censored_actor_image_mode', '배우 이미지 소스', [['gds', 'GDS 구글 File ID'], ['image_server', '이미지 서버'], ['site', '사이트 원본 URL']], value=(arg.get('jav_censored_actor_image_mode') or 'gds'), desc=['GDS 구글 File ID: 배포 DB의 구글 드라이브 썸네일 이미지를 대표 사진으로 연결합니다. (기본값)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.', '사이트 원본 URL: 사이트 원본 이미지를 직접 연결합니다. (※ 사이트 차단 가능성이 있으므로 주의)']) }}
 
     <div id="jav_censored_actor_image_server_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 경로를 설정합니다. (예: /jav/actors)']) }}

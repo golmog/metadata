@@ -604,14 +604,15 @@ class ModuleMetaDb(PluginModuleBase):
         if local_path_val and '_user.' in local_path_val.lower() and local_path_val.lower() not in ['null', 'none', '403', '404', 'deprecated', 'unavailable']:
             return cls.format_actor_thumb_url(local_path_val, domain=target_domain)
 
-        # 설정된 배우 이미지 소스 모드에 따라 우선순위 자동 결정
+        # 도메인별 배우 이미지 소스 우선순위 결정 (서양은 GDS 파일 ID를 완전히 배제하고 독립 운영)
         if not order_str:
             if target_domain == 'WESTERN':
-                west_mode = P.ModelSetting.get("western_actor_image_mode") or "site"
-                if west_mode == 'image_server':
-                    order_str = "local_img_path, site_img_url"
+                custom_west_order = P.ModelSetting.get("western_actor_img_order")
+                if custom_west_order:
+                    order_str = custom_west_order
                 else:
-                    order_str = "site_img_url, local_img_path"
+                    west_mode = P.ModelSetting.get("western_actor_image_mode") or "site"
+                    order_str = "local_img_path, site_img_url" if west_mode == 'image_server' else "site_img_url, local_img_path"
             elif target_domain == 'GENERAL':
                 order_str = "site_img_url"
             else:
@@ -1583,12 +1584,12 @@ class ModuleMetaDb(PluginModuleBase):
         if not resolved_pl_url:
             resolved_pl_url = raw_orig_thumb.get('landscape') or ""
 
-        # 최대 아트 수 제한(art_count) 설정을 반영하여 상위 fanart 배열 가상 조립
-        module_pfx = 'western' if item.category == 'WESTERN' else ('jav_uncensored' if item.category == 'JAV_UNCEN' else 'jav_censored')
-        max_arts_val = P.ModelSetting.get_int(f"{module_pfx}_art_count")
-        if max_arts_val is None:
-            max_arts_val = P.ModelSetting.get_int("jav_censored_art_count")
-        max_arts = int(max_arts_val) if max_arts_val is not None else 0
+        # 최대 아트 수 제한은 JAV Censored 단일 마스터 설정을 공통 참조
+        raw_max_arts = P.ModelSetting.get("jav_censored_art_count") or "0"
+        try:
+            max_arts = int(raw_max_arts)
+        except (ValueError, TypeError):
+            max_arts = 0
 
         if max_arts <= 0:
             d['fanart'] = []
@@ -1597,12 +1598,15 @@ class ModuleMetaDb(PluginModuleBase):
                 resolved_fanarts = list(raw_original['fanart'])
             d['fanart'] = resolved_fanarts[:max_arts]
 
-        # 정규 thumb 배열에만 포스터 및 랜드스케이프 등록 (로컬 실존 여부 명시)
+        # 정규 thumb 배열에 랜드스케이프 및 포스터 등록
         if resolved_pl_url:
             d['thumb'].append({'aspect': 'landscape', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
         if resolved_p_url:
             d['thumb'].append({'aspect': 'poster', 'value': resolved_p_url, 'site': item.site, 'is_local': p_is_local})
+        elif resolved_pl_url:
+            # 세로 포스터가 없는 모든 작품은 가로 커버(pl)를 포스터로 폴백 등록하여 Plex 호환성 보장
+            d['thumb'].append({'aspect': 'poster', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
         # 트레일러 URL 온디맨드 구성
         raw_video_url = ''
@@ -1789,10 +1793,11 @@ class ModuleMetaDb(PluginModuleBase):
 
         need_actor_thumb_override = bool(target_actor_order) or (override_image_mode and override_image_mode != 'image_server')
 
+        # 임시 배우 썸네일 순서 결정 (Western은 site_img_url / local_img_path로만 구성)
         if need_actor_thumb_override and result.get('actor'):
             std_order = target_actor_order
             if not std_order and override_image_mode != 'image_server':
-                std_order = 'google_fileid, site_img_url'
+                std_order = 'site_img_url, local_img_path' if person_dom == 'WESTERN' else 'google_fileid, site_img_url'
 
             person_sess, _, _ = cls.get_session_and_domain('PERSON')
             person_dom = cls._person_domain_from_item_category(category or result.get('category'))
@@ -2635,15 +2640,15 @@ class ModuleMetaDb(PluginModuleBase):
                 'next_page': end_page + 1 if end_page < total_page else 0,
             }
 
-            module_pfx = 'western' if std_cat == 'WESTERN' else ('jav_uncensored' if std_cat == 'JAV_UNCEN' else 'jav_censored')
-            current_image_server_url = P.ModelSetting.get(f"{module_pfx}_image_server_url") or P.ModelSetting.get("jav_censored_image_server_url") or ""
+            # 이미지 서버 인프라 URL은 JAV Censored 마스터 설정 단일 참조
+            master_image_server_url = P.ModelSetting.get("jav_censored_image_server_url") or ""
 
             return {
                 'success': True,
                 'paging': paging,
                 'list': item_list,
                 'meta_db_use_ff_proxy': P.ModelSetting.get_bool("meta_db_use_ff_proxy"),
-                'image_server_url': current_image_server_url.rstrip('/')
+                'image_server_url': master_image_server_url.rstrip('/')
             }
 
         except Exception as e:
