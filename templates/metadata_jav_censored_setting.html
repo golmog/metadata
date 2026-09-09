@@ -71,6 +71,33 @@
 
   {{ macros.setting_checkbox('jav_censored_use_extras', '예고편 사용', value=arg['jav_censored_use_extras'], desc=None) }}
 
+  <!-- 프리뷰 클립 생성 마스터 설정 트리 -->
+  {{ macros.setting_checkbox('jav_censored_use_preview_clip', '프리뷰 클립 생성', value=arg['jav_censored_use_preview_clip'], desc=['작품 상세창 또는 외부 API 요청 시 몽타주 프리뷰 클립을 생성하고 관리하는 기능을 활성화합니다.']) }}
+
+  <div id="jav_censored_use_preview_clip_div" class="collapse">
+    {{ macros.info_text('stream_copy_info', '무인코딩(Stream Copy) 프리뷰', value='', desc=['시스템 자원 소모 및 인코딩 타임아웃을 방지하기 위해 재인코딩 없이 원본 스트림을 그대로 복사(-c copy)하여 클립을 생성합니다.', '※ 지원 조건: MP4 컨테이너 직결이 가능한 표준 비디오 코덱(H.264, HEVC/H.265, AV1, VP9) 소스 영상']) }}
+
+    {{ macros.setting_checkbox('jav_censored_preview_auto_create', '예고편 부재 시 프리뷰 클립 자동 생성', value=arg.get('jav_censored_preview_auto_create'), desc=['ON: 동영상 경로가 전달되었을 때 공식 예고편이 없으면 백그라운드에서 프리뷰 클립을 자동 생성합니다.', 'OFF: 수동 버튼 클릭 또는 외부 API 요청 시에만 생성합니다. (기본값: OFF)']) }}
+
+    {{ macros.setting_input_text('jav_censored_preview_ffmpeg_path', 'FFmpeg 바이너리 경로', value=arg['jav_censored_preview_ffmpeg_path'], placeholder='ffmpeg') }}
+    {{ macros.setting_input_text('jav_censored_preview_ffprobe_path', 'FFprobe 바이너리 경로', value=arg['jav_censored_preview_ffprobe_path'], placeholder='ffprobe') }}
+    {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
+    {{ macros.setting_checkbox('jav_censored_preview_include_audio', '사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
+    {{ macros.setting_radio_with_value('jav_censored_preview_storage_type', '클립 저장 방식', [['local', '로컬 디렉토리 저장'], ['gdrive', '구글 드라이브 (Rclone 업로드 & 스트리밍 중계)']], value=(arg.get('jav_censored_preview_storage_type') or 'local'), desc=['로컬: 지정한 디스크 루트 아래에 카테고리별 표준 폴더 구조로 저장하고 FF 프록시로 서빙합니다.', '구글 드라이브: rclone으로 원격 업로드 후, 재생 시 Range 지원 스트리밍 중계로 다이렉트 재생합니다.']) }}
+
+    <div id="jav_censored_preview_local_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_preview_local_path', '로컬 저장 루트 경로', value=arg['jav_censored_preview_local_path'], placeholder='/data/previews', desc=['프리뷰가 저장될 기본 루트 디렉토리입니다. 하위 경로는 카테고리 규격에 맞춰 자동 생성됩니다.']) }}
+    </div>
+
+    <div id="jav_censored_preview_gdrive_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_preview_rclone_path', 'Rclone 실행 경로', value=arg['jav_censored_preview_rclone_path'], placeholder='rclone') }}
+      {{ macros.setting_input_text('jav_censored_preview_rclone_conf', 'rclone.conf 파일 경로', value=arg['jav_censored_preview_rclone_conf'], placeholder='/root/.config/rclone/rclone.conf') }}
+      {{ macros.setting_input_text('jav_censored_preview_rclone_upload_remote', '업로드/관리용 리모트 경로', value=(arg.get('jav_censored_preview_rclone_upload_remote') or arg.get('jav_censored_preview_rclone_target_path')), placeholder='gf:{0AIZlNUzzYfZEUk9PVA}/previews', desc=['파일 업로드 및 삭제에 사용할 리모트 대상 경로 (쓰기 권한 필요)']) }}
+      {{ macros.setting_input_text('jav_censored_preview_rclone_playback_remote', '재생/스트리밍 전용 리모트명', value=(arg.get('jav_censored_preview_rclone_playback_remote') or arg.get('jav_censored_preview_rclone_remote')), placeholder='gfin', desc=['rclone.conf 내의 재생 토큰 발급용 리모트명 (읽기 전용 계정 가능, 동일하게 쓸 경우 위 리모트명 입력)']) }}
+      {{ macros.setting_input_text('jav_censored_preview_rclone_options', 'Rclone 업로드 추가 옵션', value=arg['jav_censored_preview_rclone_options'], placeholder='예: --drive-chunk-size 64M') }}
+    </div>
+  </div>
+
   {{ macros.m_hr() }}
   {{ macros.setting_radio_with_value('jav_censored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_censored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용']) }}
 
@@ -163,7 +190,27 @@ $(document).ready(function(){
   use_collapse("jav_censored_use_pose_landmarker");
   use_collapse("jav_censored_mgs_label_priority");
   use_collapse("jav_censored_use_ollama");
+  use_collapse("jav_censored_use_preview_clip");
+  use_preview_storage("{{arg.get('jav_censored_preview_storage_type') or 'local'}}");
 });
+
+$('#jav_censored_use_preview_clip').change(function() {
+  use_collapse('jav_censored_use_preview_clip');
+});
+
+$('input[type=radio][name="jav_censored_preview_storage_type"]').change(function() {
+  use_preview_storage(this.value);
+});
+
+function use_preview_storage(val) {
+  if (val === 'gdrive') {
+    $('#jav_censored_preview_gdrive_div').collapse('show');
+    $('#jav_censored_preview_local_div').collapse('hide');
+  } else {
+    $('#jav_censored_preview_local_div').collapse('show');
+    $('#jav_censored_preview_gdrive_div').collapse('hide');
+  }
+}
 
 $('input[type=radio][name=jav_censored_actor_image_mode]').change(function() {
   use_actor_image_mode(this.value);

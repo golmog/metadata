@@ -191,10 +191,13 @@ class ModuleMetaDb(PluginModuleBase):
             f"{self.name}_sqlite_dir": os.path.join(path_data, 'db', 'meta_db'),
             f"{self.name}_pg_host": "postgres",
             f"{self.name}_pg_port": "5432",
+            f"{self.name}_pg_conn_type": "tcp",
+            f"{self.name}_pg_socket_dir": "/var/run/postgresql",
             f"{self.name}_pg_user": "metadata",
             f"{self.name}_pg_pass": "",
             f"{self.name}_pg_name": "metadata",
             f"{self.name}_transfer_direction": "sqlite_to_pg",
+            f"{self.name}_transfer_mode": "merge",
             f"{self.name}_import_path": "",
             f"{self.name}_auto_enrich": "True",
             f"{self.name}_enrich_delay": "2.0",
@@ -205,7 +208,19 @@ class ModuleMetaDb(PluginModuleBase):
             f"{self.name}_person_jav_last_synced_version": "0",
         }
 
-        self.transfer_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'success': 0, 'fail': 0, 'stop_flag': False}
+        self.transfer_status = {
+            'is_running': False,
+            'status': '대기 중',
+            'mode': 'merge',
+            'total': 0,
+            'current': 0,
+            'inserted': 0,
+            'updated': 0,
+            'skipped': 0,
+            'fail': 0,
+            'current_code': '',
+            'stop_flag': False
+        }
         self.import_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'fail': 0, 'current_code': '', 'stop_flag': False}
 
     @classmethod
@@ -236,8 +251,21 @@ class ModuleMetaDb(PluginModuleBase):
             pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
             pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
             pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
+            pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
 
-            db_url = f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8"
+            # 소켓 연결과 TCP 연결 파라미터 분기
+            if pg_conn_type == "socket":
+                socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                db_url = f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8"
+                connect_args = {"host": socket_dir, "connect_timeout": 10}
+                log_target = f"socket:{socket_dir}/{pg_name}"
+            else:
+                pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                db_url = f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8"
+                connect_args = {"connect_timeout": 10}
+                log_target = f"{pg_host}:{pg_port}/{pg_name}"
+
             pg_engine = create_engine(
                 db_url,
                 poolclass=QueuePool,
@@ -245,14 +273,14 @@ class ModuleMetaDb(PluginModuleBase):
                 max_overflow=30,
                 pool_recycle=300,
                 pool_pre_ping=True,
-                connect_args={"connect_timeout": 10}
+                connect_args=connect_args
             )
 
             cls._engines['postgres'] = pg_engine
             cls._sessions['postgres'] = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=pg_engine))
             Base.metadata.create_all(bind=pg_engine)
             cls._auto_sync_table_columns(pg_engine)
-            logger.info(f"[MetaDB Engine] PostgreSQL 통합 엔진 초기화 완료: {pg_user}@{pg_host}:{pg_port}/{pg_name}")
+            logger.info(f"[MetaDB Engine] PostgreSQL 통합 엔진 초기화 완료: {pg_user}@{log_target}")
 
         else:
             db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
@@ -877,7 +905,7 @@ class ModuleMetaDb(PluginModuleBase):
 
         try:
             nested_item = s.begin_nested()
-            nested_person = person_sess.begin_nested() if person_sess else None
+            nested_person = person_sess.begin_nested() if (person_sess and person_sess is not s) else None
 
             originaltitle = entity_dict.get('originaltitle') or code
             sorttitle = entity_dict.get('sorttitle') or entity_dict.get('title') or originaltitle
@@ -1170,7 +1198,7 @@ class ModuleMetaDb(PluginModuleBase):
 
             if target_session is None:
                 s.commit()
-                if person_sess and is_internal_person_sess:
+                if person_sess and is_internal_person_sess and person_sess is not s:
                     person_sess.commit()
             return True
 
@@ -1179,14 +1207,15 @@ class ModuleMetaDb(PluginModuleBase):
             logger.error(traceback.format_exc())
             if target_session is None:
                 s.rollback()
-                if person_sess and is_internal_person_sess:
+                if person_sess and is_internal_person_sess and person_sess is not s:
                     person_sess.rollback()
             return False
         finally:
             if target_session is None:
                 s.remove()
-            if person_sess and is_internal_person_sess:
+            if person_sess and is_internal_person_sess and person_sess is not s:
                 person_sess.remove()
+
 
     @classmethod
     def sync_jav_actors_db(cls):
@@ -1605,34 +1634,79 @@ class ModuleMetaDb(PluginModuleBase):
         if resolved_p_url:
             d['thumb'].append({'aspect': 'poster', 'value': resolved_p_url, 'site': item.site, 'is_local': p_is_local})
         elif resolved_pl_url:
-            # 세로 포스터가 없는 모든 작품은 가로 커버(pl)를 포스터로 폴백 등록하여 Plex 호환성 보장
             d['thumb'].append({'aspect': 'poster', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
-        # 트레일러 URL 온디맨드 구성
-        raw_video_url = ''
-        orig_extras = raw_original.get('extras') or []
-        if isinstance(orig_extras, list):
-            for ex in orig_extras:
-                if isinstance(ex, dict) and ex.get('content_url'):
-                    raw_video_url = ex['content_url']
-                    break
+        # 트레일러 URL 구성 (프리뷰 클립 존재 시 죽은 공식 링크를 대체하여 최우선 등록)
+        ddns_host = F.SystemModelSetting.get('ddns') or ''
+        is_uncen = str(item.category).upper() == 'JAV_UNCEN'
+        video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
 
-        if not raw_video_url and isinstance(raw_original.get('trailer'), str) and raw_original['trailer'].strip():
-            raw_video_url = raw_original['trailer'].strip()
-
-        if raw_video_url:
-            ddns_host = F.SystemModelSetting.get('ddns') or ''
-            use_trailer_proxy = P.ModelSetting.get_bool("meta_db_use_ff_proxy")
-            if item.category == 'WESTERN':
-                use_trailer_proxy = use_trailer_proxy and P.ModelSetting.get_bool('western_use_trailer_proxy')
-
-            if use_trailer_proxy and raw_video_url.startswith('http'):
+        has_preview = False
+        if isinstance(raw_extra.get('preview_clip'), dict):
+            p_clip = raw_extra['preview_clip']
+            preview_stream_url = ''
+            if p_clip.get('storage_type') == 'gdrive' and p_clip.get('google_fileid'):
+                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_gdrive&fileid={p_clip['google_fileid']}&cat={item.category}"
+            elif p_clip.get('storage_type') == 'local' and p_clip.get('local_path'):
                 from urllib.parse import quote_plus
-                final_trailer_url = f"{ddns_host}/metadata/normal/jav_video?site={item.site}&url={quote_plus(raw_video_url)}"
-            else:
-                final_trailer_url = raw_video_url
+                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_local&path={quote_plus(p_clip['local_path'])}"
 
-            d['extras'].append({'mode': 'mp4', 'title': item.tagline or item.title, 'content_url': final_trailer_url, 'content_type': 'trailer'})
+            if preview_stream_url:
+                d['extras'].append({
+                    'mode': 'mp4',
+                    'title': f"[Preview] {item.title or item.tagline or item.originaltitle}",
+                    'content_url': preview_stream_url,
+                    'content_type': 'trailer'
+                })
+                has_preview = True
+
+        # 프리뷰 클립이 없을 때만 공식 트레일러를 등록
+        if not has_preview:
+            raw_video_url = ''
+            orig_extras = raw_original.get('extras') or []
+            if isinstance(orig_extras, list):
+                for ex in orig_extras:
+                    if isinstance(ex, dict) and ex.get('content_url'):
+                        raw_video_url = ex['content_url']
+                        break
+
+            if not raw_video_url and isinstance(raw_original.get('trailer'), str) and raw_original['trailer'].strip():
+                raw_video_url = raw_original['trailer'].strip()
+
+            if raw_video_url:
+                use_trailer_proxy = P.ModelSetting.get_bool("meta_db_use_ff_proxy")
+                if item.category == 'WESTERN':
+                    use_trailer_proxy = use_trailer_proxy and P.ModelSetting.get_bool('western_use_trailer_proxy')
+
+                if use_trailer_proxy and raw_video_url.startswith('http'):
+                    from urllib.parse import quote_plus
+                    final_trailer_url = f"{ddns_host}/metadata/normal/jav_video?site={item.site}&url={quote_plus(raw_video_url)}"
+                else:
+                    final_trailer_url = raw_video_url
+
+                d['extras'].append({'mode': 'mp4', 'title': item.tagline or item.title, 'content_url': final_trailer_url, 'content_type': 'trailer'})
+
+        # 공식 트레일러가 없고 자체 생성된 프리뷰 클립이 존재하는 경우 트레일러로 자동 채움
+        if not d['extras'] and isinstance(raw_extra.get('preview_clip'), dict):
+            p_clip = raw_extra['preview_clip']
+            ddns_host = F.SystemModelSetting.get('ddns') or ''
+            is_uncen = str(item.category).upper() == 'JAV_UNCEN'
+            video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
+
+            preview_stream_url = ''
+            if p_clip.get('storage_type') == 'gdrive' and p_clip.get('google_fileid'):
+                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_gdrive&fileid={p_clip['google_fileid']}&cat={item.category}"
+            elif p_clip.get('storage_type') == 'local' and p_clip.get('local_path'):
+                from urllib.parse import quote_plus
+                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_local&path={quote_plus(p_clip['local_path'])}"
+
+            if preview_stream_url:
+                d['extras'].append({
+                    'mode': 'mp4',
+                    'title': f"[Preview] {item.title or item.tagline or item.originaltitle}",
+                    'content_url': preview_stream_url,
+                    'content_type': 'trailer'
+                })
 
         actors_bridge = (item.extra_info or {}).get('_actors') or []
         if actors_bridge:
@@ -2129,7 +2203,21 @@ class ModuleMetaDb(PluginModuleBase):
             else:
                 query = query.order_by(MetaPerson.id.desc())
 
-            count = query.count()
+            # 인물 테이블 미존재 감지 시 스키마 자동 복구
+            try:
+                count = query.count()
+            except Exception as e_p_tbl:
+                logger.debug(f"[MetaDB Person WebList] 인물 테이블 미존재 감지 -> 스키마 자동 복구: {e_p_tbl}")
+                sess.rollback()
+                target_engine = cls._engines.get('postgres' if cls._is_postgres else 'person')
+                if target_engine:
+                    Base.metadata.create_all(bind=target_engine)
+                    cls._auto_sync_table_columns(target_engine)
+                count = query.count()
+
+            if count == 0:
+                return {'success': True, 'paging': None, 'list': []}
+
             total_page = math.ceil(count / page_size) if count > 0 else 1
 
             if page > total_page and total_page > 0:
@@ -2540,7 +2628,23 @@ class ModuleMetaDb(PluginModuleBase):
             search_order = str(params.get('search_order', 'desc')).strip()
             search_status = str(params.get('search_status', 'all')).strip()
 
-            query = sess.query(MetaItem).filter_by(category=std_cat)
+            # 테이블이 아직 없을 경우 안전하게 자동 생성 시도
+            try:
+                query = sess.query(MetaItem).filter_by(category=std_cat)
+                count = query.count()
+            except Exception as e_tbl_chk:
+                logger.debug(f"[MetaDB WebList] 테이블 미존재 감지 -> 스키마 자동 복구 시도: {e_tbl_chk}")
+                sess.rollback()
+                target_engine = cls._engines.get('postgres' if cls._is_postgres else domain)
+                if target_engine:
+                    Base.metadata.create_all(bind=target_engine)
+                    cls._auto_sync_table_columns(target_engine)
+                query = sess.query(MetaItem).filter_by(category=std_cat)
+                count = query.count()
+
+            # 데이터가 비어있을 경우 정상적인 빈 목록 응답 반환
+            if count == 0:
+                return {'success': True, 'paging': None, 'list': []}
 
             if search_site and search_site.lower() not in ['all', '']:
                 query = query.filter(func.lower(MetaItem.site) == search_site.lower())
@@ -2834,18 +2938,52 @@ class ModuleMetaDb(PluginModuleBase):
 
     @classmethod
     def test_connection(cls, db_type, host, port, user, password, dbname):
+        logger.info(f"[MetaDB ConnTest] DB 연결 테스트 시작: [{db_type}] Host/Socket: '{host}', Port: '{port}', User: '{user}', DB: '{dbname}'")
         try:
             if db_type == "postgres":
-                try: import psycopg2
-                except ImportError: return False, "psycopg2-binary 라이브러리가 설치되어 있지 않습니다."
-                conn = psycopg2.connect(host=host, port=port, user=user, password=password, dbname=dbname, connect_timeout=5)
-                conn.close()
-                return True, "PostgreSQL 서버 및 데이터베이스 연결 성공!"
+                try:
+                    import psycopg2
+                except ImportError:
+                    msg = "psycopg2-binary 라이브러리가 설치되어 있지 않습니다. (pip install psycopg2-binary)"
+                    logger.error(f"[MetaDB ConnTest] {msg}")
+                    return False, msg
+
+                target_host = str(host or '').strip() or 'postgres'
+
+                # host 경로가 /로 시작하면 UNIX 도메인 소켓 연결로 처리
+                if target_host.startswith('/'):
+                    conn = psycopg2.connect(
+                        host=target_host,
+                        user=user,
+                        password=password,
+                        dbname=dbname,
+                        connect_timeout=5
+                    )
+                    conn.close()
+                    msg = f"PostgreSQL UNIX 소켓 연결 성공! ({target_host}/{dbname})"
+                else:
+                    target_port = int(port) if (port and str(port).isdigit()) else 5432
+                    conn = psycopg2.connect(
+                        host=target_host,
+                        port=target_port,
+                        user=user,
+                        password=password,
+                        dbname=dbname,
+                        connect_timeout=5
+                    )
+                    conn.close()
+                    msg = f"PostgreSQL TCP/IP 연결 성공! ({target_host}:{target_port}/{dbname})"
+
+                logger.info(f"[MetaDB ConnTest] {msg}")
+                return True, msg
             else:
                 db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
                 os.makedirs(db_dir, exist_ok=True)
-                return True, f"SQLite3 디렉토리 접근 확인 완료 ({db_dir})"
+                msg = f"SQLite3 디렉토리 접근 확인 완료 ({db_dir})"
+                logger.info(f"[MetaDB ConnTest] {msg}")
+                return True, msg
         except Exception as e:
+            logger.error(f"[MetaDB ConnTest] 연결 테스트 실패 ({host}:{port}/{dbname}): {e}")
             return False, str(e)
 
     @classmethod
@@ -2854,20 +2992,40 @@ class ModuleMetaDb(PluginModuleBase):
             import psycopg2
             from psycopg2 import sql
         except ImportError:
-            return False, "psycopg2-binary 라이브러리가 설치되어 있지 않습니다."
+            msg = "psycopg2-binary 라이브러리가 설치되어 있지 않습니다. (pip install psycopg2-binary)"
+            logger.error(f"[MetaDB Admin] {msg}")
+            return False, msg
+
+        target_host = str(host or '').strip() or 'postgres'
+        target_port = int(port) if (port and str(port).isdigit()) else 5432
+        admin_user_clean = str(admin_user or '').strip() or 'postgres'
+        admin_pass_clean = str(admin_pass or '').strip()
+
+        logger.info(f"[MetaDB Admin] PostgreSQL 관리자 작업 요청: '{action}' -> Host: '{target_host}:{target_port}', AdminUser: '{admin_user_clean}', TargetDB: '{target_db}'")
 
         try:
-            conn = psycopg2.connect(host=host, port=port, user=admin_user, password=admin_pass, dbname="postgres", connect_timeout=8)
+            conn = psycopg2.connect(
+                host=target_host,
+                port=target_port,
+                user=admin_user_clean,
+                password=admin_pass_clean,
+                dbname="postgres",
+                connect_timeout=8
+            )
             conn.autocommit = True
             cursor = conn.cursor()
 
             if action == "test_admin":
                 cursor.execute("SELECT version();")
                 ver = cursor.fetchone()[0]
-                cursor.close(); conn.close()
-                return True, f"관리자 접속 성공 ({ver})"
+                cursor.close()
+                conn.close()
+                msg = f"관리자 접속 성공! ({ver})"
+                logger.info(f"[MetaDB Admin] {target_host}:{target_port} {msg}")
+                return True, msg
 
             elif action == "create_db_and_user":
+                logger.info(f"[MetaDB Admin] 데이터베이스 및 유저 생성 시작: DB='{target_db}', User='{target_user}'")
                 cursor.execute(sql.SQL("""
                     DO $$
                     BEGIN
@@ -2885,10 +3043,31 @@ class ModuleMetaDb(PluginModuleBase):
                     cursor.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(sql.Identifier(target_db), sql.Identifier(target_user)))
 
                 cursor.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {};").format(sql.Identifier(target_db), sql.Identifier(target_user)))
-                cursor.close(); conn.close()
-                return True, f"데이터베이스 '{target_db}' 및 유저 '{target_user}' 생성 완료!"
+                cursor.close()
+                conn.close()
+
+                # 생성된 신규 데이터베이스에 기본 메타 스키마 테이블들을 선제적으로 자동 생성
+                try:
+                    init_db_url = f"postgresql+psycopg2://{target_user}:{target_pass}@{target_host}:{target_port}/{target_db}?client_encoding=utf8"
+                    connect_args = {"connect_timeout": 8}
+                    if target_host.startswith('/'):
+                        init_db_url = f"postgresql+psycopg2://{target_user}:{target_pass}@/{target_db}?client_encoding=utf8"
+                        connect_args = {"host": target_host, "connect_timeout": 8}
+
+                    init_engine = create_engine(init_db_url, poolclass=NullPool, connect_args=connect_args)
+                    Base.metadata.create_all(bind=init_engine)
+                    cls._auto_sync_table_columns(init_engine)
+                    init_engine.dispose()
+                    logger.info(f"[MetaDB Admin] 신규 DB '{target_db}' 내 메타 테이블 자동 생성 완료")
+                except Exception as e_init_tbl:
+                    logger.warning(f"[MetaDB Admin] 신규 DB 테이블 선제 생성 경고 (최초 접근 시 자동 생성됨): {e_init_tbl}")
+
+                msg = f"데이터베이스 '{target_db}' 및 유저 '{target_user}' 생성 완료!"
+                logger.info(f"[MetaDB Admin] {msg}")
+                return True, msg
 
             elif action == "drop_db_and_user":
+                logger.info(f"[MetaDB Admin] 데이터베이스 및 유저 삭제(DROP) 시작: DB='{target_db}', User='{target_user}'")
                 cursor.execute("""
                     SELECT pg_terminate_backend(pid) 
                     FROM pg_stat_activity 
@@ -2896,15 +3075,19 @@ class ModuleMetaDb(PluginModuleBase):
                 """, (target_db,))
                 cursor.execute(sql.SQL("DROP DATABASE IF EXISTS {};").format(sql.Identifier(target_db)))
                 cursor.execute(sql.SQL("DROP ROLE IF EXISTS {};").format(sql.Identifier(target_user)))
-                cursor.close(); conn.close()
-                return True, f"데이터베이스 '{target_db}' 및 유저 '{target_user}' 완전 삭제 완료."
+                cursor.close()
+                conn.close()
+                msg = f"데이터베이스 '{target_db}' 및 유저 '{target_user}' 완전 삭제 완료."
+                logger.info(f"[MetaDB Admin] {msg}")
+                return True, msg
 
             else:
-                cursor.close(); conn.close()
+                cursor.close()
+                conn.close()
                 return False, f"알 수 없는 액션: {action}"
 
         except Exception as e:
-            logger.error(f"[MetaDB Admin] 오류 ({action}): {e}")
+            logger.error(f"[MetaDB Admin] 작업 실패 ({action}, Host: {target_host}:{target_port}): {e}")
             return False, str(e)
 
     @classmethod
@@ -3220,6 +3403,32 @@ class ModuleMetaDb(PluginModuleBase):
             if processed > 0:
                 exp_sess.commit()
 
+            # 독립 백업 파일에 인물(MetaPerson) 마스터 데이터도 함께 추출
+            person_sess, _, _ = cls.get_session_and_domain('PERSON')
+            if person_sess:
+                try:
+                    all_persons = person_sess.query(MetaPerson).all()
+                    for p in all_persons:
+                        p_copy = MetaPerson(
+                            domain=p.domain,
+                            name_org=p.name_org,
+                            name_ko=p.name_ko,
+                            name_en=p.name_en,
+                            other_names=p.other_names,
+                            aliases=p.aliases,
+                            person_type=p.person_type,
+                            person_idx=p.person_idx,
+                            media_src=copy.deepcopy(p.media_src or {}),
+                            works=copy.deepcopy(p.works or {}),
+                            extra_info=copy.deepcopy(p.extra_info or {})
+                        )
+                        exp_sess.add(p_copy)
+                    exp_sess.commit()
+                except Exception as e_exp_p:
+                    logger.debug(f"[MetaDB Export] 인물 데이터 백업 예외: {e_exp_p}")
+                finally:
+                    person_sess.remove()
+
             elapsed = time.time() - t_start
             logger.info(f"[MetaDB Export] 완료: {filename} (총 {count:,}건, 소요시간: {elapsed:.2f}초)")
             return True, filename, count
@@ -3238,11 +3447,12 @@ class ModuleMetaDb(PluginModuleBase):
                 try: sess.remove()
                 except Exception: pass
 
+
     @classmethod
-    def transfer_database(cls, source_type, target_type, progress_status=None):
+    def transfer_database(cls, source_type, target_type, mode="merge", progress_status=None):
         cls.ensure_db_ready()
         t_start = time.time()
-        logger.info(f"[MetaDB Transfer] DB 데이터 복제 시작: {source_type.upper()} ➔ {target_type.upper()}")
+        logger.info(f"[MetaDB Transfer] DB 데이터 복제 시작: {source_type.upper()} ➔ {target_type.upper()} (정책: {mode})")
 
         src_engines = []
         src_sessions = []
@@ -3252,6 +3462,7 @@ class ModuleMetaDb(PluginModuleBase):
         pg_tgt_session = None
 
         try:
+            # 소스 엔진 및 세션 준비
             if source_type == "sqlite":
                 db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
                 for db_file in set(v[1] for v in DOMAIN_MAP.values()):
@@ -3261,22 +3472,37 @@ class ModuleMetaDb(PluginModuleBase):
                         src_engines.append(eng)
                         src_sessions.append(sessionmaker(bind=eng)())
             else:
-                pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
-                pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
                 pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
                 pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
                 pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
-                src_eng = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}", poolclass=NullPool)
+                pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
+
+                if pg_conn_type == "socket":
+                    socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                    src_eng = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8", poolclass=NullPool, connect_args={"host": socket_dir})
+                else:
+                    pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                    pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                    src_eng = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool)
+
                 src_engines.append(src_eng)
                 src_sessions.append(sessionmaker(bind=src_eng)())
 
+            # 목적지 엔진 및 세션 준비
             if target_type == "postgres":
-                pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
-                pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
                 pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
                 pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
                 pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
-                pg_tgt_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}", poolclass=NullPool)
+                pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
+
+                if pg_conn_type == "socket":
+                    socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                    pg_tgt_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8", poolclass=NullPool, connect_args={"host": socket_dir})
+                else:
+                    pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                    pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                    pg_tgt_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool)
+
                 Base.metadata.create_all(bind=pg_tgt_engine)
                 cls._auto_sync_table_columns(pg_tgt_engine)
                 pg_tgt_session = sessionmaker(bind=pg_tgt_engine)()
@@ -3291,45 +3517,182 @@ class ModuleMetaDb(PluginModuleBase):
                     tgt_engines[dom] = eng
                     tgt_sessions[dom] = sessionmaker(bind=eng)()
 
-            all_source_items = []
-            for s_sess in src_sessions:
-                all_source_items.extend(s_sess.query(MetaItem).all())
+            # 목적지 완전 초기화(Clean) 정책 처리
+            if mode == "clean":
+                logger.info("[MetaDB Transfer] 목적지 DB 데이터 완전 초기화 시작...")
+                if target_type == "postgres" and pg_tgt_session:
+                    pg_tgt_session.query(MetaMedia).delete(synchronize_session=False)
+                    pg_tgt_session.query(MetaItemTagMap).delete(synchronize_session=False)
+                    pg_tgt_session.query(MetaItemPersonMap).delete(synchronize_session=False)
+                    pg_tgt_session.query(MetaItem).delete(synchronize_session=False)
+                    pg_tgt_session.query(MetaPerson).delete(synchronize_session=False)
+                    pg_tgt_session.query(MetaTag).delete(synchronize_session=False)
+                    pg_tgt_session.commit()
+                elif target_type == "sqlite":
+                    for ts in tgt_sessions.values():
+                        ts.query(MetaMedia).delete(synchronize_session=False)
+                        ts.query(MetaItemTagMap).delete(synchronize_session=False)
+                        ts.query(MetaItemPersonMap).delete(synchronize_session=False)
+                        ts.query(MetaItem).delete(synchronize_session=False)
+                        ts.query(MetaPerson).delete(synchronize_session=False)
+                        ts.query(MetaTag).delete(synchronize_session=False)
+                        ts.commit()
 
-            total_count = len(all_source_items)
-            logger.info(f"[MetaDB Transfer] 총 {total_count:,}건 복제 시작...")
+            # 소스에서 작품 및 인물 데이터 수집
+            all_source_items = []
+            all_source_persons = []
+            for s_sess in src_sessions:
+                try:
+                    all_source_items.extend(s_sess.query(MetaItem).all())
+                except Exception:
+                    pass
+                try:
+                    all_source_persons.extend(s_sess.query(MetaPerson).all())
+                except Exception:
+                    pass
+
+            total_count = len(all_source_items) + len(all_source_persons)
+            logger.info(f"[MetaDB Transfer] 총 {total_count:,}건 (작품: {len(all_source_items):,}건, 인물: {len(all_source_persons):,}건) 복제 시작...")
             if progress_status:
-                progress_status.update({'total': total_count, 'current': 0, 'success': 0, 'fail': 0})
+                progress_status.update({
+                    'total': total_count,
+                    'current': 0,
+                    'inserted': 0,
+                    'updated': 0,
+                    'skipped': 0,
+                    'fail': 0
+                })
 
             batch_size = 500
             processed = 0
-            success_count, fail_count = 0, 0
+            inserted_count = 0
+            updated_count = 0
+            skipped_count = 0
+            fail_count = 0
+            current_progress = 0
 
-            for idx, m in enumerate(all_source_items, 1):
-                if progress_status and progress_status.get('stop_flag'): break
+            # 작품(MetaItem) 복제 진행
+            for m in all_source_items:
+                if progress_status and progress_status.get('stop_flag'):
+                    break
+                current_progress += 1
+                if progress_status:
+                    progress_status['current_code'] = m.originaltitle or m.code
                 try:
                     m_dict = cls.to_entity_dict(m)
-                    current_tgt_session = pg_tgt_session if target_type == "postgres" else tgt_sessions.get(DOMAIN_MAP.get(m.category, (m.domain or 'jav_cen', ''))[0])
-                    saved = cls.save_metadata(m.category, m_dict, target_session=current_tgt_session)
-                    if saved:
-                        success_count += 1
-                        processed += 1
-                    else: fail_count += 1
-                except: fail_count += 1
+                    target_dom = DOMAIN_MAP.get(m.category, (m.domain or 'jav_cen', ''))[0]
+                    current_tgt_session = pg_tgt_session if target_type == "postgres" else tgt_sessions.get(target_dom)
+                    current_person_session = pg_tgt_session if target_type == "postgres" else tgt_sessions.get('person')
 
-                if progress_status: progress_status['current'] = idx
+                    exists = current_tgt_session.query(MetaItem).filter_by(code=m.code).first()
+
+                    # missing 모드: 목적지에 이미 존재하면 건너뜀 카운트 증가 후 통과
+                    if mode == "missing" and exists:
+                        skipped_count += 1
+                        if progress_status:
+                            progress_status['current'] = current_progress
+                            progress_status['skipped'] = skipped_count
+                        continue
+
+                    saved = cls.save_metadata(m.category, m_dict, target_session=current_tgt_session, target_person_session=current_person_session)
+                    if saved:
+                        if exists and mode == "merge":
+                            updated_count += 1
+                        else:
+                            inserted_count += 1
+                        processed += 1
+                    else:
+                        fail_count += 1
+                except Exception:
+                    fail_count += 1
+
+                if progress_status:
+                    progress_status['current'] = current_progress
+                    progress_status['inserted'] = inserted_count
+                    progress_status['updated'] = updated_count
+                    progress_status['fail'] = fail_count
+
+                # 웹 요청 처리를 위한 GIL 양보 (1초 상태 조회가 멈추지 않도록 보장)
+                if current_progress % 20 == 0:
+                    time.sleep(0.002)
+
                 if processed >= batch_size:
                     if target_type == "postgres" and pg_tgt_session: pg_tgt_session.commit()
                     elif target_type == "sqlite":
                         for ts in tgt_sessions.values(): ts.commit()
                     processed = 0
 
-            if processed > 0:
-                if target_type == "postgres" and pg_tgt_session: pg_tgt_session.commit()
-                elif target_type == "sqlite":
-                    for ts in tgt_sessions.values(): ts.commit()
+            # 인물(MetaPerson) 복제 진행
+            tgt_person_session = pg_tgt_session if target_type == "postgres" else tgt_sessions.get('person')
+            for p in all_source_persons:
+                if progress_status and progress_status.get('stop_flag'):
+                    break
+                current_progress += 1
+                if progress_status:
+                    progress_status['current_code'] = p.name_ko or p.name_org or p.person_idx
+                try:
+                    p_exists = tgt_person_session.query(MetaPerson).filter_by(domain=p.domain, person_idx=p.person_idx).first() if p.person_idx else None
+
+                    if mode == "missing" and p_exists:
+                        skipped_count += 1
+                        if progress_status:
+                            progress_status['current'] = current_progress
+                            progress_status['skipped'] = skipped_count
+                        continue
+
+                    p_target = p_exists or MetaPerson()
+                    if not p_exists:
+                        tgt_person_session.add(p_target)
+
+                    p_target.domain = p.domain
+                    p_target.name_org = p.name_org
+                    p_target.name_ko = p.name_ko
+                    p_target.name_en = p.name_en
+                    p_target.other_names = p.other_names
+                    p_target.aliases = p.aliases
+                    p_target.person_type = p.person_type
+                    p_target.person_idx = p.person_idx
+                    p_target.media_src = copy.deepcopy(p.media_src or {})
+                    p_target.works = copy.deepcopy(p.works or {})
+                    p_target.extra_info = copy.deepcopy(p.extra_info or {})
+
+                    if p_exists and mode == "merge":
+                        updated_count += 1
+                    else:
+                        inserted_count += 1
+                    processed += 1
+                except Exception:
+                    fail_count += 1
+
+                if progress_status:
+                    progress_status['current'] = current_progress
+                    progress_status['inserted'] = inserted_count
+                    progress_status['updated'] = updated_count
+                    progress_status['fail'] = fail_count
+
+                if current_progress % 20 == 0:
+                    time.sleep(0.002)
+
+                if processed >= batch_size:
+                    tgt_person_session.commit()
+                    processed = 0
+
+            if target_type == "postgres" and pg_tgt_session:
+                pg_tgt_session.commit()
+            elif target_type == "sqlite":
+                for ts in tgt_sessions.values():
+                    ts.commit()
 
             elapsed = time.time() - t_start
-            final_msg = f"데이터 복제 완료! (총 {total_count:,}건 중 성공: {success_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
+
+            # 전송 모드에 따른 명확한 결과 메시지 생성
+            if mode == "missing":
+                final_msg = f"복제 완료! (총 {total_count:,}건 중 신규: {inserted_count:,}건, 건너뜀: {skipped_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
+            elif mode == "merge":
+                final_msg = f"병합 완료! (총 {total_count:,}건 중 신규: {inserted_count:,}건, 갱신: {updated_count:,}건, 건너뜀: {skipped_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
+            else:
+                final_msg = f"전체 복제 완료! (총 {total_count:,}건 중 성공: {inserted_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
+
             logger.info(f"[MetaDB Transfer] {final_msg}")
             return True, final_msg
         except Exception as e:
@@ -3355,6 +3718,7 @@ class ModuleMetaDb(PluginModuleBase):
             for te in tgt_engines.values():
                 try: te.dispose()
                 except Exception: pass
+
 
     def plugin_load(self):
         try:
@@ -3404,8 +3768,19 @@ class ModuleMetaDb(PluginModuleBase):
                 if key in ['sub', 'package_name', 'module_name']: continue
                 if key in self.db_default:
                     val = req.form[key].strip()
-                    if P.ModelSetting.set(key, val):
-                        change_list.append(key)
+                    try:
+                        if P.ModelSetting.set(key, val):
+                            change_list.append(key)
+                    except Exception:
+                        # 프레임워크 ModelSetting.set이 신규 키에서 NoneType 에러를 낼 경우 직접 생성 저장
+                        try:
+                            from framework import db as framework_db
+                            new_setting = P.ModelSetting(key, val)
+                            framework_db.session.add(new_setting)
+                            framework_db.session.commit()
+                            change_list.append(key)
+                        except Exception as e_direct_save:
+                            logger.error(f"[{self.name}] 신규 설정 키 직접 저장 실패 ({key}): {e_direct_save}")
 
             for key, default_val in self.db_default.items():
                 if default_val in ['True', 'False'] and key not in form_keys:
@@ -3476,17 +3851,12 @@ class ModuleMetaDb(PluginModuleBase):
                 category = (req.form.get('category') or getattr(self, 'category', None) or 'JAV_CEN').upper()
                 return jsonify(self.web_list(req, category=category))
 
-            custom_commands = [
-                'db_test_connection', 'db_pg_admin_action', 'db_transfer_start', 
-                'db_transfer_stop', 'db_import', 'db_export', 'db_vacuum',
-                'db_transfer_status', 'db_import_status', 'db_import_stop', 'get_meta_by_code',
-                'person_search', 'person_save', 'person_delete', 'person_crop_save',
-                'person_sub_set_master', 'person_sub_split', 'person_clear', 'person_sync_jav_actors', 'person_version_status'
-            ]
-            if req_command in custom_commands or command in custom_commands:
-                target_cmd = req_command if req_command in custom_commands else command
+            # 모든 모듈 커맨드 동적 위임
+            target_cmd = req_command or command
+            if target_cmd:
                 res = self.process_command(target_cmd, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
-                return res if res is not None else jsonify({'ret': 'error', 'msg': '처리 결과 없음'})
+                if res is not None:
+                    return res
 
             res = super(ModuleMetaDb, self).process_ajax(sub, req)
             if res is not None:
@@ -3942,11 +4312,104 @@ class ModuleMetaDb(PluginModuleBase):
                 logger.warning(f"[MetaDB get_meta_by_code] 작품 조회 실패: '{target_code}'")
                 return jsonify({'ret': 'error', 'msg': f'[{target_code}] 작품 데이터를 조회하지 못했습니다.'})
 
+            elif command == "make_preview_clip":
+                code = arg1
+                cat = arg2 or self.category
+                params = {}
+                if arg3:
+                    try: params = json.loads(arg3) if isinstance(arg3, str) else arg3
+                    except: pass
+
+                video_path = params.get('video_path', '').strip()
+                logger.info(f"[MetaPreview] 수동 프리뷰 클립 생성 요청 수신 -> Code: '{code}', Cat: '{cat}', VideoPath: '{video_path}'")
+
+                if not video_path:
+                    msg = "동영상 파일 경로가 전달되지 않았습니다."
+                    logger.warning(f"[MetaPreview] {msg}")
+                    return jsonify({'ret': 'error', 'msg': msg})
+
+                if not os.path.exists(video_path):
+                    msg = f"컨테이너 내부에서 지정된 동영상 파일을 찾을 수 없습니다: '{video_path}'"
+                    logger.error(f"[MetaPreview] {msg}")
+                    return jsonify({'ret': 'error', 'msg': msg})
+
+                from .util_preview import MetaPreviewUtil
+                success, result = MetaPreviewUtil.process_preview_workflow(code, video_path, category=cat, force=True)
+                if success:
+                    msg = f"프리뷰 클립 생성 및 등록 완료: [{cat}] {code}"
+                    logger.info(f"[MetaPreview] {msg}")
+                    return jsonify({'ret': 'success', 'msg': msg, 'clip': result})
+                else:
+                    msg = f"프리뷰 클립 생성 실패 ({code}): {result}"
+                    logger.error(f"[MetaPreview] {msg}")
+                    return jsonify({'ret': 'error', 'msg': msg})
+
+            elif command == "delete_preview_clip":
+                code = arg1
+                cat = arg2 or self.category
+                sess, _, std_cat = self.get_session_and_domain(cat)
+                if not sess:
+                    return jsonify({'ret': 'error', 'msg': '세션 획득 실패'})
+
+                try:
+                    item = sess.query(MetaItem).filter_by(code=code).first()
+                    if not item:
+                        return jsonify({'ret': 'error', 'msg': '작품을 찾을 수 없습니다.'})
+
+                    extra = dict(item.extra_info or {})
+                    clip_info = extra.pop('preview_clip', None)
+                    if clip_info:
+                        from .util_preview import MetaPreviewUtil
+                        MetaPreviewUtil.delete_preview_clip(clip_info, category=std_cat)
+
+                    item.extra_info = extra
+                    sess.commit()
+                    self.checkpoint_wal()
+                    logger.debug(f"[MetaPreview] [{std_cat}] {code} 프리뷰 클립 정보 및 파일 삭제 완료")
+                    return jsonify({'ret': 'success', 'msg': '프리뷰 클립 파일 및 등록 정보가 완전히 삭제되었습니다.'})
+                except Exception as e:
+                    sess.rollback()
+                    return jsonify({'ret': 'error', 'msg': str(e)})
+                finally:
+                    sess.remove()
+
             elif command == "db_test_connection":
-                db_type = req.form.get('db_type', 'sqlite')
-                success, msg = self.test_connection(
-                    db_type, req.form.get('host'), req.form.get('port'),
-                    req.form.get('user'), req.form.get('password'), req.form.get('dbname')
+                db_type = arg1 or req.form.get('db_type', 'sqlite')
+                params = {}
+                if arg2:
+                    try:
+                        params = json.loads(arg2) if isinstance(arg2, str) else arg2
+                    except Exception:
+                        params = {}
+
+                host = params.get('host') or req.form.get('host')
+                port = params.get('port') or req.form.get('port')
+                user = params.get('user') or req.form.get('user')
+                password = params.get('password') or req.form.get('password')
+                dbname = params.get('dbname') or req.form.get('dbname')
+
+                success, msg = self.test_connection(db_type, host, port, user, password, dbname)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+
+            elif command == "db_pg_admin_action":
+                action = arg1 or 'test_admin'
+                params = {}
+                if arg2:
+                    try:
+                        params = json.loads(arg2) if isinstance(arg2, str) else arg2
+                    except Exception:
+                        params = {}
+
+                admin_user = params.get('admin_user') or req.form.get('admin_user')
+                admin_pass = params.get('admin_pass') or req.form.get('admin_pass')
+                host = params.get('host') or req.form.get('host')
+                port = params.get('port') or req.form.get('port')
+                target_db = params.get('target_db') or req.form.get('target_db')
+                target_user = params.get('target_user') or req.form.get('target_user')
+                target_pass = params.get('target_pass') or req.form.get('target_pass')
+
+                success, msg = self.pg_admin_action(
+                    action, admin_user, admin_pass, host, port, target_db, target_user, target_pass
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
 
@@ -3962,7 +4425,14 @@ class ModuleMetaDb(PluginModuleBase):
                 if self.transfer_status['is_running']:
                     return jsonify({'ret': 'warning', 'msg': '이미 DB 전송 작업이 진행 중입니다.'})
                 src_type, tgt_type = arg1, arg2
-                t = threading.Thread(target=self._run_transfer_worker, args=(src_type, tgt_type))
+                mode = 'merge'
+                if arg3:
+                    try:
+                        p_data = json.loads(arg3) if isinstance(arg3, str) else arg3
+                        mode = p_data.get('mode', 'merge')
+                    except Exception:
+                        pass
+                t = threading.Thread(target=self._run_transfer_worker, args=(src_type, tgt_type, mode))
                 t.daemon = True
                 t.start()
                 return jsonify({'ret': 'success', 'msg': f'[{src_type.upper()} ➔ {tgt_type.upper()}] 데이터 복제를 시작했습니다.'})
@@ -3996,10 +4466,23 @@ class ModuleMetaDb(PluginModuleBase):
             logger.error(f"[{self.name}] process_command 에러: {e}")
             return jsonify({'ret': 'error', 'msg': str(e)})
 
-    def _run_transfer_worker(self, src_type, tgt_type):
-        self.transfer_status.update({'is_running': True, 'status': '작업 중', 'total': 0, 'current': 0, 'success': 0, 'fail': 0, 'stop_flag': False})
+    def _run_transfer_worker(self, src_type, tgt_type, mode='merge'):
+        self.transfer_status.update({
+            'is_running': True,
+            'status': '작업 중',
+            'mode': mode,
+            'total': 0,
+            'current': 0,
+            'inserted': 0,
+            'updated': 0,
+            'skipped': 0,
+            'fail': 0,
+            'current_code': '',
+            'stop_flag': False
+        })
+
         try:
-            success, msg = self.transfer_database(src_type, tgt_type, progress_status=self.transfer_status)
+            success, msg = self.transfer_database(src_type, tgt_type, mode=mode, progress_status=self.transfer_status)
             self.transfer_status['status'] = '완료' if success else f'실패: {msg}'
         except Exception as e:
             self.transfer_status['status'] = f'오류: {e}'
@@ -4024,4 +4507,30 @@ class ModuleMetaDb(PluginModuleBase):
                 if os.path.exists(filepath):
                     return send_file(filepath, as_attachment=True, download_name=filename)
             return "File not found.", 404
+
         return None
+
+    def process_api(self, sub, req):
+        try:
+            if sub in ["make_preview_clip", "delete_preview_clip"]:
+                meta_module = P.get_module('meta_db')
+                if not meta_module:
+                    return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'}), 400
+
+                params = req.get_json(silent=True) or {}
+                code = params.get('code') or req.values.get('code', '')
+                cat = params.get('cat') or req.values.get('cat', '') or getattr(self, 'category', '')
+                video_path = (params.get('video_path') or req.values.get('video_path', '')).strip()
+
+                if not code:
+                    return jsonify({'ret': 'error', 'msg': 'code 파라미터가 누락되었습니다.'}), 400
+
+                if sub == "make_preview_clip":
+                    arg3 = json.dumps({'video_path': video_path})
+                    return meta_module.process_command("make_preview_clip", code, cat, arg3, req)
+                else:
+                    return meta_module.process_command("delete_preview_clip", code, cat, "", req)
+
+        except Exception as e:
+            logger.error(f"Exception in process_api (sub={sub}): {e}")
+            return jsonify({'ret': 'exception', 'msg': str(e)}), 500

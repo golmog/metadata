@@ -33,17 +33,44 @@
 
     <!-- PostgreSQL 선택 시 표시되는 연결 정보 설정 -->
     <div id="meta_db_engine_postgres_div" class="collapse">
-      {{ macros.setting_input_text('meta_db_pg_host', 'Host (서버 주소)', value=arg['meta_db_pg_host'], placeholder='postgres 또는 IP') }}
-      {{ macros.setting_input_text('meta_db_pg_port', 'Port', value=arg['meta_db_pg_port'], placeholder='5432') }}
+      {{ macros.info_text_and_buttons('meta_db_pg_helper', 'PostgreSQL 제어', [['btn_test_db_conn', 'DB 연결 테스트'], ['btn_open_pg_admin_modal', '⚡ PostgreSQL 자동 세팅']], value='연결 제어 및 전용 DB/유저 생성', desc=['※ PostgreSQL 사용 시 Python 환경에 psycopg2-binary가 설치되어 있어야 합니다. (pip install psycopg2-binary)']) }}
+      {{ macros.setting_radio_with_value('meta_db_pg_conn_type', 'PostgreSQL 접속 방식', [['tcp', 'TCP / IP 네트워크 (Host / Port)'], ['socket', 'UNIX 도메인 소켓 (Socket 볼륨)']], value=(arg.get('meta_db_pg_conn_type') or 'tcp'), desc=['TCP/IP: 네트워크 주소(호스트명/IP)와 포트를 통해 연결합니다. (기본값)', 'UNIX 소켓: 동일 호스트 또는 Docker Volume 공유(/var/run/postgresql)를 통해 고속 소켓으로 연결합니다.']) }}
+
+      <div id="meta_db_pg_tcp_div" class="collapse">
+        {{ macros.setting_input_text('meta_db_pg_host', 'Host (서버 주소)', value=arg['meta_db_pg_host'], placeholder='postgres 또는 IP') }}
+        {{ macros.setting_input_text('meta_db_pg_port', 'Port', value=arg['meta_db_pg_port'], placeholder='5432') }}
+      </div>
+
+      <div id="meta_db_pg_socket_div" class="collapse">
+        {{ macros.setting_input_text('meta_db_pg_socket_dir', 'Socket 디렉토리 경로', value=(arg.get('meta_db_pg_socket_dir') or '/var/run/postgresql'), placeholder='/var/run/postgresql', desc=['PostgreSQL의 .s.PGSQL.5432 소켓 파일이 마운트된 컨테이너 내부 경로입니다. (기본값: /var/run/postgresql)']) }}
+      </div>
+
       {{ macros.setting_input_text('meta_db_pg_name', 'DB 이름', value=arg['meta_db_pg_name'], placeholder='metadata') }}
       {{ macros.setting_input_text('meta_db_pg_user', 'DB 유저명', value=arg['meta_db_pg_user'], placeholder='metadata') }}
       {{ macros.setting_input_text('meta_db_pg_pass', 'DB 비밀번호', value=arg['meta_db_pg_pass'], type='password') }}
-      {{ macros.info_text_and_buttons('meta_db_pg_helper', 'PostgreSQL 제어', [['btn_test_db_conn', 'DB 연결 테스트'], ['btn_open_pg_admin_modal', '⚡ PostgreSQL 자동 세팅']], value='연결 제어 및 전용 DB/유저 생성', desc=['※ PostgreSQL 사용 시 Python 환경에 psycopg2-binary가 설치되어 있어야 합니다. (pip install psycopg2-binary)']) }}
     </div>
     {{ macros.m_hr() }}
 
     <!-- SQLite ↔ Postgres 실시간 데이터 복제 -->
-    {{ macros.setting_select_and_buttons('meta_db_transfer_direction', 'SQLite ↔ Postgres 전송', [['sqlite_to_pg', 'SQLite3 ➔ PostgreSQL 전체 데이터 복제'], ['pg_to_sqlite', 'PostgreSQL ➔ SQLite3 전체 데이터 복제']], [['btn_transfer_start', '전송 시작'], ['btn_transfer_stop', '전송 중단']], value=arg['meta_db_transfer_direction'], desc=['양쪽 DB 간에 온전한 데이터(이미지/트레일러 URL 포함)를 100% 상호 복제하여 이중 백업합니다.']) }}
+    {{ macros.setting_select_and_buttons('meta_db_transfer_direction', 'SQLite ↔ Postgres 전송 방향', [['sqlite_to_pg', 'SQLite3 ➔ PostgreSQL 전체 데이터 복제'], ['pg_to_sqlite', 'PostgreSQL ➔ SQLite3 전체 데이터 복제']], [['btn_transfer_start', '전송 시작'], ['btn_transfer_stop', '전송 중단']], value=arg['meta_db_transfer_direction'], desc=['양쪽 DB 간에 온전한 데이터(이미지/트레일러 URL 포함)를 100% 상호 복제하여 이중 백업합니다.']) }}
+
+    {{ macros.setting_radio_with_value('meta_db_transfer_mode', '전송 및 복제 정책', [['merge', '스마트 병합 (기존 데이터 갱신 및 신규 추가)'], ['missing', '없는 것만 복제 (목적지에 이미 있는 데이터 보존)'], ['clean', '목적지 완전 초기화 후 전체 복제 (목적지 삭제 후 1:1 클론)']], value=(arg.get('meta_db_transfer_mode') or 'merge'), desc=['스마트 병합: 소스의 최신 데이터로 목적지 데이터를 덮어쓰고 신규 데이터를 추가합니다. (기본값)', '없는 것만: 목적지에 이미 등록된 작품/인물은 건너뛰고 신규 항목만 복제합니다.', '초기화 후 전체 복제: 목적지 DB의 기존 데이터를 완전히 비운 뒤 소스 데이터를 1:1로 깨끗하게 복제합니다.']) }}
+
+    <!-- 실시간 DB 전송 진행률 프로그레스 바 패널 -->
+    <div id="transfer_progress_div" class="p-3 mb-3 rounded mx-auto" style="width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255,255,255,0.08); display: none;">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="small font-weight-bold text-info" id="transfer_progress_status_text">전송 대기 중...</span>
+        <span class="small font-weight-bold text-white" id="transfer_progress_percent">0.0%</span>
+      </div>
+      <div class="progress mb-2" style="height: 18px; background: #0c0e11; border-radius: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary font-weight-bold" id="transfer_progress_bar" role="progressbar" style="width: 0%; font-size: 0.75rem;">0%</div>
+      </div>
+      <div class="d-flex justify-content-between align-items-center small text-muted">
+        <span id="transfer_progress_stats">총: 0건 | 성공: 0 | 실패: 0</span>
+        <span id="transfer_progress_code" class="text-truncate text-info" style="max-width: 220px;">-</span>
+      </div>
+    </div>
+
     {{ macros.m_hr() }}
 
     <!-- 백업 & 스마트 Import / Export -->
@@ -117,16 +144,26 @@
           PostgreSQL 서버에 최고 관리자(<code>postgres</code> 등)로 임시 접속하여, 본 플러그인이 사용할 <strong>전용 데이터베이스와 유저 계정을 자동으로 생성/부여</strong>하는 도구입니다.<br>생성이 완료되면 메타 DB 설정창에 접속 정보가 자동 반영됩니다.
         </div>
 
-        <!-- 1. 관리자(Superuser) 접속 정보 -->
+        <!-- 1단계: 대상 PostgreSQL 서버 접속 및 최고 관리자(Superuser) 계정 확인 -->
         <div class="p-2 mb-3 rounded" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
           <div class="d-flex justify-content-between align-items-center mb-2">
-            <span class="small font-weight-bold text-white">1단계: PostgreSQL 최고 관리자 계정</span>
-            <button type="button" class="btn btn-xs btn-outline-info font-weight-bold py-1 px-2" id="btn_pg_test_admin">관리자 접속 확인</button>
+            <span class="small font-weight-bold text-white">1단계: 서버 접속 및 최고 관리자 계정</span>
+            <button type="button" class="btn btn-xs btn-outline-info font-weight-bold py-1 px-2" id="btn_pg_test_admin">⚡ 관리자 접속 확인</button>
+          </div>
+          <div class="form-row mb-2">
+            <div class="col-md-8">
+              <label class="small font-weight-bold text-muted mb-1">대상 서버 주소 (Host)</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_host" value="postgres" placeholder="postgres 또는 IP 주소">
+            </div>
+            <div class="col-md-4">
+              <label class="small font-weight-bold text-muted mb-1">포트 (Port)</label>
+              <input type="text" class="form-control form-control-sm" id="pg_target_port" value="5432" placeholder="5432">
+            </div>
           </div>
           <div class="form-row">
             <div class="col-md-6">
               <label class="small font-weight-bold text-muted mb-1">관리자 아이디 (Superuser)</label>
-              <input type="text" class="form-control form-control-sm" id="pg_admin_user" value="postgres">
+              <input type="text" class="form-control form-control-sm" id="pg_admin_user" value="postgres" placeholder="postgres">
             </div>
             <div class="col-md-6">
               <label class="small font-weight-bold text-muted mb-1">관리자 비밀번호</label>
@@ -135,27 +172,17 @@
           </div>
         </div>
 
-        <!-- 2. 생성 및 삭제 대상 정보 확인/수정 -->
+        <!-- 2단계: 생성 / 삭제 대상 데이터베이스 및 유저 정보 -->
         <div class="p-2 mb-2 rounded" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
           <div class="small font-weight-bold text-white mb-2">2단계: 생성 / 삭제 대상 데이터베이스 및 유저 정보</div>
-          <div class="form-row mb-2">
-            <div class="col-md-8">
-              <label class="small font-weight-bold text-muted mb-1">대상 서버 주소 (Host)</label>
-              <input type="text" class="form-control form-control-sm" id="pg_target_host" placeholder="postgres 또는 IP">
-            </div>
-            <div class="col-md-4">
-              <label class="small font-weight-bold text-muted mb-1">포트 (Port)</label>
-              <input type="text" class="form-control form-control-sm" id="pg_target_port" placeholder="5432">
-            </div>
-          </div>
           <div class="form-row">
             <div class="col-md-4">
               <label class="small font-weight-bold text-muted mb-1">생성/삭제할 DB명</label>
-              <input type="text" class="form-control form-control-sm" id="pg_target_db" placeholder="metadata">
+              <input type="text" class="form-control form-control-sm" id="pg_target_db" value="metadata" placeholder="metadata">
             </div>
             <div class="col-md-4">
               <label class="small font-weight-bold text-muted mb-1">생성/삭제할 유저명</label>
-              <input type="text" class="form-control form-control-sm" id="pg_target_user" placeholder="metadata">
+              <input type="text" class="form-control form-control-sm" id="pg_target_user" value="metadata" placeholder="metadata">
             </div>
             <div class="col-md-4">
               <label class="small font-weight-bold text-muted mb-1">전용 유저 비밀번호</label>
@@ -214,7 +241,22 @@ function refreshPersonVersionInfo(isManualClick) {
 $(document).ready(function(){
   use_collapse("meta_db_use");
   refreshPersonVersionInfo(false);
+
+  set_pg_conn_type_view("{{arg.get('meta_db_pg_conn_type') or 'tcp'}}");
+  $('input[type=radio][name="meta_db_pg_conn_type"]').change(function(){
+    set_pg_conn_type_view(this.value);
+  });
 });
+
+function set_pg_conn_type_view(val) {
+  if (val === 'socket') {
+    $('#meta_db_pg_socket_div').collapse('show');
+    $('#meta_db_pg_tcp_div').collapse('hide');
+  } else {
+    $('#meta_db_pg_tcp_div').collapse('show');
+    $('#meta_db_pg_socket_div').collapse('hide');
+  }
+}
 
 $('#meta_db_use').change(function() {
   use_collapse('meta_db_use');

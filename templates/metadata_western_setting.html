@@ -74,6 +74,12 @@
   </div>
 
   {{ macros.m_hr() }}
+  {{ macros.setting_checkbox('western_use_preview_clip', '프리뷰 클립 생성', value=arg['western_use_preview_clip'], desc=['Western 씬/영화에 대해 몽타주 프리뷰 클립을 생성하고 관리하는 기능을 활성화합니다. (세부 FFmpeg/Rclone 설정은 JAV Censored 설정 공유)']) }}
+  <div id="western_use_preview_clip_div" class="collapse">
+    {{ macros.setting_checkbox('western_preview_auto_create', '예고편 부재 시 프리뷰 클립 자동 생성', value=arg.get('western_preview_auto_create'), desc=['공식 예고편이 없을 때 원본 영상에서 프리뷰 클립을 백그라운드로 자동 생성합니다.']) }}
+  </div>
+
+  {{ macros.m_hr() }}
 
   {{ macros.setting_radio_with_value('western_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['western_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 디스코드 웹훅 및 이미지 서버 기본 설정(URL, 로컬 Root, 저장 방식)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
 
@@ -98,6 +104,11 @@ $(document).ready(function(){
   use_collapse("western_use_smart_crop");
   use_collapse("western_stashdb_use_fingerprint");
   use_collapse("western_image_server_save_actor");
+  use_collapse("western_use_preview_clip");
+});
+
+$('#western_use_preview_clip').change(function() {
+  use_collapse('western_use_preview_clip');
 });
 
 $('input[type=radio][name=western_actor_image_mode]').change(function() {

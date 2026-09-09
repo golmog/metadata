@@ -118,18 +118,13 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
     var current_module_name = (typeof sub !== 'undefined' && sub) ? sub : get_current_module_sub();
     var is_person_page = get_list_context().type === 'person';
 
-    var is_meta_db_system_cmd = (typeof command === 'string') && (
-        command === 'db_vacuum' ||
-        command === 'db_test_connection' ||
-        command === 'db_pg_admin_action' ||
-        command === 'db_transfer_start' ||
-        command === 'db_transfer_stop' ||
-        command === 'db_transfer_status' ||
-        command === 'db_import' ||
-        command === 'db_import_stop' ||
-        command === 'db_import_status' ||
-        command === 'db_export'
-    );
+    // 메타 DB 시스템 명령 및 프리뷰 클립 제어는 전용 API 라우트로 직결
+    var is_meta_db_system_cmd = (pathname.indexOf('/meta_db/') !== -1) ||
+        (typeof command === 'string' && (
+            command.indexOf('db_') === 0 ||
+            command.indexOf('preview_clip') !== -1 ||
+            command === 'get_meta_by_code'
+        ));
 
     var target_module = current_module_name;
     if (pathname.indexOf('/meta_db/') !== -1 || is_meta_db_system_cmd) {
@@ -138,9 +133,11 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
 
     var is_person_req = is_person_page || (typeof command === 'string' && command.indexOf('person_') === 0) || (options && options.category === 'PERSON');
 
-    var request_url = is_person_req
-        ? ('/' + package_name + '/person_api')
-        : ('/' + package_name + '/ajax/' + target_module);
+        var request_url = is_person_req
+            ? ('/' + package_name + '/person_api')
+            : (is_meta_db_system_cmd
+                ? ('/' + package_name + '/meta_api')
+                : ('/' + package_name + '/ajax/' + target_module));
 
     var postData = {
         sub: target_module,
@@ -546,10 +543,27 @@ function injectDbModals() {
 
                 <div class="form-group mb-2">
                   <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="small font-weight-bold mb-0">예고편 비디오 URL (Trailer)</label>
-                    <span class="badge badge-dark border border-secondary text-info btn-play-trailer-modal" id="btn_modal_play_trailer" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px;" title="예고편 비디오 바로 재생">🎬 예고편 재생</span>
+                    <label class="small font-weight-bold mb-0">예고편 비디오 (Trailer)</label>
+                    <div class="btn-group btn-group-sm" role="group">
+                      <span class="badge badge-dark border border-secondary text-info btn-play-trailer-modal mr-1" id="btn_modal_play_trailer" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="공식 예고편 재생">🎬 트레일러 재생</span>
+                      <span class="badge badge-dark border border-success text-success mr-1" id="btn_modal_play_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 재생">▶ 프리뷰 재생</span>
+                      <span class="badge badge-dark border border-primary text-primary mr-1" id="btn_modal_create_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px;" title="원본 영상에서 프리뷰 클립 수동 생성">⚡ 프리뷰 생성</span>
+                      <span class="badge badge-dark border border-danger text-danger" id="btn_modal_delete_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 및 파일 삭제">🗑️ 프리뷰 삭제</span>
+                    </div>
                   </div>
-                  <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="사이트 원본 또는 예고편 스트림 URL">
+                  <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="공식 예고편 스트림 URL">
+
+                  <!-- 프리뷰 클립 추출용 원본 동영상 경로 인라인 슬라이드 바 -->
+                  <div id="div_preview_source_bar" class="p-2 my-2 rounded bg-dark border border-secondary shadow-sm" style="display: none;">
+                    <div class="d-flex align-items-center">
+                      <span class="small font-weight-bold text-info mr-2 text-nowrap">🎥 원본 파일:</span>
+                      <input type="text" class="form-control form-control-sm mr-2" id="input_preview_source_path" placeholder="/mnt/nas/video/ABC-123.mp4 (전체 절대 경로)">
+                      <button type="button" class="btn btn-sm btn-secondary mr-1 text-nowrap font-weight-bold py-1 px-2" id="btn_cancel_preview_source">취소</button>
+                      <button type="button" class="btn btn-sm btn-primary text-nowrap font-weight-bold py-1 px-3" id="btn_confirm_create_preview">생성 실행</button>
+                    </div>
+                  </div>
+
+                  <div id="div_preview_clip_info" class="small text-info mt-1" style="display: none;"></div>
                 </div>
 
                 <div class="form-group mb-2">
@@ -2248,6 +2262,40 @@ function openDbEditModalByData(row, $targetModal) {
 
     $modal.find('#edit_trailer_url').val(raw_trailer_url || final_trailer_url || '');
 
+    // 예고편 URL은 정규 원본 링크 또는 extras에서 추출
+    var currentTrailerUrl = raw_trailer_url || final_trailer_url || '';
+    $modal.find('#edit_trailer_url').val(currentTrailerUrl);
+
+    // 공식 트레일러 URL이 있을 때만 트레일러 재생 버튼 노출
+    if (currentTrailerUrl) {
+        $modal.find('#btn_modal_play_trailer').show();
+    } else {
+        $modal.find('#btn_modal_play_trailer').hide();
+    }
+
+    // 프리뷰 클립 존재 여부에 따른 버튼 상태 및 안내 텍스트 갱신
+    var extraData = (jd.extra_info && typeof jd.extra_info === 'object') ? jd.extra_info : (row.extra_info || {});
+    var previewClip = extraData.preview_clip;
+
+    if (previewClip && (previewClip.google_fileid || previewClip.local_path)) {
+        $modal.find('#btn_modal_play_preview').show();
+        $modal.find('#btn_modal_delete_preview').show();
+        $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 재생성');
+
+        var storageLabel = (previewClip.storage_type === 'gdrive') ? '구글 드라이브' : '로컬 디스크';
+        var clipDetailText = '🎞️ 프리뷰 클립 등록됨: [' + storageLabel + '] ' + (previewClip.duration || 60) + '초 (' + (previewClip.created_time || '') + ')';
+        $modal.find('#div_preview_clip_info').text(clipDetailText).show();
+    } else {
+        $modal.find('#btn_modal_play_preview').hide();
+        $modal.find('#btn_modal_delete_preview').hide();
+        $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 생성');
+        $modal.find('#div_preview_clip_info').hide().text('');
+    }
+
+    // 인라인 경로 입력 바 닫기 및 기존 보관된 동영상 경로 사전 입력
+    $modal.find('#div_preview_source_bar').hide();
+    $modal.find('#input_preview_source_path').val(extraData.source_video_path || '');
+
     $modal.find('#edit_fanarts').val(raw_fanarts.join('\n'));
     $modal.find('#edit_plot').val(jd.plot || row.plot || '');
 
@@ -2812,6 +2860,115 @@ $(document).off('click', '#btn_modal_play_trailer').on('click', '#btn_modal_play
     var site = $modal.find('#edit_site').val() || '';
     var playUrl = getDisplayMediaUrl(rawUrl, site, 'video');
     openVideoPlayerModal(playUrl, currentTitle);
+});
+
+// 프리뷰 클립 수동 생성 및 재생성 핸들러
+$(document).off('click', '#btn_modal_create_preview').on('click', '#btn_modal_create_preview', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var $sourceBar = $modal.find('#div_preview_source_bar');
+
+    $sourceBar.slideToggle(120, function(){
+        if ($(this).is(':visible')) {
+            $modal.find('#input_preview_source_path').trigger('focus').select();
+        }
+    });
+});
+
+// 인라인 경로 입력 바 취소 버튼
+$(document).off('click', '#btn_cancel_preview_source').on('click', '#btn_cancel_preview_source', function(e){
+    e.preventDefault();
+    $(this).closest('#div_preview_source_bar').slideUp(120);
+});
+
+// 인라인 바에서 [생성 실행] 클릭 시 실제 백그라운드 인코딩 파이프라인 가동
+$(document).off('click', '#btn_confirm_create_preview').on('click', '#btn_confirm_create_preview', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var code = $modal.find('#edit_code').val();
+    var row = $modal.data('row_data') || {};
+    var inputVideoPath = $modal.find('#input_preview_source_path').val().trim();
+
+    if (!inputVideoPath) {
+        if (typeof notify === 'function') notify('프리뷰를 추출할 원본 동영상 파일의 전체 경로를 입력하세요.', 'warning');
+        $modal.find('#input_preview_source_path').trigger('focus');
+        return;
+    }
+
+    var $btn = $(this);
+    var origText = $btn.text();
+    $btn.prop('disabled', true).text('생성 중...');
+
+    if (typeof notify === 'function') notify('[' + code + '] 프리뷰 클립 생성을 시작합니다...', 'info');
+
+    var currentCat = row.category || get_list_context().category;
+    var payload = { video_path: inputVideoPath };
+
+    globalSendCommand('make_preview_clip', code, currentCat, JSON.stringify(payload), function(ret){
+        $btn.prop('disabled', false).text(origText);
+        if (ret && ret.ret === 'success') {
+            $modal.find('#div_preview_source_bar').slideUp(120);
+            var successMsg = ret.msg || ret.message || '프리뷰 클립이 성공적으로 생성되었습니다.';
+            if (typeof notify === 'function') notify(successMsg, 'success');
+            reloadDbEditModalData(code, currentCat, $modal);
+        } else {
+            var failMsg = (ret && (ret.msg || ret.message || ret.data || ret.log)) || '프리뷰 클립 생성 실패 (응답 없음)';
+            if (typeof notify === 'function') notify(failMsg, 'warning');
+        }
+    });
+});
+
+// 프리뷰 클립 재생 핸들러
+$(document).off('click', '#btn_modal_play_preview').on('click', '#btn_modal_play_preview', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var code = $modal.find('#edit_code').val();
+    var row = $modal.data('row_data') || {};
+    var jd = row.json_data || {};
+    var extraData = jd.extra_info || {};
+    var pClip = extraData.preview_clip;
+
+    if (!pClip) {
+        if (typeof notify === 'function') notify('등록된 프리뷰 클립이 없습니다.', 'warning');
+        return;
+    }
+
+    var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1);
+    var videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
+    var streamUrl = '';
+
+    if (pClip.storage_type === 'gdrive' && pClip.google_fileid) {
+        streamUrl = '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_gdrive&fileid=' + pClip.google_fileid + '&cat=' + (row.category || get_list_context().category);
+    } else if (pClip.local_path) {
+        streamUrl = '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_local&path=' + encodeURIComponent(pClip.local_path);
+    }
+
+    if (streamUrl) {
+        var currentTitle = $modal.find('#edit_title').val() || '프리뷰 영상';
+        openVideoPlayerModal(streamUrl, '[프리뷰] ' + currentTitle);
+    }
+});
+
+// 프리뷰 클립 영구 삭제 핸들러 (구글 드라이브 및 로컬 파일 완전 삭제)
+$(document).off('click', '#btn_modal_delete_preview').on('click', '#btn_modal_delete_preview', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var code = $modal.find('#edit_code').val();
+    var row = $modal.data('row_data') || {};
+
+    if (!confirm("⚠️ 등록된 프리뷰 영상 파일(구글 드라이브 또는 로컬 파일)과 메타 정보를 완전히 삭제하시겠습니까?")) {
+        return;
+    }
+
+    var currentCat = row.category || get_list_context().category;
+    globalSendCommand('delete_preview_clip', code, currentCat, null, function(ret){
+        if (ret && ret.ret === 'success') {
+            if (typeof notify === 'function') notify(ret.msg, 'success');
+            reloadDbEditModalData(code, currentCat, $modal);
+        } else {
+            if (typeof notify === 'function') notify(ret ? ret.msg : '삭제 실패', 'warning');
+        }
+    });
 });
 
 // 목록 내 슬레이트(🎬) 아이콘 클릭 시 비디오 모달 즉시 재생
@@ -4016,26 +4173,47 @@ function set_db_engine_view(val) {
 
 $(document).on('click', '#btn_open_pg_admin_modal', function(e){
     e.preventDefault();
-    $('#pg_target_host').val($('#meta_db_pg_host').val() || 'postgres');
-    $('#pg_target_port').val($('#meta_db_pg_port').val() || '5432');
-    $('#pg_target_db').val($('#meta_db_pg_name').val() || 'metadata');
-    $('#pg_target_user').val($('#meta_db_pg_user').val() || 'metadata');
-    $('#pg_target_pass').val($('#meta_db_pg_pass').val() || '');
+    var mainHost = ($('#meta_db_pg_host').val() || '').trim();
+    var mainPort = ($('#meta_db_pg_port').val() || '').trim();
+    var mainDb = ($('#meta_db_pg_name').val() || '').trim();
+    var mainUser = ($('#meta_db_pg_user').val() || '').trim();
+    var mainPass = ($('#meta_db_pg_pass').val() || '').trim();
+
+    $('#pg_target_host').val(mainHost || 'postgres');
+    $('#pg_target_port').val(mainPort || '5432');
+    $('#pg_target_db').val(mainDb || 'metadata');
+    $('#pg_target_user').val(mainUser || 'metadata');
+    $('#pg_target_pass').val(mainPass);
     $('#pgAdminModal').modal('show');
 });
 
 $(document).on('click', '#btn_test_db_conn', function(e){
     e.preventDefault();
-    var db_type = $('input[name="meta_db_engine_type"]:checked').val();
-    var host = $('#meta_db_pg_host').val();
-    var port = $('#meta_db_pg_port').val();
-    var user = $('#meta_db_pg_user').val();
-    var password = $('#meta_db_pg_pass').val();
-    var dbname = $('#meta_db_pg_name').val();
+    var db_type = $('input[name="meta_db_engine_type"]:checked').val() || 'sqlite';
+    var conn_type = $('input[name="meta_db_pg_conn_type"]:checked').val() || 'tcp';
+    var host = ($('#meta_db_pg_host').val() || '').trim() || 'postgres';
+    var port = ($('#meta_db_pg_port').val() || '').trim() || '5432';
+    var socket_dir = ($('#meta_db_pg_socket_dir').val() || '').trim() || '/var/run/postgresql';
+    var user = ($('#meta_db_pg_user').val() || '').trim();
+    var password = ($('#meta_db_pg_pass').val() || '').trim();
+    var dbname = ($('#meta_db_pg_name').val() || '').trim();
 
-    globalSendCommand('db_test_connection', null, null, null, function(ret){
+    // 소켓 방식일 때는 소켓 디렉토리 경로를 호스트 파라미터로 전송
+    var final_host = (conn_type === 'socket') ? socket_dir : host;
+
+    var connPayload = {
+        db_type: db_type,
+        conn_type: conn_type,
+        host: final_host,
+        port: port,
+        user: user,
+        password: password,
+        dbname: dbname
+    };
+
+    globalSendCommand('db_test_connection', db_type, JSON.stringify(connPayload), null, function(ret){
         notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
-    }, {db_type: db_type, host: host, port: port, user: user, password: password, dbname: dbname});
+    });
 });
 
 $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db', function(e){
@@ -4043,40 +4221,60 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
     var btn_id = $(this).attr('id');
     var action = (btn_id === 'btn_pg_test_admin') ? 'test_admin' : ((btn_id === 'btn_pg_create_db') ? 'create_db_and_user' : 'drop_db_and_user');
 
-    var admin_user = $('#pg_admin_user').val().trim();
+    // 입력값이 비어있을 경우 플레이스홀더 또는 기본 추천값으로 안전 폴백
+    var hostInput = $('#pg_target_host').val().trim();
+    var host = hostInput || $('#pg_target_host').attr('placeholder') || 'postgres';
+    if (host.indexOf(' ') !== -1) host = host.split(' ')[0];
+    $('#pg_target_host').val(host);
+
+    var portInput = $('#pg_target_port').val().trim();
+    var port = portInput || $('#pg_target_port').attr('placeholder') || '5432';
+    $('#pg_target_port').val(port);
+
+    var admin_user = $('#pg_admin_user').val().trim() || 'postgres';
+    $('#pg_admin_user').val(admin_user);
+
     var admin_pass = $('#pg_admin_pass').val().trim();
-    var host = $('#pg_target_host').val().trim();
-    var port = $('#pg_target_port').val().trim();
-    var target_db = $('#pg_target_db').val().trim();
-    var target_user = $('#pg_target_user').val().trim();
+    var target_db = $('#pg_target_db').val().trim() || 'metadata';
+    var target_user = $('#pg_target_user').val().trim() || 'metadata';
     var target_pass = $('#pg_target_pass').val().trim();
 
+    // 관리자 접속 확인 시 필수 항목 검증
+    if (!host) {
+        if (typeof notify === 'function') notify('대상 서버 주소(Host)를 입력하세요.', 'warning');
+        $('#pg_target_host').trigger('focus');
+        return;
+    }
     if (!admin_user) {
-        notify('관리자 아이디(Superuser)를 입력하세요.', 'warning');
+        if (typeof notify === 'function') notify('관리자 아이디(Superuser)를 입력하세요.', 'warning');
+        $('#pg_admin_user').trigger('focus');
         return;
     }
 
+    // DB 및 유저 생성/삭제 시 대상 DB명과 유저명 추가 검증
     if (action !== 'test_admin') {
-        if (!host || !port || !target_db || !target_user) {
-            notify('대상 서버, DB명, 유저명 정보를 모두 입력하세요.', 'warning');
+        if (!target_db || !target_user) {
+            if (typeof notify === 'function') notify('생성/삭제할 대상 DB명과 유저명을 입력하세요.', 'warning');
             return;
         }
-    }
-
-    if (action === 'drop_db_and_user') {
-        var dropConfirmMsg = "⚠️ [주의] PostgreSQL 데이터베이스 및 유저 삭제\n\n" +
-            "• 대상 서버: " + host + ":" + port + "\n" +
-            "• 삭제할 데이터베이스: [" + target_db + "]\n" +
-            "• 삭제할 전용 유저: [" + target_user + "]\n\n" +
-            "해당 데이터베이스의 모든 메타데이터 테이블과 데이터가 영구히 삭제됩니다.\n정말 진행하시겠습니까?";
-        if (!confirm(dropConfirmMsg)) return;
     }
 
     var btn = $(this);
     var origText = btn.text();
     btn.prop('disabled', true).text('처리 중...');
 
-    globalSendCommand('db_pg_admin_action', action, null, null, function(ret){
+    var adminPayload = {
+        action: action,
+        host: host,
+        port: port,
+        admin_user: admin_user,
+        admin_pass: admin_pass,
+        target_db: target_db,
+        target_user: target_user,
+        target_pass: target_pass
+    };
+
+    globalSendCommand('db_pg_admin_action', action, JSON.stringify(adminPayload), null, function(ret){
         btn.prop('disabled', false).text(origText);
         notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
 
@@ -4088,43 +4286,200 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
             $('#meta_db_pg_pass').val(target_pass);
             $('#pgAdminModal').modal('hide');
         }
-    }, {
-        admin_user: admin_user, admin_pass: admin_pass, host: host, port: port,
-        target_db: target_db, target_user: target_user, target_pass: target_pass
     });
 });
+
+// DB 전송 실시간 진행률 폴링 타이머 헬퍼
+function start_transfer_status_timer() {
+    if (transfer_timer) {
+        clearInterval(transfer_timer);
+        transfer_timer = null;
+    }
+
+    transfer_timer = setInterval(function(){
+        $.ajax({
+            url: '/' + package_name + '/meta_api',
+            type: 'POST',
+            cache: false,
+            global: false,
+            data: { command: 'db_transfer_status' },
+            dataType: 'json',
+            success: function(ret){
+                if (!ret || !ret.data) return;
+                var data = ret.data;
+
+                var total = data.total || 0;
+                var current = data.current || 0;
+                var inserted = data.inserted || 0;
+                var updated = data.updated || 0;
+                var skipped = data.skipped || 0;
+                var fail = data.fail || 0;
+                var mode = data.mode || 'merge';
+
+                var pct = total > 0 ? (current / total * 100).toFixed(1) : 0;
+
+                $('#transfer_progress_percent').text(pct + '%');
+                $('#transfer_progress_bar').css('width', pct + '%').text(pct + '%');
+
+                var statsText = '';
+                if (mode === 'missing') {
+                    statsText = '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (신규: ' + inserted.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ')';
+                } else if (mode === 'merge') {
+                    statsText = '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (신규: ' + inserted.toLocaleString() + ' | 갱신: ' + updated.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ')';
+                } else {
+                    statsText = '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (복제: ' + inserted.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ')';
+                }
+                $('#transfer_progress_stats').text(statsText);
+                $('#transfer_progress_status_text').text(data.status || '전송 진행 중...');
+
+                if (data.current_code) {
+                    $('#transfer_progress_code').text(data.current_code);
+                }
+
+                if (data.is_running === false && total > 0) {
+                    clearInterval(transfer_timer);
+                    transfer_timer = null;
+
+                    $('#btn_transfer_start').prop('disabled', false).show();
+                    $('#btn_transfer_stop').hide();
+                    $('#transfer_progress_bar').removeClass('progress-bar-animated bg-primary').addClass('bg-success');
+
+                    var finishMsg = data.status || '데이터 복제가 완료되었습니다.';
+                    if (typeof notify === 'function') {
+                        notify(finishMsg, data.fail > 0 ? 'warning' : 'success');
+                    }
+                }
+            }
+        });
+    }, 1000);
+}
+
+// DB 임포트 실시간 진행률 폴링 타이머
+var import_status_timer = null;
+function start_import_status_timer() {
+    if (import_status_timer) {
+        clearInterval(import_status_timer);
+        import_status_timer = null;
+    }
+
+    import_status_timer = setInterval(function(){
+        $.ajax({
+            url: '/' + package_name + '/meta_api',
+            type: 'POST',
+            cache: false,
+            global: false,
+            data: { command: 'db_import_status' },
+            dataType: 'json',
+            success: function(ret){
+                if (!ret || !ret.data) return;
+                var data = ret.data;
+
+                var total = data.total || 0;
+                var current = data.current || 0;
+                var inserted = data.inserted || 0;
+                var updated = data.updated || 0;
+                var skipped = data.skipped || 0;
+                var fail = data.fail || 0;
+
+                var pct = total > 0 ? (current / total * 100).toFixed(1) : 0;
+
+                $('#import_progress_percent').text(pct + '%');
+                $('#import_progress_bar').css('width', pct + '%').text(pct + '%');
+                $('#import_progress_stats').text('신규: ' + inserted.toLocaleString() + ' | 갱신: ' + updated.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ' | 실패: ' + fail.toLocaleString());
+                $('#import_progress_status_text').text(data.status || '임포트 진행 중...');
+
+                if (data.current_code) {
+                    $('#import_progress_code').text(data.current_code);
+                }
+
+                if (data.is_running === false && total > 0) {
+                    clearInterval(import_status_timer);
+                    import_status_timer = null;
+
+                    $('#btn_db_import_merge, #btn_db_import_missing').prop('disabled', false).show();
+                    $('#btn_db_import_stop').hide();
+                    $('#import_progress_bar').removeClass('progress-bar-animated bg-info').addClass('bg-success');
+
+                    var finishMsg = data.status || '임포트 작업이 완료되었습니다.';
+                    if (typeof notify === 'function') {
+                        notify(finishMsg, data.fail > 0 ? 'warning' : 'success');
+                    }
+                }
+            }
+        });
+    }, 1000);
+}
 
 $(document).on('click', '#btn_transfer_start', function(e){
     e.preventDefault();
     var dir = $('#meta_db_transfer_direction').val() || 'sqlite_to_pg';
+    var mode = $('input[name="meta_db_transfer_mode"]:checked').val() || 'merge';
     var src = (dir === 'sqlite_to_pg') ? 'sqlite' : 'postgres';
     var tgt = (dir === 'sqlite_to_pg') ? 'postgres' : 'sqlite';
 
-    var btn = $(this);
-    var origText = btn.text();
-    btn.prop('disabled', true).text('전송 진행 중...');
+    if (mode === 'clean') {
+        var tgtLabel = (tgt === 'postgres') ? 'PostgreSQL' : 'SQLite3';
+        if (!confirm("⚠️ [경고] 목적지(" + tgtLabel + ")의 모든 작품 및 인물 데이터가 완전히 삭제된 후 소스 데이터로 복제됩니다.\n정말 계속하시겠습니까?")) {
+            return;
+        }
+    }
 
-    notify('DB 데이터 복제를 백그라운드에서 시작합니다...', 'info');
+    $('#btn_transfer_start').prop('disabled', true).hide();
+    $('#btn_transfer_stop').show();
 
-    globalSendCommand('db_transfer_start', src, tgt, null, function(ret){
-        btn.prop('disabled', false).text(origText);
-        notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    $('#transfer_progress_div').slideDown(150);
+    $('#transfer_progress_status_text').text('데이터 복제 작업을 시작합니다...');
+    $('#transfer_progress_percent').text('0.0%');
+    $('#transfer_progress_bar').css('width', '0%').text('0%').removeClass('bg-success bg-danger').addClass('progress-bar-animated bg-primary');
+    $('#transfer_progress_stats').text('복제 준비 중...');
+    $('#transfer_progress_code').text('-');
+
+    if (typeof notify === 'function') {
+        notify('DB 데이터 복제를 백그라운드에서 시작합니다...', 'info');
+    }
+
+    start_transfer_status_timer();
+
+    var transferPayload = {
+        src: src,
+        tgt: tgt,
+        mode: mode
+    };
+
+    globalSendCommand('db_transfer_start', src, tgt, JSON.stringify(transferPayload), function(ret){
+        if (!ret || ret.ret !== 'success') {
+            if (transfer_timer) {
+                clearInterval(transfer_timer);
+                transfer_timer = null;
+            }
+            $('#btn_transfer_start').prop('disabled', false).show();
+            $('#btn_transfer_stop').hide();
+            if (typeof notify === 'function') {
+                notify('전송 요청 실패: ' + (ret ? ret.msg : '응답 없음'), 'warning');
+            }
+        }
     });
 });
 
 $(document).on('click', '#btn_transfer_stop', function(e){
     e.preventDefault();
+    if (!confirm("진행 중인 DB 전송 작업을 중단하시겠습니까?")) return;
+
     globalSendCommand('db_transfer_stop', null, null, null, function(ret){
-        notify(ret.msg, 'warning');
+        if (typeof notify === 'function') {
+            notify(ret.msg || '전송 중단 요청이 전달되었습니다.', 'warning');
+        }
     });
 });
 
 $(document).on('click', '#btn_db_import_stop', function(e){
     e.preventDefault();
     if (!confirm("진행 중인 임포트 작업을 중단하시겠습니까?")) return;
-    
+
     globalSendCommand('db_import_stop', null, null, null, function(ret){
-        notify(ret.msg || '중단 요청이 전송되었습니다.', 'warning');
+        if (typeof notify === 'function') {
+            notify(ret.msg || '중단 요청이 전송되었습니다.', 'warning');
+        }
     });
 });
 
@@ -4139,26 +4494,33 @@ $(document).on('click', '#btn_db_import_merge, #btn_db_import_missing', function
     var mode = ($(this).attr('id') === 'btn_db_import_merge') ? 'update' : 'missing';
     var mode_label = (mode === 'update') ? '스마트 병합' : '없는 것만';
 
-    notify(mode_label + " 임포트 작업을 백그라운드에서 시작합니다...", 'info');
-    
-    // 진행 영역 활성화 및 상태 표시
-    $('#import_progress_div').show();
-    $('#import_progress_status_text').text(mode_label + ' 임포트 요청 전송 중...');
-    $('#import_progress_percent').text('처리 중');
-    $('#import_progress_bar').css('width', '100%').text('진행 중').removeClass('bg-danger bg-success').addClass('progress-bar-animated bg-info');
-    $('#import_progress_stats').text('백그라운드 스레드에서 임포트 작업이 수행됩니다.');
-    $('#import_progress_code').text('진행 상세 내역은 플러그인 로그를 확인하세요.');
+    $('#btn_db_import_merge, #btn_db_import_missing').prop('disabled', true);
+    $('#btn_db_import_stop').show();
+
+    $('#import_progress_div').slideDown(150);
+    $('#import_progress_status_text').text(mode_label + ' 임포트 작업을 시작합니다...');
+    $('#import_progress_percent').text('0.0%');
+    $('#import_progress_bar').css('width', '0%').text('0%').removeClass('bg-danger bg-success').addClass('progress-bar-animated bg-info');
+    $('#import_progress_stats').text('임포트 준비 중...');
+    $('#import_progress_code').text('-');
+
+    if (typeof notify === 'function') {
+        notify(mode_label + " 임포트 작업을 백그라운드에서 시작합니다...", 'info');
+    }
+
+    start_import_status_timer();
 
     globalSendCommand('db_import', path, mode, null, function(ret){
-        notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
-        if (ret && ret.ret === 'success') {
-            $('#import_progress_status_text').text(mode_label + ' 임포트 백그라운드 가동 완료');
-            $('#import_progress_percent').text('가동됨');
-            $('#import_progress_bar').removeClass('progress-bar-animated bg-info').addClass('bg-success').text('스레드 동작 중');
-        } else {
-            $('#import_progress_status_text').text('임포트 요청 실패: ' + (ret ? ret.msg : '서버 응답 없음'));
-            $('#import_progress_percent').text('오류');
-            $('#import_progress_bar').removeClass('progress-bar-animated bg-info').addClass('bg-danger').text('실패');
+        if (!ret || ret.ret !== 'success') {
+            if (import_status_timer) {
+                clearInterval(import_status_timer);
+                import_status_timer = null;
+            }
+            $('#btn_db_import_merge, #btn_db_import_missing').prop('disabled', false);
+            $('#btn_db_import_stop').hide();
+            if (typeof notify === 'function') {
+                notify('임포트 요청 실패: ' + (ret ? ret.msg : '서버 응답 없음'), 'warning');
+            }
         }
     });
 });

@@ -82,6 +82,9 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_actor_image_mode": "site",
             f"{self.name}_image_server_actor_path": "/western/actors",
             f"{self.name}_actor_img_order": "site_img_url, local_img_path",
+
+            f"{self.name}_use_preview_clip": "False",
+            f"{self.name}_preview_auto_create": "False",
         }
 
         # 백그라운드 작업 상태 관리
@@ -490,6 +493,12 @@ class ModuleWestern(PluginModuleBase):
                 meta_module = P.get_module('meta_db')
                 if meta_module:
                     return meta_module.process_command('get_meta_by_code', arg1, arg2, arg3, req)
+                return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
+
+            elif command in ['make_preview_clip', 'delete_preview_clip']:
+                meta_module = P.get_module('meta_db')
+                if meta_module:
+                    return meta_module.process_command(command, arg1, arg2, arg3, req)
                 return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
 
             return jsonify(ret)
@@ -919,6 +928,30 @@ class ModuleWestern(PluginModuleBase):
             if tag_option in ["network", "studio_network"]:
                 if safe_network and safe_network != 'Unknown' and safe_network not in ret["tag"]:
                     ret["tag"].append(safe_network)
+
+        if ret:
+            title_log = ret.get('title', 'No Title')
+            year_log = ret.get('year', '????')
+            site_log = ret.get('site', 'unknown').upper()
+            logger.info(f"[{site_log} Success] Code: {code}, Title: {title_log} ({year_log})")
+
+        # 전달된 동영상 파일 경로를 extra_info에 보관하고 조건 충족 시 프리뷰 클립 자동 생성
+        media_path = opts.get('media_path')
+        if media_path and os.path.exists(media_path):
+            if 'extra_info' not in ret or not isinstance(ret['extra_info'], dict):
+                ret['extra_info'] = {}
+            ret['extra_info']['source_video_path'] = media_path
+
+            from .util_preview import MetaPreviewUtil
+            if MetaPreviewUtil.is_auto_create_enabled(self.category) and not ret.get('extras'):
+                code_val = ret.get('code') or code
+                cat_val = self.category
+                threading.Thread(
+                    target=MetaPreviewUtil.process_preview_workflow,
+                    args=(code_val, media_path, cat_val),
+                    daemon=True
+                ).start()
+                logger.info(f"[{self.name}] 공식 트레일러 부재 감지 -> 백그라운드 프리뷰 클립 자동 생성 트리거: {code_val}")
 
         # 메타 DB 단일 저장 (남녀 배우 전원 및 extra_info가 포함된 상태로 저장하여 MetaPerson 구축)
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
