@@ -105,6 +105,9 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2com_use_javten_web': 'True',
             f'{self.name}_fc2com_use_javten_proxy': 'False',
             f'{self.name}_fc2com_javten_proxy_url': '',
+
+            f"{self.name}_use_preview_clip": "False",
+            f"{self.name}_preview_auto_create": "False",
         }
 
         # 백그라운드 작업 상태 관리
@@ -561,6 +564,12 @@ class ModuleJavUncensored(PluginModuleBase):
                     return meta_module.process_command('get_meta_by_code', arg1, arg2, arg3, req)
                 return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
 
+            elif command in ['make_preview_clip', 'delete_preview_clip']:
+                meta_module = P.get_module('meta_db')
+                if meta_module:
+                    return meta_module.process_command(command, arg1, arg2, arg3, req)
+                return jsonify({'ret': 'error', 'msg': 'meta_db 모듈을 찾을 수 없습니다.'})
+
             return jsonify(ret)
 
         except Exception as e:
@@ -578,7 +587,8 @@ class ModuleJavUncensored(PluginModuleBase):
 
             if sub == "info":
                 code = req.args.get("code")
-                data = self.info(code)
+                media_path = req.args.get("media_path") or req.args.get("path")
+                data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
                 if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
@@ -1018,6 +1028,24 @@ class ModuleJavUncensored(PluginModuleBase):
             title_log = ret.get('title', 'No Title')
             year_log = ret.get('year', '????')
             logger.info(f"[{self.name}] Info Success: Code: {code} -> {title_log} ({year_log})")
+
+        # 전달된 동영상 파일 경로를 extra_info에 보관하고 조건 충족 시 프리뷰 클립 자동 생성
+        media_path = opts.get('media_path')
+        if media_path and os.path.exists(media_path):
+            if 'extra_info' not in ret or not isinstance(ret['extra_info'], dict):
+                ret['extra_info'] = {}
+            ret['extra_info']['source_video_path'] = media_path
+
+            from .util_preview import MetaPreviewUtil
+            if MetaPreviewUtil.is_auto_create_enabled(self.category) and not ret.get('extras'):
+                code_val = ret.get('code') or code
+                cat_val = self.category
+                threading.Thread(
+                    target=MetaPreviewUtil.process_preview_workflow,
+                    args=(code_val, media_path, cat_val),
+                    daemon=True
+                ).start()
+                logger.info(f"[{self.name}] 공식 트레일러 부재 감지 -> 백그라운드 프리뷰 클립 자동 생성 트리거: {code_val}")
 
         # DB에는 정규 마스터 데이터 영구 저장
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")

@@ -65,6 +65,12 @@
     </div>
 
     {{ macros.m_hr() }}
+    {{ macros.setting_checkbox('jav_uncensored_use_preview_clip', '프리뷰 클립 생성', value=arg['jav_uncensored_use_preview_clip'], desc=['Uncensored 작품에 대해 몽타주 프리뷰 클립을 생성하고 관리하는 기능을 활성화합니다. (세부 FFmpeg/Rclone 설정은 JAV Censored 설정 공유)']) }}
+    <div id="jav_uncensored_use_preview_clip_div" class="collapse">
+      {{ macros.setting_checkbox('jav_uncensored_preview_auto_create', '예고편 부재 시 프리뷰 클립 자동 생성', value=arg.get('jav_uncensored_preview_auto_create'), desc=['공식 예고편이 없을 때 원본 영상에서 프리뷰 클립을 백그라운드로 자동 생성합니다.']) }}
+    </div>
+
+    {{ macros.m_hr() }}
     {{ macros.setting_radio_with_value('jav_uncensored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_uncensored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용', '※ 이미지 서버 기본 설정(URL, 로컬 Root, 저장 방식)은 [JAV Censored] 설정을 공통으로 공유합니다.']) }}
 
     <div id="jav_uncensored_use_image_server_div" class="collapse">
@@ -90,6 +96,11 @@ $(document).ready(function(){
   use_collapse('jav_uncensored_fc2com_use_javten_web');
   use_collapse("jav_uncensored_fc2com_use_javten_proxy");
   use_image_server("{{arg['jav_uncensored_image_mode']}}");
+  use_collapse("jav_uncensored_use_preview_clip");
+});
+
+$('#jav_uncensored_use_preview_clip').change(function() {
+  use_collapse('jav_uncensored_use_preview_clip');
 });
 
 $('input[type=radio][name=jav_uncensored_image_mode]').change(function() {
