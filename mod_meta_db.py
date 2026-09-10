@@ -20,7 +20,7 @@ from sqlalchemy import (
     Text, JSON, DateTime, ForeignKey, or_, and_, func, text, Index,
     case, cast
 )
-from sqlalchemy.orm import sessionmaker, scoped_session, relationship
+from sqlalchemy.orm import sessionmaker, scoped_session, relationship, lazyload
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.pool import NullPool, QueuePool
 from sqlalchemy import event, inspect
@@ -60,7 +60,7 @@ class MetaItem(Base):
     domain = Column(String(30), nullable=False, index=True)
     category = Column(String(30), nullable=False, index=True)
     code = Column(String(100), nullable=False, unique=True, index=True)
-    ui_code = Column(String(100), nullable=False, index=True)
+    ui_code = Column(String(255), nullable=False, index=True)
     originaltitle = Column(String(255), nullable=False, index=True)
     sorttitle = Column(String(500), index=True)
     site = Column(String(50), nullable=False, index=True)
@@ -69,8 +69,8 @@ class MetaItem(Base):
     tagline = Column(String(500))
     plot = Column(Text)
 
-    director = Column(String(100))
-    studio = Column(String(100), index=True)
+    director = Column(String(255))
+    studio = Column(String(255), index=True)
     series = Column(String(255), index=True)
 
     premiered = Column(String(20), index=True)
@@ -95,6 +95,25 @@ class MetaItem(Base):
     media_files = relationship("MetaMedia", backref="item", cascade="all, delete-orphan", lazy="joined")
     person_maps = relationship("MetaItemPersonMap", backref="item", cascade="all, delete-orphan", lazy="joined", order_by="MetaItemPersonMap.sort_order")
     tag_maps = relationship("MetaItemTagMap", backref="item", cascade="all, delete-orphan", lazy="joined")
+    fingerprints = relationship("MetaFingerprint", backref="item", cascade="all, delete-orphan", lazy="joined")
+
+
+class MetaFingerprint(Base):
+    """비디오 지문(OSHash, pHash 등) 고속 B-Tree 색인 테이블"""
+    __tablename__ = 'meta_fingerprint'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey('meta_item.id', ondelete='CASCADE'), nullable=False, index=True)
+    category = Column(String(30), nullable=False, default="WESTERN", index=True)
+    code = Column(String(100), nullable=False, index=True)
+    algorithm = Column(String(20), nullable=False)
+    hash_value = Column(String(64), nullable=False, index=True)
+    source = Column(String(20), default="user")
+    created_time = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_fp_algo_hash', 'algorithm', 'hash_value'),
+    )
 
 
 class MetaPerson(Base):
@@ -280,7 +299,7 @@ class ModuleMetaDb(PluginModuleBase):
             cls._sessions['postgres'] = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=pg_engine))
             Base.metadata.create_all(bind=pg_engine)
             cls._auto_sync_table_columns(pg_engine)
-            logger.info(f"[MetaDB Engine] PostgreSQL 통합 엔진 초기화 완료: {pg_user}@{log_target}")
+            # logger.info(f"[MetaDB Engine] PostgreSQL 통합 엔진 초기화 완료: {pg_user}@{log_target}")
 
         else:
             db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
@@ -327,19 +346,27 @@ class ModuleMetaDb(PluginModuleBase):
     def _auto_sync_table_columns(cls, target_engine):
         try:
             inspector = inspect(target_engine)
+            is_pg = (target_engine.dialect.name == 'postgresql')
             with target_engine.connect() as conn:
                 for table_name, table_obj in Base.metadata.tables.items():
                     if inspector.has_table(table_name):
-                        existing_col_names = set(c['name'] for c in inspector.get_columns(table_name))
+                        existing_cols = {c['name']: c for c in inspector.get_columns(table_name)}
                         for column in table_obj.columns:
-                            if column.name not in existing_col_names:
+                            col_name = column.name
+                            if col_name not in existing_cols:
                                 col_type_sql = column.type.compile(target_engine.dialect)
-                                alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type_sql}"
+                                alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type_sql}"
                                 try:
                                     conn.execute(text(alter_sql))
-                                    logger.info(f"[MetaDB Schema Auto-Sync] {table_name} 테이블에 '{column.name}' ({col_type_sql}) 컬럼 추가 완료")
+                                    logger.info(f"[MetaDB Schema Auto-Sync] {table_name} 테이블에 '{col_name}' ({col_type_sql}) 컬럼 추가 완료")
                                 except Exception as e_col:
-                                    logger.debug(f"[MetaDB Schema Auto-Sync] {table_name}.{column.name} 스킵: {e_col}")
+                                    logger.debug(f"[MetaDB Schema Auto-Sync] {table_name}.{col_name} 스킵: {e_col}")
+                            elif is_pg and col_name in ['ui_code', 'originaltitle', 'director', 'studio', 'series']:
+                                # PostgreSQL 실존 컬럼의 길이가 작은 경우 255/500으로 자동 확장
+                                try:
+                                    conn.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN {col_name} TYPE VARCHAR(255)"))
+                                except Exception:
+                                    pass
                 conn.commit()
         except Exception as e:
             logger.debug(f"[MetaDB Schema Auto-Sync] 자동 동기화 예외: {e}")
@@ -375,6 +402,22 @@ class ModuleMetaDb(PluginModuleBase):
         if cat in ["WEST", "WESTERN"]:
             return "WESTERN"
         return "GENERAL"
+
+    @classmethod
+    def is_local_server_url(cls, url):
+        if not url or not isinstance(url, str):
+            return False
+        clean = url.strip().lower()
+        if '/images/' in clean or '/metadata/normal/' in clean:
+            return True
+        for key in ['jav_censored_image_server_url', 'western_image_server_url']:
+            srv = (P.ModelSetting.get(key) or '').strip().lower().rstrip('/')
+            if srv and clean.startswith(srv):
+                return True
+        ddns = (F.SystemModelSetting.get('ddns') or '').strip().lower().rstrip('/')
+        if ddns and clean.startswith(ddns):
+            return True
+        return False
 
     @classmethod
     def find_latest_jav_actors_db(cls):
@@ -417,6 +460,7 @@ class ModuleMetaDb(PluginModuleBase):
         동일인 클러스터로 묶고 원본 데이터를 보존한 단일 마스터 레코드로 합성합니다.
         """
         clusters = []
+        cluster_map = {}
 
         for r in raw_rows:
             r_dict = dict(r) if hasattr(r, 'keys') else r
@@ -426,36 +470,27 @@ class ModuleMetaDb(PluginModuleBase):
 
             name_org = str(r_dict.get("name_org") or "").strip()
             name_ko = str(r_dict.get("name_ko") or "").strip()
-            name_en = str(r_dict.get("name_en") or "").strip()
             site_img = str(r_dict.get("site_img_url") or "").strip()
-            birth = str(r_dict.get("birth") or "").strip()
 
             if not name_org:
                 continue
 
-            matched_cluster = None
-
-            for cluster in clusters:
-                c_master = cluster['master']
-                c_name_org = c_master.get('name_org', '')
-                c_site_img = c_master.get('site_img_url', '')
-
-                # 동일인 판별 기준: 원문 이름(name_org)과 프로필 사진 URL(site_img_url)이 모두 존재하고 100% 일치할 때 병합
-                if (name_org and c_name_org and name_org == c_name_org and
-                    site_img and c_site_img and site_img == c_site_img):
-                    matched_cluster = cluster
-                    break
+            # 원문명과 대표 사진 URL 조합으로 동일인 여부를 O(1) 고속 매칭
+            match_key = (name_org, site_img) if (name_org and site_img) else None
+            matched_cluster = cluster_map.get(match_key) if match_key else None
 
             if matched_cluster:
                 matched_cluster['sub_rows'].append(r_dict)
-                # 서브 행 중 한국어명이 있는 경우 클러스터 마스터에 보강
                 if not matched_cluster['master'].get('name_ko') and name_ko:
                     matched_cluster['master']['name_ko'] = name_ko
             else:
-                clusters.append({
+                new_cluster = {
                     'master': r_dict,
                     'sub_rows': [r_dict]
-                })
+                }
+                clusters.append(new_cluster)
+                if match_key:
+                    cluster_map[match_key] = new_cluster
 
         # 각 클러스터별 대표 선정 및 원본 자산 병합
         merged_entities = []
@@ -764,10 +799,13 @@ class ModuleMetaDb(PluginModuleBase):
             parts = [p for p in a_local.replace('\\', '/').strip('/').split('/') if p]
             a_local = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else a_local
 
-        a_site = str(actor_data.get('site_img_url') or a_media.get('site_img_url') or a_extra.get('site_img_url') or (a_thumb if a_thumb.startswith('http') else '')).strip()
+        a_site = str(actor_data.get('site_img_url') or a_media.get('site_img_url') or a_extra.get('site_img_url') or '').strip()
         a_google = str(actor_data.get('google_fileid') or a_media.get('google_fileid') or a_extra.get('google_fileid') or '').strip()
-        a_site_photos = list(actor_data.get('site_img_urls') or a_extra.get('site_img_urls') or a_media.get('site_img_urls') or [])
-        if a_site and a_site not in a_site_photos:
+
+        raw_photos = list(actor_data.get('site_img_urls') or a_extra.get('site_img_urls') or a_media.get('site_img_urls') or [])
+        a_site_photos = [u.strip() for u in raw_photos if u and isinstance(u, str) and u.strip().startswith('http')]
+
+        if a_site and a_site.startswith('http') and a_site not in a_site_photos:
             a_site_photos.insert(0, a_site)
 
         media_src_data = {
@@ -907,21 +945,21 @@ class ModuleMetaDb(PluginModuleBase):
             nested_item = s.begin_nested()
             nested_person = person_sess.begin_nested() if (person_sess and person_sess is not s) else None
 
-            originaltitle = entity_dict.get('originaltitle') or code
-            sorttitle = entity_dict.get('sorttitle') or entity_dict.get('title') or originaltitle
-            ui_code = entity_dict.get('ui_code') or originaltitle
-            site = entity_dict.get('site') or 'unknown'
-            title = entity_dict.get('title') or originaltitle
+            originaltitle = str(entity_dict.get('originaltitle') or code)[:255]
+            sorttitle = str(entity_dict.get('sorttitle') or entity_dict.get('title') or originaltitle)[:500]
+            ui_code = str(entity_dict.get('ui_code') or originaltitle)[:255]
+            site = str(entity_dict.get('site') or 'unknown')[:50]
+            title = str(entity_dict.get('title') or originaltitle)[:500]
             tagline = entity_dict.get('tagline') or ''
             plot = entity_dict.get('plot') or ''
-            director = entity_dict.get('director') or ''
-            studio = entity_dict.get('studio') or ''
+            director = str(entity_dict.get('director') or '')[:255]
+            studio = str(entity_dict.get('studio') or '')[:255]
 
             orig_dict = entity_dict.get('original') or {}
             if not isinstance(orig_dict, dict):
                 orig_dict = {}
 
-            series = orig_dict.get('series') or entity_dict.get('series') or ''
+            series = str(orig_dict.get('series') or entity_dict.get('series') or '')[:255]
             premiered = entity_dict.get('premiered') or ''
 
             try: year = int(entity_dict.get('year') or 1900)
@@ -1098,6 +1136,9 @@ class ModuleMetaDb(PluginModuleBase):
                     elif '_pl_user' in t_val:
                         item.media_files.append(MetaMedia(media_type="landscape", url="_pl_user", is_user=True, sort_order=1))
 
+            # 관계 테이블 동기화 및 양방향 연결 저장
+            item.person_maps.clear()
+
             # 배우 인물 DB 연동 및 관계 매핑
             person_dom = cls._person_domain_from_item_category(std_cat)
             if entity_dict.get('person_domain'):
@@ -1146,13 +1187,37 @@ class ModuleMetaDb(PluginModuleBase):
                         source_code=code,
                     )
                     if central_person:
+                        # RDBMS 정규 관계 테이블(MetaItemPersonMap)에 물리적 매핑 레코드 생성
+                        item.person_maps.append(MetaItemPersonMap(
+                            person_id=central_person.id,
+                            role_type="actor",
+                            role_name=a_role,
+                            sort_order=len(stored_actors)
+                        ))
+
                         works_dict = copy.deepcopy(central_person.works or {})
                         if not isinstance(works_dict, dict):
                             works_dict = {}
                         cat_works = works_dict.get(std_cat) or []
 
-                        if code not in cat_works:
-                            cat_works.append(code)
+                        work_entry = {
+                            'code': code,
+                            'ui_code': ui_code or originaltitle or code,
+                            'title': title or originaltitle or ''
+                        }
+
+                        # 기존 문자열 코드 또는 동일 코드 존재 여부 확인 후 최신 객체로 갱신
+                        work_idx = -1
+                        for idx, w in enumerate(cat_works):
+                            w_c = w.get('code') if isinstance(w, dict) else str(w)
+                            if w_c == code:
+                                work_idx = idx
+                                break
+
+                        if work_idx != -1:
+                            cat_works[work_idx] = work_entry
+                        else:
+                            cat_works.append(work_entry)
 
                         works_dict[std_cat] = cat_works
                         central_person.works = works_dict
@@ -1192,6 +1257,79 @@ class ModuleMetaDb(PluginModuleBase):
                 if tag_rec:
                     item.tag_maps.append(MetaItemTagMap(tag_id=tag_rec.id))
 
+            # 비디오 지문(Fingerprints) 3-Way 정밀 동기화
+            # - 'site': 원격 사이트 최신 상태 반영 (사이트에서 삭제된 오류 지문은 로컬에서도 정리)
+            # - 'user': 사용자가 로컬 영상에서 추가한 고유 지문은 사이트 갱신 시에도 영구 보존
+            # - '승격': 유저 지문이 추후 사이트 정식 지문으로 등록되면 'site'로 자동 승격
+            incoming_site_fps = {}
+            incoming_user_fps = {}
+
+            # 1. 사이트 원본 공식 지문 수집 (StashDB, TPDB 원격 응답)
+            if isinstance(entity_dict.get('original'), dict):
+                for fp in (entity_dict['original'].get('fingerprints') or []):
+                    if not isinstance(fp, dict): continue
+                    algo = str(fp.get('algorithm') or 'OSHASH').strip().upper()
+                    h_val = str(fp.get('hash') or fp.get('hash_value') or '').strip().lower()
+                    if algo and h_val:
+                        incoming_site_fps[f"{algo}_{h_val}"] = (algo, h_val)
+
+            # 2. 유저 추가 지문 및 extra_info 수집
+            all_extra_fps = []
+            if isinstance(entity_dict.get('extra_info'), dict):
+                all_extra_fps.extend(entity_dict['extra_info'].get('fingerprints') or [])
+            if isinstance(entity_dict.get('fingerprints'), list):
+                all_extra_fps.extend(entity_dict['fingerprints'])
+
+            for fp in all_extra_fps:
+                if not isinstance(fp, dict): continue
+                algo = str(fp.get('algorithm') or 'OSHASH').strip().upper()
+                h_val = str(fp.get('hash') or fp.get('hash_value') or '').strip().lower()
+                src = str(fp.get('source') or 'user').strip().lower()
+                if not algo or not h_val: continue
+
+                key = f"{algo}_{h_val}"
+                if src == 'site':
+                    incoming_site_fps[key] = (algo, h_val)
+                else:
+                    incoming_user_fps[key] = (algo, h_val)
+
+            # 3. 기존 DB에 저장되어 있던 유저 지문 보존 (사이트 갱신으로 인한 유실 방지)
+            for existing_fp in item.fingerprints:
+                if existing_fp.source == 'user':
+                    key = f"{existing_fp.algorithm}_{existing_fp.hash_value}"
+                    if key not in incoming_site_fps:
+                        incoming_user_fps[key] = (existing_fp.algorithm, existing_fp.hash_value)
+
+            # 4. 최종 동기화 목록 조립 (사이트 지문 최우선, 중복 유저 지문은 사이트로 승격)
+            final_fps_to_save = []
+            for k, (algo, h_val) in incoming_site_fps.items():
+                final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'site'})
+
+            for k, (algo, h_val) in incoming_user_fps.items():
+                if k not in incoming_site_fps:
+                    final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'user'})
+
+            # 5. 테이블 및 extra_info 일괄 반영
+            if final_fps_to_save or item.fingerprints:
+                item.fingerprints.clear()
+                sync_json_list = []
+                for fp_data in final_fps_to_save:
+                    item.fingerprints.append(MetaFingerprint(
+                        category=std_cat,
+                        code=code,
+                        algorithm=fp_data['algorithm'],
+                        hash_value=fp_data['hash_value'],
+                        source=fp_data['source']
+                    ))
+                    sync_json_list.append({
+                        'algorithm': fp_data['algorithm'],
+                        'hash': fp_data['hash_value'],
+                        'source': fp_data['source']
+                    })
+
+                merged_extra_info['fingerprints'] = sync_json_list
+                item.extra_info = merged_extra_info
+
             nested_item.commit()
             if nested_person:
                 nested_person.commit()
@@ -1225,9 +1363,13 @@ class ModuleMetaDb(PluginModuleBase):
         if not target_db_path:
             return False, "배우 배포 DB(jav_actors_*.db) 파일을 찾을 수 없습니다."
 
-        sess, _, _ = cls.get_session_and_domain('PERSON')
-        if not sess:
-            return False, "인물 DB 세션 생성 실패"
+        target_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get('person')
+        if not target_engine:
+            return False, "인물 DB 엔진 획득 실패"
+
+        # 대량 커밋 시 N+1 Lazy Fetch 방지를 위해 expire_on_commit=False 전용 세션 생성
+        sync_session_factory = sessionmaker(bind=target_engine, autocommit=False, autoflush=False, expire_on_commit=False)
+        sess = sync_session_factory()
 
         t_start = time.time()
         conn = None
@@ -1265,17 +1407,26 @@ class ModuleMetaDb(PluginModuleBase):
                     if alt_id not in person_idx_map:
                         person_idx_map[alt_id] = p
 
-            # 작품 출연작(Filmography) 매핑 수집
+            # 작품 출연작(Filmography) 매핑 수집 (거대 조인 방지를 위한 경량 컬럼 프로젝션 쿼리)
             existing_works_map = {}
             for cat in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']:
-                item_sess, _, _ = cls.get_session_and_domain(cat)
-                if item_sess:
+                item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(DOMAIN_MAP[cat][0])
+                if item_engine:
+                    work_query_session = sessionmaker(bind=item_engine, autocommit=False, autoflush=False, expire_on_commit=False)()
                     try:
-                        all_items = item_sess.query(MetaItem).filter_by(category=cat).all()
-                        for m_item in all_items:
-                            actor_list = (m_item.extra_info or {}).get('actor_cache') or (m_item.extra_info or {}).get('_actors') or []
+                        light_items = work_query_session.query(
+                            MetaItem.code,
+                            MetaItem.ui_code,
+                            MetaItem.title,
+                            MetaItem.originaltitle,
+                            MetaItem.extra_info
+                        ).filter(MetaItem.category == cat).all()
+
+                        for m_code, m_ui_code, m_title, m_orig_title, m_extra in light_items:
+                            extra_d = m_extra if isinstance(m_extra, dict) else {}
+                            actor_list = extra_d.get('actor_cache') or extra_d.get('_actors') or []
                             for act in actor_list:
-                                act_id = act.get('actor_idx')
+                                act_id = act.get('actor_idx') if isinstance(act, dict) else None
                                 if act_id:
                                     if act_id not in existing_works_map:
                                         existing_works_map[act_id] = {}
@@ -1283,17 +1434,17 @@ class ModuleMetaDb(PluginModuleBase):
                                         existing_works_map[act_id][cat] = []
 
                                     work_entry = {
-                                        'code': m_item.code,
-                                        'ui_code': m_item.ui_code or m_item.code,
-                                        'title': m_item.title or m_item.originaltitle or ''
+                                        'code': m_code,
+                                        'ui_code': m_ui_code or m_code,
+                                        'title': m_title or m_orig_title or ''
                                     }
-                                    if not any((w.get('code') if isinstance(w, dict) else str(w)) == m_item.code for w in existing_works_map[act_id][cat]):
+                                    if not any((w.get('code') if isinstance(w, dict) else str(w)) == m_code for w in existing_works_map[act_id][cat]):
                                         existing_works_map[act_id][cat].append(work_entry)
                     finally:
-                        item_sess.remove()
+                        work_query_session.close()
 
             inserted, updated, merged_duplicates_count = 0, 0, 0
-            batch_size = 300
+            batch_size = 500
 
             for idx, cluster in enumerate(merged_clusters, 1):
                 try:
@@ -1442,6 +1593,7 @@ class ModuleMetaDb(PluginModuleBase):
                         sess.commit()
 
                 except Exception as e_cluster:
+                    sess.rollback()
                     logger.error(f"[MetaDB ActorSync] 클러스터 처리 오류 (#{idx}): {e_cluster}")
 
             sess.commit()
@@ -1449,28 +1601,34 @@ class ModuleMetaDb(PluginModuleBase):
 
             # DB 내 잔여 서브 중복 레코드 정리(Merge & Clean)
             try:
-                all_current_jav_persons = sess.query(MetaPerson).filter_by(domain="JAV").all()
+                all_current_jav_persons = sess.query(MetaPerson.id, MetaPerson.person_idx, MetaPerson.extra_info).filter_by(domain="JAV").all()
                 primary_map = {}
                 redundant_ids = set()
 
-                for p_check in all_current_jav_persons:
-                    alt_list_chk = (p_check.extra_info or {}).get('alt_actor_indices', [])
+                for p_id, p_idx, p_extra in all_current_jav_persons:
+                    alt_list_chk = (p_extra or {}).get('alt_actor_indices', [])
                     if len(alt_list_chk) > 1:
                         for s_idx in alt_list_chk:
-                            if s_idx != p_check.person_idx:
-                                primary_map[s_idx] = p_check
+                            if s_idx != p_idx:
+                                primary_map[s_idx] = p_id
 
-                for p_dup in all_current_jav_persons:
-                    if p_dup.person_idx in primary_map and p_dup.id != primary_map[p_dup.person_idx].id:
-                        redundant_ids.add(p_dup.id)
+                for p_id, p_idx, _ in all_current_jav_persons:
+                    if p_idx in primary_map and p_id != primary_map[p_idx]:
+                        redundant_ids.add(p_id)
 
                 if redundant_ids:
-                    sess.query(MetaPerson).filter(MetaPerson.id.in_(list(redundant_ids))).delete(synchronize_session=False)
+                    # PostgreSQL 파라미터 한계 방어를 위해 청크 단위로 안전 삭제
+                    del_id_list = list(redundant_ids)
+                    del_chunk_size = 500
+                    for chunk_start in range(0, len(del_id_list), del_chunk_size):
+                        chunk_ids = del_id_list[chunk_start:chunk_start + del_chunk_size]
+                        sess.query(MetaPerson).filter(MetaPerson.id.in_(chunk_ids)).delete(synchronize_session=False)
                     sess.commit()
                     cls.checkpoint_wal()
                     merged_duplicates_count = len(redundant_ids)
                     logger.info(f"[MetaDB ActorSync] DB 내 파편화 레코드 {merged_duplicates_count}건 정리 완료")
             except Exception as e_clean:
+                sess.rollback()
                 logger.debug(f"[MetaDB ActorSync] 잔여 중복 정리 예외: {e_clean}")
 
             cls._cached_actors_map = None
@@ -1495,7 +1653,8 @@ class ModuleMetaDb(PluginModuleBase):
             logger.error(traceback.format_exc())
             return False, f"동기화 중 치명적 오류 발생: {str(e)}"
         finally:
-            sess.remove()
+            sess.close()
+
 
     @classmethod
     def get_metadata(cls, code, category):
@@ -1513,8 +1672,9 @@ class ModuleMetaDb(PluginModuleBase):
         finally:
             sess.remove()
 
+
     @classmethod
-    def to_entity_dict(cls, item):
+    def to_entity_dict(cls, item, for_list=False):
         include_original = P.ModelSetting.get_bool("meta_db_include_original")
 
         raw_extra = copy.deepcopy(item.extra_info or {})
@@ -1580,8 +1740,8 @@ class ModuleMetaDb(PluginModuleBase):
         p_is_local = False
         pl_is_local = False
 
-        # 유저 설정 폴더 내 실제 디스크 파일 존재 여부 확인
-        if current_image_mode == 'image_server' and target_folder and server_url_prefix and os.path.exists(target_folder):
+        # 목록 렌더링 시에는 과도한 디스크 스캔을 건너뛰고 DB에 저장된 주소를 즉시 활용
+        if not for_list and current_image_mode == 'image_server' and target_folder and server_url_prefix and os.path.exists(target_folder):
             files_in_folder = {f.lower(): f for f in os.listdir(target_folder)}
             exts = ['jpg', 'jpeg', 'png', 'webp']
 
@@ -1606,14 +1766,13 @@ class ModuleMetaDb(PluginModuleBase):
             art_files = sorted([files_in_folder[f] for f in files_in_folder if f.startswith(f"{stem}_art_")])
             resolved_fanarts = [f"{server_url_prefix}/{af}" for af in art_files]
 
-        # 디스크에 파일이 없는 경우 순수 사이트 원본 주소 적용
         if not resolved_p_url:
-            resolved_p_url = raw_orig_thumb.get('poster') or ""
+            resolved_p_url = item.poster_url or raw_orig_thumb.get('poster') or ""
 
         if not resolved_pl_url:
             resolved_pl_url = raw_orig_thumb.get('landscape') or ""
 
-        # 최대 아트 수 제한은 JAV Censored 단일 마스터 설정을 공통 참조
+        # 최대 아트 수 제한
         raw_max_arts = P.ModelSetting.get("jav_censored_art_count") or "0"
         try:
             max_arts = int(raw_max_arts)
@@ -1627,7 +1786,6 @@ class ModuleMetaDb(PluginModuleBase):
                 resolved_fanarts = list(raw_original['fanart'])
             d['fanart'] = resolved_fanarts[:max_arts]
 
-        # 정규 thumb 배열에 랜드스케이프 및 포스터 등록
         if resolved_pl_url:
             d['thumb'].append({'aspect': 'landscape', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
@@ -1636,7 +1794,7 @@ class ModuleMetaDb(PluginModuleBase):
         elif resolved_pl_url:
             d['thumb'].append({'aspect': 'poster', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
-        # 트레일러 URL 구성 (프리뷰 클립 존재 시 죽은 공식 링크를 대체하여 최우선 등록)
+        # 트레일러 URL 구성 (프리뷰 클립 또는 공식 예고편)
         ddns_host = F.SystemModelSetting.get('ddns') or ''
         is_uncen = str(item.category).upper() == 'JAV_UNCEN'
         video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
@@ -1660,7 +1818,6 @@ class ModuleMetaDb(PluginModuleBase):
                 })
                 has_preview = True
 
-        # 프리뷰 클립이 없을 때만 공식 트레일러를 등록
         if not has_preview:
             raw_video_url = ''
             orig_extras = raw_original.get('extras') or []
@@ -1686,109 +1843,184 @@ class ModuleMetaDb(PluginModuleBase):
 
                 d['extras'].append({'mode': 'mp4', 'title': item.tagline or item.title, 'content_url': final_trailer_url, 'content_type': 'trailer'})
 
-        # 공식 트레일러가 없고 자체 생성된 프리뷰 클립이 존재하는 경우 트레일러로 자동 채움
-        if not d['extras'] and isinstance(raw_extra.get('preview_clip'), dict):
-            p_clip = raw_extra['preview_clip']
-            ddns_host = F.SystemModelSetting.get('ddns') or ''
-            is_uncen = str(item.category).upper() == 'JAV_UNCEN'
-            video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
+        # 배우 다중 저장소 복원 및 역추적 자가 치유(Self-Healing)
+        actors_bridge = (
+            raw_extra.get('_actors') or
+            raw_extra.get('actor_cache') or
+            raw_extra.get('actors') or
+            []
+        )
 
-            preview_stream_url = ''
-            if p_clip.get('storage_type') == 'gdrive' and p_clip.get('google_fileid'):
-                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_gdrive&fileid={p_clip['google_fileid']}&cat={item.category}"
-            elif p_clip.get('storage_type') == 'local' and p_clip.get('local_path'):
-                from urllib.parse import quote_plus
-                preview_stream_url = f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_local&path={quote_plus(p_clip['local_path'])}"
+        if not actors_bridge and hasattr(item, 'person_maps') and item.person_maps:
+            for pm in item.person_maps:
+                if pm.person:
+                    p = pm.person
+                    actors_bridge.append({
+                        'actor_idx': p.person_idx or '',
+                        'name_org': p.name_org or '',
+                        'name_ko': p.name_ko or '',
+                        'name_en': p.name_en or '',
+                        'gender': (p.extra_info or {}).get('gender', ''),
+                        'role': pm.role_name or '출연'
+                    })
 
-            if preview_stream_url:
-                d['extras'].append({
-                    'mode': 'mp4',
-                    'title': f"[Preview] {item.title or item.tagline or item.originaltitle}",
-                    'content_url': preview_stream_url,
-                    'content_type': 'trailer'
-                })
+        if not actors_bridge and isinstance(raw_original.get('actor'), list):
+            for act in raw_original['actor']:
+                if isinstance(act, dict):
+                    actors_bridge.append(act)
+                elif isinstance(act, str) and act.strip():
+                    actors_bridge.append({'name_org': act.strip(), 'name_ko': '', 'role': '출연'})
 
-        actors_bridge = (item.extra_info or {}).get('_actors') or []
-        if actors_bridge:
+        if not actors_bridge and not for_list:
             person_sess, _, _ = cls.get_session_and_domain('PERSON')
             person_dom = cls._person_domain_from_item_category(item.category)
             if person_sess:
                 try:
-                    for a_entry in actors_bridge:
-                        a_idx = a_entry.get('actor_idx') or ''
-                        a_name_org = a_entry.get('name_org') or ''
-                        a_name_ko = a_entry.get('name_ko') or ''
-                        a_name_en = a_entry.get('name_en') or ''
-                        role_name = a_entry.get('role') or '출연'
+                    c_target = item.code
+                    ui_target = item.ui_code or item.originaltitle or ''
+                    healing_persons = person_sess.query(MetaPerson).filter(
+                        MetaPerson.domain == person_dom,
+                        or_(
+                            cast(MetaPerson.works, Text).ilike(f'%"{c_target}"%'),
+                            cast(MetaPerson.works, Text).ilike(f'%"{ui_target}"%')
+                        )
+                    ).all()
 
-                        p_rec = None
-                        if a_idx:
-                            p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, person_idx=a_idx).first()
-                        if not p_rec and a_name_org:
-                            p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_org=a_name_org).first()
-                        if not p_rec and a_name_ko:
-                            p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_ko=a_name_ko).first()
+                    for hp in healing_persons:
+                        actors_bridge.append({
+                            'actor_idx': hp.person_idx or '',
+                            'name_org': hp.name_org or '',
+                            'name_ko': hp.name_ko or '',
+                            'name_en': hp.name_en or '',
+                            'thumb': cls.resolve_person_active_thumb(hp),
+                            'gender': (hp.extra_info or {}).get('gender', ''),
+                            'role': '출연'
+                        })
 
-                        p_gender = (p_rec.extra_info.get('gender') if (p_rec and p_rec.extra_info) else '') or a_entry.get('gender') or ''
-                        display_name = (p_rec.name_ko or p_rec.name_org or '') if p_rec else (a_name_ko or a_name_org or '')
-
-                        if p_rec:
-                            d['actor'].append({
-                                'name': display_name,
-                                'name_org': p_rec.name_org or '',
-                                'name_ko': p_rec.name_ko or '',
-                                'name_en': p_rec.name_en or '',
-                                'thumb': cls.resolve_person_active_thumb(p_rec),
-                                'actor_idx': p_rec.person_idx or '',
-                                'gender': p_gender,
-                                'role': role_name
-                            })
-                        else:
-                            d['actor'].append({
-                                'name': display_name,
-                                'name_org': a_name_org,
-                                'name_ko': a_name_ko,
-                                'name_en': a_name_en,
-                                'thumb': '',
-                                'actor_idx': a_idx,
-                                'gender': p_gender,
-                                'role': role_name
-                            })
+                    if actors_bridge and hasattr(item, 'extra_info'):
+                        updated_extra = dict(item.extra_info or {})
+                        updated_extra['_actors'] = actors_bridge
+                        item.extra_info = updated_extra
+                        sess_item, _, _ = cls.get_session_and_domain(item.category)
+                        if sess_item:
+                            try:
+                                sess_item.commit()
+                                logger.info(f"[MetaDB Self-Healing] 작품 [{item.code}]에 누락되었던 배우 {len(actors_bridge)}명 역추적 자동 치유 완료")
+                            except Exception:
+                                sess_item.rollback()
+                except Exception as e_heal:
+                    logger.debug(f"[MetaDB Self-Healing] 역추적 치유 예외: {e_heal}")
                 finally:
                     person_sess.remove()
 
-        # 내부 브리지 키(_actors)는 외부 JSON 출력물에서 제거
+        if actors_bridge:
+            if for_list:
+                for a_entry in actors_bridge:
+                    a_name_ko = a_entry.get('name_ko') or ''
+                    a_name_org = a_entry.get('name_org') or ''
+                    d['actor'].append({
+                        'name': a_name_ko or a_name_org or '',
+                        'name_org': a_name_org,
+                        'name_ko': a_name_ko,
+                        'name_en': a_entry.get('name_en') or '',
+                        'thumb': a_entry.get('thumb') or '',
+                        'actor_idx': a_entry.get('actor_idx') or a_entry.get('person_idx') or '',
+                        'gender': a_entry.get('gender') or '',
+                        'role': a_entry.get('role') or '출연'
+                    })
+            else:
+                person_sess, _, _ = cls.get_session_and_domain('PERSON')
+                person_dom = cls._person_domain_from_item_category(item.category)
+                if person_sess:
+                    try:
+                        for a_entry in actors_bridge:
+                            a_idx = a_entry.get('actor_idx') or a_entry.get('person_idx') or ''
+                            a_name_org = a_entry.get('name_org') or ''
+                            a_name_ko = a_entry.get('name_ko') or ''
+                            a_name_en = a_entry.get('name_en') or ''
+                            role_name = a_entry.get('role') or '출연'
+
+                            p_rec = None
+                            if a_idx:
+                                p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, person_idx=a_idx).first()
+                            if not p_rec and a_name_org:
+                                p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_org=a_name_org).first()
+                            if not p_rec and a_name_ko:
+                                p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_ko=a_name_ko).first()
+
+                            p_gender = (p_rec.extra_info.get('gender') if (p_rec and p_rec.extra_info) else '') or a_entry.get('gender') or ''
+                            display_name = (p_rec.name_ko or p_rec.name_org or '') if p_rec else (a_name_ko or a_name_org or '')
+
+                            if p_rec:
+                                d['actor'].append({
+                                    'name': display_name,
+                                    'name_org': p_rec.name_org or '',
+                                    'name_ko': p_rec.name_ko or '',
+                                    'name_en': p_rec.name_en or '',
+                                    'thumb': cls.resolve_person_active_thumb(p_rec),
+                                    'actor_idx': p_rec.person_idx or '',
+                                    'gender': p_gender,
+                                    'role': role_name
+                                })
+                            else:
+                                d['actor'].append({
+                                    'name': display_name,
+                                    'name_org': a_name_org,
+                                    'name_ko': a_name_ko,
+                                    'name_en': a_name_en,
+                                    'thumb': a_entry.get('thumb') or '',
+                                    'actor_idx': a_idx,
+                                    'gender': p_gender,
+                                    'role': role_name
+                                })
+                    finally:
+                        person_sess.remove()
+
         d['extra_info'].pop('_actors', None)
 
-        # 정보 출처 URL은 extra_info에만 정규 보존
         if raw_extra.get('info_url'):
             d['extra_info']['info_url'] = str(raw_extra['info_url']).strip()
 
-        # DB 매핑 테이블에서 장르와 태그를 분리하여 적재
-        for tm in item.tag_maps:
-            t = tm.tag
-            if t:
-                if t.tag_type == 'genre' and t.name not in d['genre']:
-                    d['genre'].append(t.name)
-                elif t.tag_type == 'tag' and t.name not in d['tag']:
-                    d['tag'].append(t.name)
+        # 목록 렌더링 시에는 태그/지문 관계 테이블을 탐색하지 않고 JSON 보존 데이터로 경량 처리
+        if for_list:
+            if isinstance(raw_original.get('genre'), list):
+                d['genre'] = list(raw_original['genre'])
+            if isinstance(raw_extra.get('fingerprints'), list):
+                d['extra_info']['fingerprints'] = raw_extra['fingerprints']
+        else:
+            for tm in item.tag_maps:
+                t = tm.tag
+                if t:
+                    if t.tag_type == 'genre' and t.name not in d['genre']:
+                        d['genre'].append(t.name)
+                    elif t.tag_type == 'tag' and t.name not in d['tag']:
+                        d['tag'].append(t.name)
 
-        # DB 매핑 누락 시 원본 장르 목록(original.genre)을 기반으로 장르 자동 복구
-        if not d['genre'] and isinstance(raw_original.get('genre'), list) and raw_original['genre']:
-            from support_site import SiteAvBase
-            for g_org in raw_original['genre']:
-                if isinstance(g_org, str) and g_org.strip():
-                    g_trans = SiteAvBase.get_translated_tag(g_org.strip())
-                    if g_trans and g_trans not in d['genre']:
-                        d['genre'].append(g_trans)
+            if not d['genre'] and isinstance(raw_original.get('genre'), list) and raw_original['genre']:
+                from support_site import SiteAvBase
+                for g_org in raw_original['genre']:
+                    if isinstance(g_org, str) and g_org.strip():
+                        g_trans = SiteAvBase.get_translated_tag(g_org.strip())
+                        if g_trans and g_trans not in d['genre']:
+                            d['genre'].append(g_trans)
 
-        # 컬렉션/태그(tag) 목록에 스튜디오와 시리즈 반영 (장르와 분리)
+            if hasattr(item, 'fingerprints') and item.fingerprints:
+                fp_list = []
+                for fp in item.fingerprints:
+                    fp_list.append({
+                        'algorithm': fp.algorithm,
+                        'hash': fp.hash_value,
+                        'source': fp.source
+                    })
+                d['extra_info']['fingerprints'] = fp_list
+
         if item.studio and item.studio not in d['tag']:
             d['tag'].append(item.studio)
         if item.series and item.series not in d['tag']:
             d['tag'].append(item.series)
 
         return d
+
 
     @classmethod
     def apply_transient_overrides(cls, entity_dict, extra_opts, category=None):
@@ -1818,7 +2050,6 @@ class ModuleMetaDb(PluginModuleBase):
                 P.ModelSetting.get(image_server_setting) or ''
             ).rstrip('/')
 
-            # 유저 설정 이미지 서버 주소 및 로컬 실존 파일은 프록시 대상에서 제외하고 외부 원격 URL만 변환
             def proxy_image(url, is_local=False):
                 if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
                     return url
@@ -1851,7 +2082,7 @@ class ModuleMetaDb(PluginModuleBase):
                 for extra in result.get('extras', [])
             ]
 
-        # 배우 썸네일 우선순위 오버라이드 감지
+        # 목록 렌더링 시에는 배우 썸네일 재조회 쿼리를 생략하여 속도 보장
         target_actor_order = (
             opts.get('actor_img_order') or
             override_cfg.get('actor_img_order') or
@@ -1867,14 +2098,12 @@ class ModuleMetaDb(PluginModuleBase):
 
         need_actor_thumb_override = bool(target_actor_order) or (override_image_mode and override_image_mode != 'image_server')
 
-        # 임시 배우 썸네일 순서 결정 (Western은 site_img_url / local_img_path로만 구성)
-        if need_actor_thumb_override and result.get('actor'):
+        if not opts.get('for_list') and need_actor_thumb_override and result.get('actor'):
+            person_sess, _, _ = cls.get_session_and_domain('PERSON')
+            person_dom = cls._person_domain_from_item_category(category or result.get('category'))
             std_order = target_actor_order
             if not std_order and override_image_mode != 'image_server':
                 std_order = 'site_img_url, local_img_path' if person_dom == 'WESTERN' else 'google_fileid, site_img_url'
-
-            person_sess, _, _ = cls.get_session_and_domain('PERSON')
-            person_dom = cls._person_domain_from_item_category(category or result.get('category'))
 
             try:
                 for act in result['actor']:
@@ -1916,7 +2145,7 @@ class ModuleMetaDb(PluginModuleBase):
                 if person_sess:
                     person_sess.remove()
 
-        # 미디어 이미지 모드 오버라이드 (개인 이미지 서버 URL -> 원본 사이트 주소 치환)
+        # 미디어 이미지 모드 오버라이드
         if override_image_mode and override_image_mode != 'image_server':
             orig_thumb = result.get('original', {}).get('thumb', {})
             raw_site_poster = orig_thumb.get('poster') or ''
@@ -1939,20 +2168,19 @@ class ModuleMetaDb(PluginModuleBase):
                 if any('/images/' in f for f in result['fanart']):
                     result['fanart'] = list(orig_fanarts)
 
-        # 이미지 필드 전체 제거 옵션 지원 (공유 라이브러리 전용)
         if opts.get('strip_images'):
             result['poster_url'] = ''
             result['landscape_url'] = ''
             result['thumb'] = []
             result['fanart'] = []
 
-        # 원본 줄거리가 없는 경우 반환용 사본에만 부제(tagline)를 줄거리로 동적 채움
         current_plot = str(result.get('plot') or '').strip()
         fallback_tagline = str(result.get('tagline') or '').strip()
         if not current_plot and fallback_tagline:
             result['plot'] = fallback_tagline
 
         return result
+
 
     @classmethod
     def _build_works_detailed_map(cls, items_list):
@@ -1970,28 +2198,223 @@ class ModuleMetaDb(PluginModuleBase):
 
         works_meta_map = {}
         for cat_k, codes_set in all_work_codes_by_cat.items():
-            cat_sess, _, _ = cls.get_session_and_domain(cat_k)
-            if cat_sess:
+            if not codes_set:
+                continue
+            item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(DOMAIN_MAP[cat_k][0])
+            if item_engine:
+                work_query_session = sessionmaker(bind=item_engine, autocommit=False, autoflush=False, expire_on_commit=False)()
                 try:
-                    m_items = cat_sess.query(MetaItem).filter(
+                    codes_list = list(codes_set)
+                    light_rows = work_query_session.query(
+                        MetaItem.code,
+                        MetaItem.ui_code,
+                        MetaItem.title,
+                        MetaItem.originaltitle
+                    ).filter(
+                        MetaItem.category == cat_k,
                         or_(
-                            MetaItem.code.in_(list(codes_set)),
-                            MetaItem.ui_code.in_(list(codes_set)),
-                            MetaItem.originaltitle.in_(list(codes_set))
+                            MetaItem.code.in_(codes_list),
+                            MetaItem.ui_code.in_(codes_list),
+                            MetaItem.originaltitle.in_(codes_list)
                         )
                     ).all()
-                    for mi in m_items:
+
+                    for mi_code, mi_ui_code, mi_title, mi_orig_title in light_rows:
                         info_dict = {
-                            'code': mi.code,
-                            'ui_code': mi.ui_code or mi.originaltitle or mi.code,
-                            'title': mi.title or mi.originaltitle or ''
+                            'code': mi_code,
+                            'ui_code': mi_ui_code or mi_orig_title or mi_code,
+                            'title': mi_title or mi_orig_title or ''
                         }
-                        works_meta_map[f"{cat_k}_{mi.code}"] = info_dict
-                        works_meta_map[f"{cat_k}_{mi.ui_code}"] = info_dict
-                        works_meta_map[f"{cat_k}_{mi.originaltitle}"] = info_dict
+                        works_meta_map[f"{cat_k}_{mi_code}"] = info_dict
+                        if mi_ui_code:
+                            works_meta_map[f"{cat_k}_{mi_ui_code}"] = info_dict
+                        if mi_orig_title:
+                            works_meta_map[f"{cat_k}_{mi_orig_title}"] = info_dict
+                except Exception as e_wmap:
+                    logger.debug(f"[MetaDB WorksMap] 출연작 매핑 쿼리 예외 ({cat_k}): {e_wmap}")
                 finally:
-                    cat_sess.remove()
+                    work_query_session.close()
         return works_meta_map
+
+
+    @classmethod
+    def get_person_detailed_info(cls, person_identifier, domain='JAV'):
+        """단일 인물의 소장 출연작을 실시간 MetaItem 테이블에서 조회하고 오염된 이미지 주소를 자동 치유"""
+        cls.ensure_db_ready()
+        sess, _, _ = cls.get_session_and_domain('PERSON')
+        if not sess:
+            return None
+
+        try:
+            target_str = str(person_identifier).strip()
+            p_rec = None
+            if target_str.isdigit():
+                p_rec = sess.query(MetaPerson).filter_by(id=int(target_str)).first()
+            if not p_rec and target_str:
+                p_rec = sess.query(MetaPerson).filter(
+                    MetaPerson.domain == domain,
+                    or_(
+                        MetaPerson.person_idx == target_str,
+                        MetaPerson.name_org == target_str,
+                        MetaPerson.name_ko == target_str
+                    )
+                ).first()
+            if not p_rec and target_str:
+                p_rec = sess.query(MetaPerson).filter(
+                    or_(
+                        MetaPerson.person_idx == target_str,
+                        MetaPerson.name_org == target_str,
+                        MetaPerson.name_ko == target_str
+                    )
+                ).first()
+
+            if not p_rec:
+                return None
+
+            p_works = copy.deepcopy(p_rec.works if isinstance(p_rec.works, dict) else {})
+            works_detailed = {}
+            is_healing_needed = False
+
+            # 인물에 등록된 출연작 코드를 바탕으로 실시간 MetaItem 테이블에서 최신 정보 조회
+            for cat_k, c_list in p_works.items():
+                if not isinstance(c_list, list) or not c_list:
+                    continue
+
+                std_cat = 'WESTERN' if cat_k.upper() in ['WEST', 'WESTERN'] else ('JAV_UNCEN' if cat_k.upper() in ['JAV_UNCEN', 'UNCENSORED'] else 'JAV_CEN')
+                if std_cat not in DOMAIN_MAP:
+                    continue
+
+                code_candidates = set()
+                for c_item in c_list:
+                    c_str = c_item.get('code') if isinstance(c_item, dict) else str(c_item)
+                    if c_str:
+                        code_candidates.add(c_str)
+                        code_candidates.add(c_str.upper())
+                        code_candidates.add(c_str.lower())
+                    if not isinstance(c_item, dict) or not c_item.get('title'):
+                        is_healing_needed = True
+
+                if not code_candidates:
+                    continue
+
+                item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(DOMAIN_MAP[std_cat][0])
+                if not item_engine:
+                    continue
+
+                work_query_session = sessionmaker(bind=item_engine, autocommit=False, autoflush=False, expire_on_commit=False)()
+                try:
+                    search_list = list(code_candidates)
+                    lower_search_list = [c.lower() for c in search_list]
+
+                    rows = work_query_session.query(
+                        MetaItem.code,
+                        MetaItem.ui_code,
+                        MetaItem.title,
+                        MetaItem.originaltitle
+                    ).filter(
+                        MetaItem.category == std_cat,
+                        or_(
+                            MetaItem.code.in_(search_list),
+                            MetaItem.ui_code.in_(search_list),
+                            MetaItem.originaltitle.in_(search_list),
+                            func.lower(MetaItem.code).in_(lower_search_list),
+                            func.lower(MetaItem.ui_code).in_(lower_search_list),
+                            func.lower(MetaItem.originaltitle).in_(lower_search_list)
+                        )
+                    ).all()
+
+                    lookup = {}
+                    for mi_code, mi_ui_code, mi_title, mi_orig_title in rows:
+                        info_dict = {
+                            'code': mi_code,
+                            'ui_code': mi_ui_code or mi_orig_title or mi_code,
+                            'title': mi_title or mi_orig_title or ''
+                        }
+                        for k_val in [mi_code, mi_ui_code, mi_orig_title]:
+                            if k_val:
+                                lookup[k_val] = info_dict
+                                lookup[k_val.lower()] = info_dict
+                                lookup[k_val.upper()] = info_dict
+
+                    works_detailed[std_cat] = []
+                    healed_work_entries = []
+
+                    for c_item in c_list:
+                        raw_c = c_item.get('code') if isinstance(c_item, dict) else str(c_item)
+                        meta_info = lookup.get(raw_c) or lookup.get(raw_c.lower()) or lookup.get(raw_c.upper())
+
+                        if meta_info and meta_info.get('title'):
+                            works_detailed[std_cat].append(meta_info)
+                            healed_work_entries.append(meta_info)
+                        else:
+                            fallback_ui = c_item.get('ui_code') if isinstance(c_item, dict) else raw_c
+                            fallback_title = c_item.get('title') if isinstance(c_item, dict) else ''
+                            entry = {
+                                'code': raw_c,
+                                'ui_code': fallback_ui or raw_c,
+                                'title': fallback_title or (meta_info.get('title', '') if meta_info else '')
+                            }
+                            works_detailed[std_cat].append(entry)
+                            healed_work_entries.append(entry)
+
+                    p_works[std_cat] = healed_work_entries
+                finally:
+                    work_query_session.close()
+
+            # site_img_urls 내 로컬 이미지 서버 주소 오염 자가 치유 (영구 정제)
+            p_media = copy.deepcopy(p_rec.media_src if isinstance(p_rec.media_src, dict) else {})
+            if 'site_img_urls' in p_media and isinstance(p_media['site_img_urls'], list):
+                cleaned_urls = [u for u in p_media['site_img_urls'] if not cls.is_local_server_url(u)]
+                if len(cleaned_urls) != len(p_media['site_img_urls']):
+                    p_media['site_img_urls'] = cleaned_urls
+                    is_healing_needed = True
+
+            if 'site_img_url' in p_media and cls.is_local_server_url(p_media.get('site_img_url')):
+                p_media['site_img_url'] = p_media['site_img_urls'][0] if p_media.get('site_img_urls') else ''
+                is_healing_needed = True
+
+            # 레거시 데이터가 실시간 데이터로 교정되었을 경우 DB에 즉시 영구 반영 (Healing Commit)
+            if is_healing_needed:
+                try:
+                    p_rec.works = p_works
+                    p_rec.media_src = p_media
+                    sess.commit()
+                    cls.checkpoint_wal()
+                    logger.info(f"[MetaDB Self-Healing] 인물 [{p_rec.name_ko or p_rec.name_org}]의 출연작 및 이미지 URL 자동 치유 완료")
+                except Exception as e_p_heal:
+                    sess.rollback()
+                    logger.debug(f"[MetaDB Self-Healing] 인물 치유 커밋 예외: {e_p_heal}")
+
+            extra_data = copy.deepcopy(p_rec.extra_info or {})
+            raw_local = str(p_media.get('local_img_path') or '').strip()
+            if raw_local:
+                resolved_url = cls.format_actor_thumb_url(raw_local, domain=p_rec.domain)
+                p_media['local_img_url'] = resolved_url
+                extra_data['local_img_url'] = resolved_url
+
+            return {
+                'id': p_rec.id,
+                'domain': p_rec.domain,
+                'name_org': p_rec.name_org,
+                'name_ko': p_rec.name_ko or '',
+                'name_en': p_rec.name_en or '',
+                'other_names': p_rec.other_names or '',
+                'aliases': p_rec.aliases or [],
+                'thumb': cls.resolve_person_active_thumb(p_rec),
+                'person_idx': p_rec.person_idx or '',
+                'person_type': p_rec.person_type or 'actor',
+                'media_src': p_media,
+                'works': p_works,
+                'works_detailed': works_detailed,
+                'works_count': sum(len(v) for v in works_detailed.values()),
+                'extra_info': extra_data
+            }
+        except Exception as e:
+            logger.error(f"[MetaDB] get_person_detailed_info 오류 ({person_identifier}): {e}")
+            return None
+        finally:
+            sess.remove()
+
 
     @classmethod
     def person_search(cls, keyword, domain="ALL", options=None):
@@ -2017,6 +2440,9 @@ class ModuleMetaDb(PluginModuleBase):
                 MetaPerson.person_idx == kw,
                 MetaPerson.person_idx.ilike(search_like)
             ]
+
+            if kw.isdigit():
+                filter_conditions.append(MetaPerson.id == int(kw))
 
             if include_aliases:
                 filter_conditions.extend([
@@ -2228,41 +2654,7 @@ class ModuleMetaDb(PluginModuleBase):
 
             items = query.offset((page - 1) * page_size).limit(page_size).all()
 
-            all_work_codes_by_cat = {}
-            for p in items:
-                p_works = p.works if isinstance(p.works, dict) else {}
-                for cat_k, c_list in p_works.items():
-                    if isinstance(c_list, list) and c_list:
-                        if cat_k not in all_work_codes_by_cat:
-                            all_work_codes_by_cat[cat_k] = set()
-                        for c_item in c_list:
-                            c_str = c_item.get('code') if isinstance(c_item, dict) else str(c_item)
-                            if c_str: all_work_codes_by_cat[cat_k].add(c_str)
-
-            works_meta_map = {}
-            for cat_k, codes_set in all_work_codes_by_cat.items():
-                cat_sess, _, cat_std = cls.get_session_and_domain(cat_k)
-                if cat_sess:
-                    try:
-                        # 코드, UI 품번, 오리지널 타이틀 모두 대조하여 타이틀 매핑
-                        m_items = cat_sess.query(MetaItem).filter(
-                            or_(
-                                MetaItem.code.in_(list(codes_set)),
-                                MetaItem.ui_code.in_(list(codes_set)),
-                                MetaItem.originaltitle.in_(list(codes_set))
-                            )
-                        ).all()
-                        for mi in m_items:
-                            info_dict = {
-                                'code': mi.code,
-                                'ui_code': mi.ui_code or mi.originaltitle or mi.code,
-                                'title': mi.title or mi.originaltitle or ''
-                            }
-                            works_meta_map[f"{cat_k}_{mi.code}"] = info_dict
-                            works_meta_map[f"{cat_k}_{mi.ui_code}"] = info_dict
-                            works_meta_map[f"{cat_k}_{mi.originaltitle}"] = info_dict
-                    finally:
-                        cat_sess.remove()
+            works_meta_map = cls._build_works_detailed_map(items)
 
             item_list = []
             for p in items:
@@ -2285,7 +2677,8 @@ class ModuleMetaDb(PluginModuleBase):
                             if meta_lookup and meta_lookup.get('title'):
                                 works_detailed[cat_k].append(meta_lookup)
                             else:
-                                works_detailed[cat_k].append({'code': code_str, 'ui_code': code_str, 'title': ''})
+                                fallback_ui = c_item.get('ui_code') if isinstance(c_item, dict) else code_str
+                                works_detailed[cat_k].append({'code': code_str, 'ui_code': fallback_ui or code_str, 'title': ''})
 
                 item_list.append({
                     'id': p.id,
@@ -2318,11 +2711,16 @@ class ModuleMetaDb(PluginModuleBase):
                 'prev_page': start_page - 1 if start_page > 1 else 0,
                 'next_page': end_page + 1 if end_page < total_page else 0,
             }
-            #logger.debug(
-            #    f"[MetaDB Person List] 도메인: {search_domain} | 상태: {search_status} | "
-            #    f"정렬: {search_order} | 검색어: '{search_word}' | 결과: {len(item_list)}건 (총 {count:,}건, {page}/{total_page}p)"
-            #)
-            return {'success': True, 'paging': paging, 'list': item_list}
+
+            img_srv_key = "western_image_server_url" if search_domain == "WESTERN" else "jav_censored_image_server_url"
+            server_url_val = (P.ModelSetting.get(img_srv_key) or P.ModelSetting.get("jav_censored_image_server_url") or "").rstrip('/')
+
+            return {
+                'success': True,
+                'paging': paging,
+                'list': item_list,
+                'image_server_url': server_url_val
+            }
 
         except Exception as e:
             logger.error(traceback.format_exc())
@@ -2496,6 +2894,203 @@ class ModuleMetaDb(PluginModuleBase):
             sess.remove()
 
     @classmethod
+    def search_by_fingerprint(cls, category, algorithm, hash_value, preferred_site=None):
+        """B-Tree 인덱스를 통해 지문 일치 항목들을 조회하고 사용자 사이트 우선순위(western_order 등)에 맞추어 정렬 반환"""
+        cls.ensure_db_ready()
+        sess, domain, std_cat = cls.get_session_and_domain(category)
+        if not sess or not hash_value:
+            return []
+
+        clean_algo = str(algorithm or 'OSHASH').strip().upper()
+        clean_hash = str(hash_value).strip().lower()
+
+        try:
+            # 동일 지문에 매핑된 모든 레코드(StashDB, TPDB 등)를 일괄 B-Tree 조회
+            fp_matches = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.category == std_cat,
+                MetaFingerprint.algorithm == clean_algo,
+                MetaFingerprint.hash_value == clean_hash
+            ).all()
+
+            if not fp_matches:
+                return []
+
+            # 사용자가 설정한 사이트 우선순위 로드 (기본: stashdb, tpdb)
+            priority_setting_key = "western_order" if std_cat == "WESTERN" else f"{domain}_order"
+            site_order_raw = P.ModelSetting.get(priority_setting_key) or "stashdb, tpdb"
+            site_priority_list = [s.strip().lower() for s in site_order_raw.split(',') if s.strip()]
+            
+            # 특정 사이트(호출자) 선호가 있을 경우 최우선으로 배치
+            if preferred_site and preferred_site.lower() in site_priority_list:
+                site_priority_list.remove(preferred_site.lower())
+                site_priority_list.insert(0, preferred_site.lower())
+
+            def get_site_rank(code_str, item_site_str=None):
+                target_site = (item_site_str or '').lower()
+                if not target_site:
+                    if '_S' in code_str or code_str.startswith('WS'): target_site = 'stashdb'
+                    elif '_P' in code_str or code_str.startswith('WP'): target_site = 'tpdb'
+                try:
+                    return site_priority_list.index(target_site)
+                except ValueError:
+                    return 99
+
+            # 우선순위 순으로 정렬
+            sorted_fps = sorted(fp_matches, key=lambda x: get_site_rank(x.code, x.item.site if x.item else None))
+
+            results = []
+            for fp in sorted_fps:
+                if fp.item:
+                    item = fp.item
+                    results.append({
+                        'code': item.code,
+                        'site': item.site,
+                        'originaltitle': item.originaltitle,
+                        'sorttitle': item.sorttitle or item.title or item.originaltitle,
+                        'title': item.title,
+                        'poster_url': item.poster_url,
+                        'has_item': True,
+                        'json_data': cls.to_entity_dict(item)
+                    })
+                else:
+                    # 지문은 있으나 MetaItem이 없는 고아 지문인 경우 (새로 사이트에서 다운로드 유도)
+                    infer_site = 'stashdb' if ('_S' in fp.code or fp.code.startswith('WS')) else 'tpdb'
+                    results.append({
+                        'code': fp.code,
+                        'site': infer_site,
+                        'originaltitle': fp.code,
+                        'sorttitle': fp.code,
+                        'title': f"[원격 재수집 대상] {fp.code}",
+                        'poster_url': '',
+                        'has_item': False,
+                        'json_data': {}
+                    })
+
+            if results:
+                best = results[0]
+                logger.info(f"[MetaDB Fingerprint HIT] 지문 일치 항목 {len(results)}건 발견 ➔ 1위 채택: [{best['site'].upper()}] {best['code']} (Algo: {clean_algo}, Hash: {clean_hash})")
+            return results
+
+        except Exception as e:
+            logger.debug(f"[MetaDB] search_by_fingerprint 조회 예외: {e}")
+            return []
+        finally:
+            sess.remove()
+
+    @classmethod
+    def get_alternative_codes_by_code(cls, category, failed_code):
+        """특정 코드로 메타 취득 실패 시, 동일 지문(Fingerprint)을 공유하는 타 사이트 대체 코드들을 우선순위 순으로 반환"""
+        cls.ensure_db_ready()
+        sess, domain, std_cat = cls.get_session_and_domain(category)
+        if not sess or not failed_code:
+            return []
+
+        try:
+            # 실패한 코드에 매핑되어 있던 지문 해시값들 조회
+            my_fps = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.category == std_cat,
+                MetaFingerprint.code == failed_code
+            ).all()
+
+            if not my_fps:
+                return []
+
+            hash_values = [fp.hash_value for fp in my_fps]
+
+            # 동일 해시를 가진 다른 코드들 탐색
+            sibling_fps = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.category == std_cat,
+                MetaFingerprint.hash_value.in_(hash_values),
+                MetaFingerprint.code != failed_code
+            ).all()
+
+            if not sibling_fps:
+                return []
+
+            priority_setting_key = "western_order" if std_cat == "WESTERN" else f"{domain}_order"
+            site_order_raw = P.ModelSetting.get(priority_setting_key) or "stashdb, tpdb"
+            site_priority_list = [s.strip().lower() for s in site_order_raw.split(',') if s.strip()]
+
+            def get_site_rank(c_str):
+                c_upper = c_str.upper()
+                target_site = 'stashdb' if ('_S' in c_upper or c_upper.startswith('WS')) else 'tpdb'
+                try: return site_priority_list.index(target_site)
+                except ValueError: return 99
+
+            sorted_siblings = sorted(sibling_fps, key=lambda x: get_site_rank(x.code))
+            alt_codes = []
+            for s_fp in sorted_siblings:
+                if s_fp.code not in alt_codes:
+                    alt_codes.append(s_fp.code)
+
+            if alt_codes:
+                logger.info(f"[MetaDB Fingerprint Fallback] 코드 '{failed_code}' 실패 대비 대체 코드 {len(alt_codes)}건 확보: {alt_codes}")
+            return alt_codes
+
+        except Exception as e:
+            logger.debug(f"[MetaDB] get_alternative_codes_by_code 예외: {e}")
+            return []
+        finally:
+            sess.remove()
+
+    @classmethod
+    def append_fingerprint(cls, code, category, algorithm, hash_value, source="user"):
+        """기존 메타 레코드에 새 지문이 감지되었을 때 중복 없이 B-Tree 색인 및 extra_info에 자동 추가"""
+        cls.ensure_db_ready()
+        sess, domain, std_cat = cls.get_session_and_domain(category)
+        if not sess or not code or not hash_value:
+            return False
+
+        clean_algo = str(algorithm or 'OSHASH').strip().upper()
+        clean_hash = str(hash_value).strip().lower()
+
+        try:
+            # 이미 동일한 지문이 등록되어 있는지 B-Tree 인덱스로 즉시 확인
+            exists = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.category == std_cat,
+                MetaFingerprint.algorithm == clean_algo,
+                MetaFingerprint.hash_value == clean_hash
+            ).first()
+
+            if exists:
+                return True
+
+            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            if not item:
+                return False
+
+            # 새 지문 레코드 추가
+            item.fingerprints.append(MetaFingerprint(
+                category=std_cat,
+                code=code,
+                algorithm=clean_algo,
+                hash_value=clean_hash,
+                source=source
+            ))
+
+            # extra_info JSON 동기화
+            extra = dict(item.extra_info or {})
+            fps = list(extra.get('fingerprints') or [])
+            if not any(f.get('algorithm') == clean_algo and f.get('hash') == clean_hash for f in fps):
+                fps.append({
+                    'algorithm': clean_algo,
+                    'hash': clean_hash,
+                    'source': source
+                })
+                extra['fingerprints'] = fps
+                item.extra_info = extra
+
+            sess.commit()
+            logger.info(f"[MetaDB Fingerprint LEARN] 기존 코드({code})에 새 로컬 지문 자동 학습 등록 완료! (Algo: {clean_algo}, Hash: {clean_hash})")
+            return True
+        except Exception as e:
+            sess.rollback()
+            logger.debug(f"[MetaDB] append_fingerprint 예외: {e}")
+            return False
+        finally:
+            sess.remove()
+
+    @classmethod
     def search_for_auto_match(cls, category, keyword):
         cls.ensure_db_ready()
         sess, domain, std_cat = cls.get_session_and_domain(category)
@@ -2507,7 +3102,7 @@ class ModuleMetaDb(PluginModuleBase):
             if std_cat == 'WESTERN':
                 kw_clean = re.sub(r'[^\w\s]', ' ', str(keyword or '').lower()).strip()
                 tokens = [t for t in kw_clean.split() if len(t) >= 2]
-                
+
                 query = sess.query(MetaItem).filter(MetaItem.category == std_cat)
                 if tokens:
                     conditions = []
@@ -2527,7 +3122,7 @@ class ModuleMetaDb(PluginModuleBase):
                     item_title_clean = re.sub(r'[^\w\s]', ' ', str(item.title or item.originaltitle or '').lower())
                     item_tokens = set(item_title_clean.split())
                     kw_token_set = set(tokens)
-                    
+
                     # 단어 교집합 비율 또는 완전 포함 여부 검사
                     intersect = kw_token_set.intersection(item_tokens)
                     is_match = False
@@ -2537,6 +3132,16 @@ class ModuleMetaDb(PluginModuleBase):
                         is_match = True
 
                     if is_match:
+                        light_json = {
+                            'ui_code': item.ui_code or item.code,
+                            'title': item.title,
+                            'year': item.year,
+                            'premiered': item.premiered,
+                            'studio': item.studio,
+                            'plot': item.plot,
+                            'actor': (item.extra_info or {}).get('_actors', []),
+                            'content_type': item.content_type
+                        }
                         results.append({
                             'code': item.code,
                             'site': item.site,
@@ -2544,7 +3149,7 @@ class ModuleMetaDb(PluginModuleBase):
                             'sorttitle': item.sorttitle or item.title or item.originaltitle,
                             'title': item.title,
                             'poster_url': item.poster_url,
-                            'json_data': cls.to_entity_dict(item)
+                            'json_data': light_json
                         })
                 return results
 
@@ -2584,6 +3189,7 @@ class ModuleMetaDb(PluginModuleBase):
             return []
         finally:
             sess.remove()
+
 
     @classmethod
     def web_list(cls, req, category=None):
@@ -2628,29 +3234,13 @@ class ModuleMetaDb(PluginModuleBase):
             search_order = str(params.get('search_order', 'desc')).strip()
             search_status = str(params.get('search_status', 'all')).strip()
 
-            # 테이블이 아직 없을 경우 안전하게 자동 생성 시도
-            try:
-                query = sess.query(MetaItem).filter_by(category=std_cat)
-                count = query.count()
-            except Exception as e_tbl_chk:
-                logger.debug(f"[MetaDB WebList] 테이블 미존재 감지 -> 스키마 자동 복구 시도: {e_tbl_chk}")
-                sess.rollback()
-                target_engine = cls._engines.get('postgres' if cls._is_postgres else domain)
-                if target_engine:
-                    Base.metadata.create_all(bind=target_engine)
-                    cls._auto_sync_table_columns(target_engine)
-                query = sess.query(MetaItem).filter_by(category=std_cat)
-                count = query.count()
-
-            # 데이터가 비어있을 경우 정상적인 빈 목록 응답 반환
-            if count == 0:
-                return {'success': True, 'paging': None, 'list': []}
+            filter_conditions = [MetaItem.category == std_cat]
 
             if search_site and search_site.lower() not in ['all', '']:
-                query = query.filter(func.lower(MetaItem.site) == search_site.lower())
+                filter_conditions.append(func.lower(MetaItem.site) == search_site.lower())
 
             if search_status == 'no_poster':
-                query = query.filter(or_(
+                filter_conditions.append(or_(
                     MetaItem.poster_url == '',
                     MetaItem.poster_url == None,
                     MetaItem.poster_url.ilike('%_pl.jpg'),
@@ -2658,31 +3248,41 @@ class ModuleMetaDb(PluginModuleBase):
                     MetaItem.poster_url.ilike('%_pl.webp')
                 ))
             elif search_status == 'no_plot':
-                query = query.filter(or_(MetaItem.plot == '', MetaItem.plot == None))
+                filter_conditions.append(or_(MetaItem.plot == '', MetaItem.plot == None))
             elif search_status == 'complete':
-                query = query.filter(
-                    MetaItem.poster_url != '', MetaItem.poster_url != None,
-                    MetaItem.plot != '', MetaItem.plot != None
-                )
+                filter_conditions.append(and_(
+                    MetaItem.poster_url != '',
+                    MetaItem.poster_url != None,
+                    MetaItem.plot != '',
+                    MetaItem.plot != None
+                ))
 
+            # B-Tree 인덱스 컬럼 대상 고속 검색 (전체 JSON 텍스트 캐스팅 풀스캔 제외)
             if search_word:
                 search_like = f"%{search_word.replace('-', '%')}%"
-                query = query.filter(or_(
+                filter_conditions.append(or_(
                     MetaItem.originaltitle.ilike(search_like),
                     MetaItem.ui_code.ilike(search_like),
                     MetaItem.code.ilike(search_like),
                     MetaItem.title.ilike(f'%{search_word}%'),
                     MetaItem.studio.ilike(f'%{search_word}%'),
-                    MetaItem.director.ilike(f'%{search_word}%'),
-                    cast(MetaItem.extra_info, Text).ilike(f'%{search_word}%')
+                    MetaItem.director.ilike(f'%{search_word}%')
                 ))
 
-            if search_order == 'asc': query = query.order_by(MetaItem.created_time.asc())
-            elif search_order == 'code_asc': query = query.order_by(MetaItem.originaltitle.asc(), MetaItem.code.asc())
-            elif search_order == 'code_desc': query = query.order_by(MetaItem.originaltitle.desc(), MetaItem.code.desc())
-            else: query = query.order_by(MetaItem.created_time.desc())
+            # 조인 없는 단일 초고속 카운트 쿼리
+            try:
+                count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
+            except Exception as e_tbl_chk:
+                sess.rollback()
+                target_engine = cls._engines.get('postgres' if cls._is_postgres else domain)
+                if target_engine:
+                    Base.metadata.create_all(bind=target_engine)
+                    cls._auto_sync_table_columns(target_engine)
+                count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
 
-            count = query.count()
+            if count == 0:
+                return {'success': True, 'paging': None, 'list': []}
+
             total_page = math.ceil(count / page_size) if count > 0 else 1
 
             if page > total_page and total_page > 0:
@@ -2690,6 +3290,19 @@ class ModuleMetaDb(PluginModuleBase):
 
             start_page = ((page - 1) // 10) * 10 + 1
             end_page = min(start_page + 9, total_page)
+
+            # 4중 관계 조인을 비활성화하고 순수 MetaItem 25건만 쿼리
+            query = sess.query(MetaItem).filter(and_(*filter_conditions)).options(
+                lazyload(MetaItem.media_files),
+                lazyload(MetaItem.person_maps),
+                lazyload(MetaItem.tag_maps),
+                lazyload(MetaItem.fingerprints)
+            )
+
+            if search_order == 'asc': query = query.order_by(MetaItem.created_time.asc())
+            elif search_order == 'code_asc': query = query.order_by(MetaItem.originaltitle.asc(), MetaItem.code.asc())
+            elif search_order == 'code_desc': query = query.order_by(MetaItem.originaltitle.desc(), MetaItem.code.desc())
+            else: query = query.order_by(MetaItem.created_time.desc())
 
             items = query.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -2703,9 +3316,10 @@ class ModuleMetaDb(PluginModuleBase):
 
             item_list = []
             for item in items:
-                entity_dict = cls.to_entity_dict(item)
+                # 목록용 고속 렌더링 플래그 전달
+                entity_dict = cls.to_entity_dict(item, for_list=True)
                 entity_dict = cls.apply_transient_overrides(
-                    entity_dict, {'meta_db_display': True}, category=item.category
+                    entity_dict, {'meta_db_display': True, 'for_list': True}, category=item.category
                 )
                 live_poster_url = entity_dict.get('poster_url') or item.poster_url or ''
 
@@ -2744,7 +3358,6 @@ class ModuleMetaDb(PluginModuleBase):
                 'next_page': end_page + 1 if end_page < total_page else 0,
             }
 
-            # 이미지 서버 인프라 URL은 JAV Censored 마스터 설정 단일 참조
             master_image_server_url = P.ModelSetting.get("jav_censored_image_server_url") or ""
 
             return {
@@ -2761,6 +3374,7 @@ class ModuleMetaDb(PluginModuleBase):
             return {'success': False, 'paging': None, 'list': []}
         finally:
             sess.remove()
+
 
     @classmethod
     def delete_record(cls, code, category=None):
@@ -2917,6 +3531,7 @@ class ModuleMetaDb(PluginModuleBase):
                     VACUUM ANALYZE meta_person;
                     VACUUM ANALYZE meta_tag;
                     VACUUM ANALYZE meta_media;
+                    VACUUM ANALYZE meta_fingerprint;
                     VACUUM ANALYZE meta_item_person_map;
                     VACUUM ANALYZE meta_item_tag_map;
                 """)
@@ -3521,6 +4136,7 @@ class ModuleMetaDb(PluginModuleBase):
             if mode == "clean":
                 logger.info("[MetaDB Transfer] 목적지 DB 데이터 완전 초기화 시작...")
                 if target_type == "postgres" and pg_tgt_session:
+                    pg_tgt_session.query(MetaFingerprint).delete(synchronize_session=False)
                     pg_tgt_session.query(MetaMedia).delete(synchronize_session=False)
                     pg_tgt_session.query(MetaItemTagMap).delete(synchronize_session=False)
                     pg_tgt_session.query(MetaItemPersonMap).delete(synchronize_session=False)
@@ -3530,6 +4146,7 @@ class ModuleMetaDb(PluginModuleBase):
                     pg_tgt_session.commit()
                 elif target_type == "sqlite":
                     for ts in tgt_sessions.values():
+                        ts.query(MetaFingerprint).delete(synchronize_session=False)
                         ts.query(MetaMedia).delete(synchronize_session=False)
                         ts.query(MetaItemTagMap).delete(synchronize_session=False)
                         ts.query(MetaItemPersonMap).delete(synchronize_session=False)
@@ -3834,10 +4451,12 @@ class ModuleMetaDb(PluginModuleBase):
                 return jsonify({'ret': 'success', 'data': self.import_status})
 
             if normalized_cat == 'PERSON':
-                if req_command in ['web_list', 'list', 'person_web_list'] or req_sub in ['web_list', 'list', 'jav', 'western', 'person'] or req.form.get('search_domain') is not None:
+                is_list_query = (req_command in ['web_list', 'list', 'person_web_list'] or not req_command)
+                if is_list_query:
                     default_domain = req.form.get('search_domain', 'ALL') or 'ALL'
                     return jsonify(self.person_web_list(req, default_domain=default_domain))
-                if req_command in ['person_search', 'person_save', 'person_delete', 'person_clear', 'person_sync_jav_actors', 'person_version_status', 'person_sub_set_master', 'person_sub_split', 'db_vacuum']:
+
+                if req_command in ['person_search', 'person_get_detailed', 'person_get_works', 'person_save', 'person_delete', 'person_clear', 'person_sync_jav_actors', 'person_version_status', 'person_sub_set_master', 'person_sub_split', 'db_vacuum']:
                     res = self.process_command(req_command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
                     return res if res is not None else jsonify({'ret': 'error', 'msg': 'PERSON 처리 결과 없음'})
 
@@ -3882,6 +4501,14 @@ class ModuleMetaDb(PluginModuleBase):
                         opts = {}
                 results = self.person_search(kw, domain=domain, options=opts)
                 return jsonify({'ret': 'success', 'data': results})
+
+            elif command in ['person_get_detailed', 'person_get_works']:
+                person_id = arg1 or ''
+                domain = arg2 or 'JAV'
+                person_detail = self.get_person_detailed_info(person_id, domain=domain)
+                if person_detail:
+                    return jsonify({'ret': 'success', 'data': person_detail, 'works_detailed': person_detail.get('works_detailed', {})})
+                return jsonify({'ret': 'error', 'msg': '인물 상세 정보를 찾을 수 없습니다.'})
 
             elif command == 'person_save':
                 p_data = json.loads(arg1) if arg1 else {}
@@ -4203,12 +4830,21 @@ class ModuleMetaDb(PluginModuleBase):
             # code, ui_code, originaltitle 3개 필드 대조 및 카테고리 전방위 폴백 탐색
             elif command == 'get_meta_by_code':
                 target_code = (arg1 or '').strip()
-                target_cat = (arg2 or 'JAV_CEN').strip().upper()
+                raw_cat = (arg2 or '').strip().upper()
 
                 if not target_code:
                     return jsonify({'ret': 'error', 'msg': '조회할 코드가 없습니다.'})
 
-                # 지정 카테고리 우선, 이후 타 카테고리 순차 탐색
+                target_cat = 'JAV_CEN'
+                if raw_cat in DOMAIN_MAP:
+                    target_cat = raw_cat
+                elif raw_cat in ['STASHDB', 'TPDB'] or target_code.startswith(('WS', 'WP')):
+                    target_cat = 'WESTERN'
+                elif raw_cat in ['1PONDO', '10MUSUME', 'PACO', 'HEYZO', 'CARIB', 'FC2COM'] or target_code.startswith('E'):
+                    target_cat = 'JAV_UNCEN'
+                elif target_code.startswith('C'):
+                    target_cat = 'JAV_CEN'
+
                 categories_to_try = [target_cat]
                 for c_cand in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN', 'MOVIE', 'KTV', 'FTV']:
                     if c_cand not in categories_to_try:

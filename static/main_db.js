@@ -37,7 +37,7 @@ $(document).on('click', '.modal', function(e) {
     }
 });
 
-// 유저가 설정한 이미지 서버 주소(Caddy 등)와 비교하여 순수 로컬 미디어 여부 판정 (도메인 블랙리스트 배제)
+// 유저가 설정한 이미지 서버 주소와 비교하여 순수 로컬 미디어 여부 판정
 function isLocalServerMediaUrl(url) {
     if (!url || typeof url !== 'string') return false;
     var clean = url.trim();
@@ -97,7 +97,7 @@ function getDisplayMediaUrl(url, site, mediaType) {
     return clean;
 }
 
-// 크롭 에디터 로드 헬퍼 (로컬 이미지 서버 주소는 프록시를 태우지 않고 다이렉트 로드)
+// 크롭 에디터 로드 헬퍼 (로컬 이미지 서버 주소는 다이렉트 로드)
 function getSameOriginProxyUrl(url) {
     if (!url) return '';
     var cleanUrl = String(url).trim();
@@ -112,13 +112,12 @@ function getSameOriginProxyUrl(url) {
     return cleanUrl;
 }
 
-// FlaskFarm 내장 함수 덮어쓰기 및 라우팅 보장
+// FlaskFarm AJAX 명령 단일 라우팅 제어 함수
 window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options) {
     var pathname = window.location.pathname;
     var current_module_name = (typeof sub !== 'undefined' && sub) ? sub : get_current_module_sub();
     var is_person_page = get_list_context().type === 'person';
 
-    // 메타 DB 시스템 명령 및 프리뷰 클립 제어는 전용 API 라우트로 직결
     var is_meta_db_system_cmd = (pathname.indexOf('/meta_db/') !== -1) ||
         (typeof command === 'string' && (
             command.indexOf('db_') === 0 ||
@@ -133,11 +132,11 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
 
     var is_person_req = is_person_page || (typeof command === 'string' && command.indexOf('person_') === 0) || (options && options.category === 'PERSON');
 
-        var request_url = is_person_req
-            ? ('/' + package_name + '/person_api')
-            : (is_meta_db_system_cmd
-                ? ('/' + package_name + '/meta_api')
-                : ('/' + package_name + '/ajax/' + target_module));
+    var request_url = is_person_req
+        ? ('/' + package_name + '/person_api')
+        : (is_meta_db_system_cmd
+            ? ('/' + package_name + '/meta_api')
+            : ('/' + package_name + '/ajax/' + target_module));
 
     var postData = {
         sub: target_module,
@@ -177,7 +176,6 @@ function get_list_context() {
     var is_person_page = list_type === 'person' ||
         (list_type !== 'meta' && ($('#search_domain').length > 0 || window.location.pathname.indexOf('person_list') !== -1));
 
-    // 서브모듈 URL 경로에 따른 카테고리 매핑
     var sub_to_cat = {
         'jav_censored': 'JAV_CEN',
         'jav_uncensored': 'JAV_UNCEN',
@@ -200,7 +198,6 @@ function get_list_context() {
     };
 }
 
-// 스토리지 프리픽스 헬퍼
 function get_storage_prefix() {
     var current_sub = get_current_module_sub();
     return get_list_context().type === 'person'
@@ -208,7 +205,6 @@ function get_storage_prefix() {
         : (current_sub + '_dblist_');
 }
 
-// 초기 검색 실행 헬퍼 (중복 실행 방지)
 function triggerInitialSearchOnce() {
     if (is_initial_search_done) return;
     is_initial_search_done = true;
@@ -243,7 +239,6 @@ function triggerInitialSearchOnce() {
     window.globalRequestSearch(saved_page, false);
 }
 
-// 공용 페이징 툴바 렌더러 (첫/마지막 페이지 번호 표기)
 function render_pagination(paging) {
     var p1 = $('#page1');
     var p2 = $('#page2');
@@ -257,7 +252,6 @@ function render_pagination(paging) {
     var str = '<div class="btn-toolbar justify-content-center my-2" role="toolbar">';
     str += '<div class="btn-group btn-group-sm" role="group">';
 
-    // 1페이지가 현재 10개 블록 범위 밖에 있을 때 첫 페이지 번호 '1'과 이전 블록 '<' 노출
     if (paging.prev_page && paging.prev_page > 0) {
         str += '<button type="button" class="btn btn-secondary db-page-btn" data-page="1" title="첫 페이지 (1페이지)">1</button>';
         str += '<button type="button" class="btn btn-secondary db-page-btn" data-page="' + paging.prev_page + '" title="이전 10페이지">&lt;</button>';
@@ -271,7 +265,6 @@ function render_pagination(paging) {
         }
     }
 
-    // 마지막 페이지가 현재 10개 블록 범위 밖에 있을 때 다음 블록 '>'과 마지막 페이지 번호 노출
     if (paging.next_page && paging.next_page > 0) {
         str += '<button type="button" class="btn btn-secondary db-page-btn" data-page="' + paging.next_page + '" title="다음 10페이지">&gt;</button>';
         str += '<button type="button" class="btn btn-secondary db-page-btn" data-page="' + paging.total_page + '" title="마지막 페이지 (' + paging.total_page + '페이지)">' + paging.total_page + '</button>';
@@ -356,7 +349,6 @@ window.globalRequestSearch = function(page, preserveScroll) {
     $('#page1').html('');
     $('#page2').html('');
 
-    // 목록 요청 즉시 스켈레톤 플레이스홀더 렌더링
     var skeletonCount = Math.min(parseInt(page_size, 10) || 10, 10);
     var skeletonHtml = '';
     for (var sk = 0; sk < skeletonCount; sk++) {
@@ -383,7 +375,7 @@ window.globalRequestSearch = function(page, preserveScroll) {
         : (get_list_context().type === 'meta'
             ? ('/' + package_name + '/meta_api')
             : ('/' + package_name + '/ajax/' + target_module));
-            
+
     current_search_xhr = $.ajax({
         url: request_url,
         type: 'POST',
@@ -452,9 +444,8 @@ window.request_search = window.globalRequestSearch;
 window.request_db_search = window.globalRequestSearch;
 window.request_person_search = window.globalRequestSearch;
 
-// 모달 HTML 동적 주입
+// 6개 표준 모달 DOM 동적 주입
 function injectDbModals() {
-    // 1. 작품 메타데이터 편집 모달
     if ($('#dbEditModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="dbEditModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -468,7 +459,6 @@ function injectDbModals() {
                 <input type="hidden" id="edit_code">
                 <input type="hidden" id="edit_idx">
                 <div class="row mb-2">
-                  <!-- 좌측: 고정 높이 이미지 프리뷰 캔버스 -->
                   <div class="col-md-4 d-flex flex-column p-2 rounded justify-content-between" style="background: #14171a; height: 370px;">
                     <div class="d-flex align-items-center justify-content-center shadow-sm rounded overflow-hidden" style="width: 100%; height: 310px; background: #0a0c0e; position: relative;">
                       <span class="badge shadow-sm font-weight-bold" id="preview_img_type" style="position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 123, 255, 0.75); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px);">Poster</span>
@@ -485,7 +475,6 @@ function injectDbModals() {
                     </div>
                   </div>
 
-                  <!-- 우측: 2열 그리드 메타 필드 -->
                   <div class="col-md-8 pl-3 pr-2">
                     <div class="form-row mb-2">
                       <div class="col-md-6"><label class="small font-weight-bold mb-1">고유 식별코드 (Code)</label><input type="text" class="form-control form-control-sm bg-light" id="edit_code_view" readonly></div>
@@ -553,7 +542,6 @@ function injectDbModals() {
                   </div>
                   <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="공식 예고편 스트림 URL">
 
-                  <!-- 프리뷰 클립 추출용 원본 동영상 경로 인라인 슬라이드 바 -->
                   <div id="div_preview_source_bar" class="p-2 my-2 rounded bg-dark border border-secondary shadow-sm" style="display: none;">
                     <div class="d-flex align-items-center">
                       <span class="small font-weight-bold text-info mr-2 text-nowrap">🎥 원본 파일:</span>
@@ -580,7 +568,6 @@ function injectDbModals() {
                 <div class="d-flex align-items-center flex-wrap mb-1 mb-md-0">
                   <button type="button" class="btn btn-sm btn-outline-info font-weight-bold mr-2" id="btn_view_db_json">JSON 보기</button>
 
-                  <!-- 모달 내부 이미지 관리 드롭다운 -->
                   <div class="dropdown mr-2">
                     <button class="btn btn-sm btn-outline-primary custom-dropdown-toggle font-weight-bold py-1" type="button">
                       이미지 관리
@@ -591,7 +578,6 @@ function injectDbModals() {
                     </div>
                   </div>
 
-                  <!-- 모달 내부 메타 갱신 드롭다운 -->
                   <div class="dropdown">
                     <button class="btn btn-sm btn-outline-success custom-dropdown-toggle font-weight-bold py-1" type="button">
                       메타 갱신
@@ -613,7 +599,6 @@ function injectDbModals() {
         </div>`);
     }
 
-    // 2. JSON 원본 뷰어 모달
     if ($('#dbJsonViewModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="dbJsonViewModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -635,7 +620,6 @@ function injectDbModals() {
         </div>`);
     }
 
-    // 3. 16:9 비율 비디오 트레일러 재생 모달
     if ($('#videoPreviewModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="videoPreviewModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -653,7 +637,6 @@ function injectDbModals() {
         </div>`);
     }
 
-    // 4. 출연 배우 검색 및 추가 모달
     if ($('#actorSearchModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="actorSearchModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -696,7 +679,6 @@ function injectDbModals() {
         </div>`);
     }
 
-    // 5. 포스터 & 인물 프로필 통합 크롭 에디터 모달
     if ($('#imageCropModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="imageCropModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -712,16 +694,13 @@ function injectDbModals() {
                 <input type="hidden" id="crop_person_domain" value="JAV">
                 <input type="hidden" id="crop_has_user_poster">
 
-                <!-- 상단 1줄 통합 툴바 -->
                 <div class="d-flex justify-content-between align-items-center mb-2 px-2 py-1 rounded bg-dark border border-secondary flex-wrap">
                   <div class="d-flex align-items-center flex-nowrap mb-1 mb-md-0">
-                    <!-- 작품 포스터 전용 PL/P 소스 전환 -->
                     <div class="btn-group btn-group-sm mr-2" role="group" id="crop_meta_sources">
                       <button type="button" class="btn btn-primary font-weight-bold" id="btn_source_pl" title="가로 커버(PL)를 소스로 불러옵니다.">PL</button>
                       <button type="button" class="btn btn-outline-light" id="btn_source_p" title="세로 포스터(P)를 소스로 불러옵니다.">P</button>
                     </div>
 
-                    <!-- 비율 버튼 그룹 -->
                     <div class="btn-group btn-group-sm mr-2" role="group">
                       <button type="button" class="btn btn-info font-weight-bold" id="btn_crop_ratio_lock" title="표준 AV 비율 (1:1.4225)">1.42</button>
                       <button type="button" class="btn btn-outline-light font-weight-bold" id="btn_crop_ratio_portrait" title="3:4 프로필 비율">3:4</button>
@@ -729,7 +708,6 @@ function injectDbModals() {
                       <button type="button" class="btn btn-outline-light font-weight-bold" id="btn_crop_ratio_free" title="자유 비율">자유</button>
                     </div>
 
-                    <!-- 회전 및 리셋 -->
                     <div class="btn-group btn-group-sm" role="group">
                       <button type="button" class="btn btn-outline-light" id="btn_crop_rotate_left" title="좌측 90도 회전">좌 90°</button>
                       <button type="button" class="btn btn-outline-light" id="btn_crop_rotate_right" title="우측 90도 회전">우 90°</button>
@@ -737,7 +715,6 @@ function injectDbModals() {
                     </div>
                   </div>
 
-                  <!-- 우측: URL 로드 및 업로드 버튼 -->
                   <div class="d-flex align-items-center flex-nowrap">
                     <button type="button" class="btn btn-sm btn-outline-info font-weight-bold py-1 mr-1" id="btn_toggle_crop_url" title="이미지 웹 주소 입력">🔗 URL 로드</button>
                     <label class="btn btn-sm btn-outline-success mb-0 font-weight-bold py-1 mr-1" id="lbl_upload_pl" style="cursor: pointer;" title="가로 커버 업로드"><span>📁 가로(PL)</span><input type="file" id="input_upload_pl" accept="image/*" style="display: none;"></label>
@@ -746,7 +723,6 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <!-- URL 직접 입력 슬라이드 바 (기본 숨김) -->
                 <div id="crop_url_bar" class="p-2 mb-2 rounded bg-dark border border-secondary shadow-sm" style="display: none;">
                   <div class="d-flex align-items-center">
                     <span class="small font-weight-bold text-info mr-2 text-nowrap">🔗 URL:</span>
@@ -756,7 +732,6 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <!-- 오리지널 고정 높이 크롭 뷰 래퍼 -->
                 <div class="crop-view-wrapper" style="width: 100%; height: 540px; background: #0a0a0a; border-radius: 4px; border: 1px solid #333; overflow: hidden;">
                   <img id="cropper_image" src="" style="display: block; max-width: 100%;" alt="Crop Source">
                 </div>
@@ -773,7 +748,6 @@ function injectDbModals() {
         </div>`);
     }
 
-    // 6. 인물 상세 정보 편집 모달
     if ($('#personEditModal').length === 0) {
         $('body').append(`
         <div class="modal fade" id="personEditModal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -788,7 +762,6 @@ function injectDbModals() {
                 <input type="hidden" id="p_edit_thumb">
                 <input type="hidden" id="p_edit_selected_primary_url">
                 <div class="row mb-2">
-                  <!-- 좌측: 세로형 프로필에 맞춘 확장 캔버스 -->
                   <div class="col-md-4 d-flex flex-column p-2 rounded justify-content-between" style="background: #14171a; height: 440px;">
                     <div class="d-flex align-items-center justify-content-center shadow-sm rounded overflow-hidden" style="width: 100%; height: 380px; background: #0a0c0e; position: relative;">
                       <span class="badge shadow-sm font-weight-bold" id="p_preview_img_type" style="position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 0, 0, 0.55); color: #e0e6ed; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px);">SERVER</span>
@@ -806,7 +779,6 @@ function injectDbModals() {
                     </div>
                   </div>
 
-                  <!-- 우측: 2열 2행 프로필 폼 그리드 -->
                   <div class="col-md-8 pl-3 pr-2">
                     <div class="form-row mb-2">
                       <div class="col-md-6">
@@ -844,13 +816,11 @@ function injectDbModals() {
                       <input type="text" class="form-control form-control-sm" id="p_edit_hobby" placeholder="취미 및 특기 사항">
                     </div>
 
-                    <!-- 별칭 / 예명 목록 -->
                     <div class="form-group mb-2">
                       <label class="small font-weight-bold mb-1">별칭 / 예명 목록 <span class="text-muted font-weight-normal">(쉼표 구분)</span></label>
                       <input type="text" class="form-control form-control-sm" id="p_edit_aliases" placeholder="예명 또는 별칭">
                     </div>
 
-                    <!-- AV 특화 항목 -->
                     <div id="p_edit_av_spec_div" class="form-row mb-2 p-2 rounded" style="background: rgba(255,255,255,0.03); border: 1px dashed rgba(255,255,255,0.1);">
                       <div class="col-md-5"><label class="small font-weight-bold text-info mb-1">신체 사이즈 (B-W-H)</label><input type="text" class="form-control form-control-sm" id="p_edit_body_size" placeholder="예: B85-W58-H86"></div>
                       <div class="col-md-3"><label class="small font-weight-bold text-info mb-1">브라 컵 (Cup)</label><input type="text" class="form-control form-control-sm" id="p_edit_bra_size" placeholder="예: E컵"></div>
@@ -859,7 +829,6 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <!-- 배포 DB 원본 시스템 정보 -->
                 <div class="form-row mb-2">
                   <div class="col-md-4" id="div_p_edit_local_path">
                     <label class="small font-weight-bold text-muted mb-1" id="lbl_p_edit_local_path">로컬 상대 경로 (local_img_path)</label>
@@ -875,7 +844,6 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <!-- 프로필 이미지 URLs -->
                 <div class="form-group mb-2">
                   <label class="small font-weight-bold mb-1">프로필 이미지 URLs <span class="text-muted font-weight-normal">(줄바꿈으로 구분)</span></label>
                   <textarea class="form-control form-control-sm" id="p_edit_site_img_urls" rows="2" placeholder="https://... (엔터로 여러 개)"></textarea>
@@ -916,7 +884,6 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <!-- 소장 출연작(Filmography) 영역 -->
                 <div class="form-group mb-0 p-2 rounded" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08);">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="small font-weight-bold text-white mb-0">소장 출연작 목록 <span class="badge badge-success small ml-1" id="p_modal_works_count">0편</span></label>
@@ -928,7 +895,6 @@ function injectDbModals() {
                 </div>
               </div>
 
-              <!-- 인물 편집 모달 하단 좌측 JSON 보기 및 사진 편집 버튼 -->
               <div class="modal-footer py-2 d-flex justify-content-between flex-wrap" style="flex-shrink: 0;">
                 <div class="d-flex align-items-center flex-wrap mb-1 mb-md-0">
                   <button type="button" class="btn btn-sm btn-outline-info font-weight-bold mr-2" id="btn_view_person_json">JSON 보기</button>
@@ -946,7 +912,6 @@ function injectDbModals() {
     }
 }
 
-// 연쇄적 모달 점프 시 상위 레이어를 동적으로 복제 생성하는 팩토리 헬퍼
 function getOrCreateModal(baseModalId) {
     var $base = $(baseModalId);
     if (!$base.hasClass('show')) {
@@ -991,7 +956,6 @@ function getOrCreateModal(baseModalId) {
     return $clone;
 }
 
-// DB 편집 모달 미리보기 이미지 업데이트
 function update_modal_image_preview($modal) {
     $modal = $modal || $('#dbEditModal');
     var images = $modal.data('preview_images') || modal_preview_images || [];
@@ -1058,7 +1022,6 @@ function update_modal_image_preview($modal) {
     }
 }
 
-// 인물 편집 모달 다중 이미지 미리보기 업데이트
 function update_p_modal_image_preview($modal) {
     $modal = $modal || $('#personEditModal');
     var images = $modal.data('p_preview_images') || p_modal_preview_images || [];
@@ -1143,7 +1106,6 @@ function update_p_modal_image_preview($modal) {
     }
 }
 
-// 배우 배지 렌더링
 function render_actor_badges($modal) {
     $modal = $modal || $('#dbEditModal');
     var actors = $modal.data('edit_actors') || current_edit_actors || [];
@@ -1245,7 +1207,6 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
     if (final_pl) payload.thumb.push({ aspect: 'landscape', value: final_pl, site: payload.site });
     if (final_p) payload.thumb.push({ aspect: 'poster', value: final_p, site: payload.site });
 
-    // 로컬 서버 URL 또는 프록시 URL이 원본 필드로 침투하지 않도록 정제
     if (edited_poster && !isLocalServerMediaUrl(edited_poster) && edited_poster.indexOf('/metadata/normal/') === -1) {
         payload.original.thumb.poster = edited_poster;
     } else if (!edited_poster) {
@@ -1309,6 +1270,7 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
     return payload;
 }
 
+
 $(document).ready(function(){
     injectDbModals();
     var current_sub = get_current_module_sub();
@@ -1371,12 +1333,10 @@ $(document).off('click', '.db-page-btn').on('click', '.db-page-btn', function(e)
     }
 });
 
-// 검색 필터 변경 시 1페이지로 이동
 $(document).on('change', '#search_site, #search_status, #search_order, #page_size, #search_domain', function(e){
     window.globalRequestSearch('1', false);
 });
 
-// 검색어 제출 시 1페이지로 이동
 $(document).on('click', '#search, #btn_person_search_submit', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -1397,7 +1357,6 @@ $(document).on('submit', '#form_search, #form_search_person', function(e) {
     window.globalRequestSearch('1', false);
 });
 
-// 리셋 버튼 클릭 시 1페이지로 리셋
 $(document).on('click', '#reset_btn, #btn_person_search_reset', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -1503,7 +1462,6 @@ function make_item_list(data) {
             var raw_site_p = orig_thumb.poster || '';
             var raw_site_pl = orig_thumb.landscape || '';
 
-            // 로컬 서버에 저장된 파일만 파란색 뱃지(is_final: true), 원본/프록시는 어두운 뱃지(is_final: false)
             if (list_p_url) {
                 var cleanKeyP = getCleanSourceUrl(list_p_url);
                 var isLocalP = isLocalServerMediaUrl(list_p_url);
@@ -1601,7 +1559,6 @@ function make_item_list(data) {
                            '</div>';
 
             str += '<div class="row align-items-start py-3 px-1" style="border-bottom: 1px solid rgba(128, 128, 128, 0.15);">';
-            
             str += '<div class="col-sm-2 d-flex align-items-center justify-content-start pl-2 pr-1">' + chk_html + '<div class="flex-grow-1 text-center overflow-hidden">' + img_html + '</div></div>';
             
             str += '<div class="col-sm-8 pl-1 pr-2">';
@@ -1622,11 +1579,9 @@ function make_item_list(data) {
             str += '  </div>';
             str += '</div>';
 
-            // 우측: 관리 버튼 폭을 슬림하게 제한하고 여백 최적화
             str += '<div class="col-sm-2 pl-1 pr-2">';
             str += '  <div class="d-flex flex-column align-items-center justify-content-start pt-1 w-100" style="max-width: 120px; margin: 0 auto;">';
 
-            // 이미지 관리 드롭다운
             str += '    <div class="dropdown mb-2 w-100">';
             str += '      <button class="btn btn-sm btn-outline-primary btn-block custom-dropdown-toggle font-weight-bold py-1 px-1" type="button" style="font-size: 0.82rem;">';
             str += '        이미지 관리';
@@ -1637,10 +1592,8 @@ function make_item_list(data) {
             str += '      </div>';
             str += '    </div>';
 
-            // DB 편집 버튼
             str += '    <button class="btn btn-sm btn-outline-info btn-block btn_edit_db mb-2 font-weight-bold py-1 px-1" type="button" data-idx="' + i + '" style="font-size: 0.82rem;">DB 편집</button>';
 
-            // 메타 갱신 드롭다운
             str += '    <div class="dropdown mb-2 w-100">';
             str += '      <button class="btn btn-sm btn-outline-success btn-block custom-dropdown-toggle font-weight-bold py-1 px-1" type="button" style="font-size: 0.82rem;">';
             str += '        메타 갱신';
@@ -1651,7 +1604,6 @@ function make_item_list(data) {
             str += '      </div>';
             str += '    </div>';
 
-            // 데이터 삭제 버튼
             str += '    <button class="btn btn-sm btn-outline-danger btn-block btn_delete_db font-weight-bold py-1 px-1" data-code="' + row.code + '" style="font-size: 0.82rem;">데이터 삭제</button>';
             str += '  </div>';
             str += '</div>';
@@ -1707,9 +1659,10 @@ function make_person_list(data) {
                 var resolved_local = p_media.local_img_url || formatActorLocalUrl(local_path_v, p.domain);
                 if (resolved_local) {
                     var busted_server_url = resolved_local + (resolved_local.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
-                    p_gallery.push({ url: busted_server_url, type: 'SERVER' });
+                    p_gallery.push({ url: busted_server_url, type: 'SERVER', is_final: true });
                 }
             }
+
             if (google_id_v && google_id_v.toLowerCase() !== 'null' && google_id_v.toLowerCase() !== 'none') {
                 p_gallery.push({ url: 'https://drive.google.com/thumbnail?id=' + google_id_v, type: 'GOOGLE' });
             }
@@ -1783,9 +1736,10 @@ function make_person_list(data) {
     if (listEl) listEl.innerHTML = str;
 }
 
-function openPersonModalByData(p, $targetModal) {
+// 통합 단일 모달 로더 및 렌더러
+function renderPersonModalContent(p, $modal) {
     if (!p) return;
-    var $modal = $targetModal || getOrCreateModal('#personEditModal');
+    $modal = $modal || $('#personEditModal');
 
     var media = p.media_src || {};
     var extra = p.extra_info || {};
@@ -1822,25 +1776,16 @@ function openPersonModalByData(p, $targetModal) {
     $modal.find('#p_edit_google_fileid').val(google_val);
     $modal.find('#p_edit_site_img_url').val(site_val);
 
-    var site_photos = Array.isArray(media.site_img_urls) ? media.site_img_urls.slice() : [];
-    if (site_val && site_photos.indexOf(site_val) === -1) {
+    var site_photos = Array.isArray(media.site_img_urls) ? media.site_img_urls.filter(function(u){
+        return u && typeof u === 'string' && u.trim().startsWith('http') && !isLocalServerMediaUrl(u);
+    }) : [];
+
+    if (site_val && site_val.startsWith('http') && !isLocalServerMediaUrl(site_val) && site_photos.indexOf(site_val) === -1) {
         site_photos.unshift(site_val);
     }
     $modal.find('#p_edit_site_img_urls').val(site_photos.join('\n'));
 
-    var info_url_val = (extra.info_url || '').trim();
-    var p_idx_val = (p.person_idx || '').trim();
-
-    if (!info_url_val && p_idx_val) {
-        if (p_idx_val.startsWith('PS')) {
-            info_url_val = 'https://stashdb.org/performers/' + p_idx_val.substring(2);
-        } else if (p_idx_val.startsWith('PP') || p_idx_val.startsWith('PT')) {
-            info_url_val = 'https://theporndb.net/performers/' + p_idx_val.substring(2);
-        } else if (p_idx_val.startsWith('PA')) {
-            var raw_num = p_idx_val.replace(/\D/g, '');
-            if (raw_num) info_url_val = 'https://www.avdbs.com/menu/actor.php?actor_idx=' + raw_num;
-        }
-    }
+    var info_url_val = (extra.info_url || p.info_url || '').trim();
     $modal.find('#p_edit_info_url').val(info_url_val);
 
     var dom = (p.domain || 'JAV').toUpperCase();
@@ -1876,11 +1821,11 @@ function openPersonModalByData(p, $targetModal) {
         var resolved_local_url = media.local_img_url || extra.local_img_url || formatActorLocalUrl(local_val, dom);
         if (resolved_local_url) {
             var cache_busted_local = resolved_local_url + (resolved_local_url.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
-            sources_map['local_img_path'] = { url: cache_busted_local, type: 'SERVER' };
+            sources_map['local_img_path'] = { url: cache_busted_local, type: 'SERVER', is_final: true };
         }
     }
     if (!is_invalid(google_val)) {
-        sources_map['google_fileid'] = { url: 'https://drive.google.com/thumbnail?id=' + google_val, type: 'GOOGLE' };
+        sources_map['google_fileid'] = { url: 'https://drive.google.com/thumbnail?id=' + google_val, type: 'GOOGLE', is_final: false };
     }
 
     if (site_photos.length > 0) {
@@ -1888,7 +1833,7 @@ function openPersonModalByData(p, $targetModal) {
         site_photos.forEach(function(s_url, s_idx){
             if (!is_invalid(s_url) && s_url.startsWith('http')) {
                 var label_str = site_photos.length > 1 ? (type_name + ' #' + (s_idx + 1)) : type_name;
-                sources_map['site_img_url_' + s_idx] = { url: s_url, type: label_str, key_type: 'site_img_url' };
+                sources_map['site_img_url_' + s_idx] = { url: s_url, type: label_str, key_type: 'site_img_url', is_final: false };
             }
         });
     }
@@ -1997,69 +1942,66 @@ function openPersonModalByData(p, $targetModal) {
         $subWrapper.hide();
     }
 
-    var works_source = p.works_detailed || p.works || {};
-    var works_count = p.works_count || 0;
-    $modal.find('#p_modal_works_count').text(works_count + '편');
+    // 소장 출연작 뱃지 렌더링 (제목 우선 출력)
+    var worksMap = (p.works_detailed && Object.keys(p.works_detailed).length > 0) ? p.works_detailed : (p.works || {});
+    var totalWorks = 0;
+    var worksHtml = '';
 
-    var works_html = '';
-    var has_works = false;
-    for (var cat in works_source) {
-        var work_items = works_source[cat];
-        if (Array.isArray(work_items) && work_items.length > 0) {
-            has_works = true;
-            for (var w = 0; w < work_items.length; w++) {
-                var w_obj = work_items[w];
-                var w_code = '';
-                var w_ui_code = '';
-                var w_title = '';
+    for (var cat in worksMap) {
+        var list = worksMap[cat];
+        if (Array.isArray(list) && list.length > 0) {
+            totalWorks += list.length;
+            for (var w = 0; w < list.length; w++) {
+                var it = list[w];
+                var wCode = '';
+                var wUiCode = '';
+                var wTitle = '';
 
-                if (typeof w_obj === 'object' && w_obj !== null) {
-                    w_code = w_obj.code || '';
-                    w_ui_code = w_obj.ui_code || w_code;
-                    w_title = w_obj.title || '';
+                if (typeof it === 'object' && it !== null) {
+                    wCode = it.code || '';
+                    wUiCode = it.ui_code || wCode;
+                    wTitle = it.title || '';
                 } else {
-                    w_code = String(w_obj);
-                    w_ui_code = w_code;
-                    w_title = '';
+                    wCode = String(it);
+                    wUiCode = wCode;
+                    wTitle = '';
                 }
 
-                var display_code = w_ui_code || w_code;
-                var display_title = w_title ? w_title : '';
-                var full_display_text = '[' + cat + '] [' + display_code + ']' + (display_title ? (' ' + display_title) : '');
-                var tooltip_text = full_display_text + '\n(클릭하여 작품 메타 편집창 열기)';
+                var displayCode = wUiCode || wCode;
+                var displayTitle = wTitle ? (' ' + wTitle) : '';
+                var tooltipText = '[' + cat + '] [' + displayCode + ']' + displayTitle + '\n(클릭하여 작품 메타 편집창 열기)';
 
-                works_html += '<span class="badge badge-dark mr-1 mb-1 p-1 work-badge-clickable border border-secondary d-inline-flex align-items-center" data-code="' + w_code + '" data-cat="' + cat + '" title="' + tooltip_text.replace(/"/g, '&quot;') + '" style="max-width: 100%; font-size: 0.82rem;">';
-                works_html += '  <span class="badge badge-info mr-1" style="font-size: 0.76rem;">' + cat + '</span>';
-                works_html += '  <span class="badge badge-secondary mr-1" style="font-size: 0.76rem;">' + display_code + '</span>';
-                if (display_title) {
-                    works_html += '  <span class="text-light text-truncate font-weight-normal ml-1" style="max-width: 380px;">' + display_title + '</span>';
+                worksHtml += '<span class="badge badge-dark mr-1 mb-1 p-1 work-badge-clickable border border-secondary d-inline-flex align-items-center" data-code="' + wCode + '" data-cat="' + cat + '" title="' + tooltipText.replace(/"/g, '&quot;') + '" style="max-width: 100%; font-size: 0.82rem; cursor: pointer;">';
+                worksHtml += '  <span class="badge badge-info mr-1" style="font-size: 0.76rem;">' + cat + '</span>';
+                worksHtml += '  <span class="badge badge-secondary mr-1" style="font-size: 0.76rem;">' + displayCode + '</span>';
+                if (wTitle) {
+                    worksHtml += '  <span class="text-light text-truncate font-weight-normal ml-1 work-badge-title" style="max-width: 420px;">' + wTitle + '</span>';
                 }
-                works_html += '</span>';
+                worksHtml += '</span>';
             }
         }
     }
-    if (!has_works) {
-        works_html = '<span class="text-muted small py-1">등록된 소장 출연작이 없습니다. (작품 메타데이터 등록 시 자동 연계)</span>';
+
+    $modal.find('#p_modal_works_count').text(totalWorks + '편');
+    if (totalWorks === 0) {
+        worksHtml = '<span class="text-muted small py-1">등록된 소장 출연작이 없습니다. (작품 메타데이터 등록 시 자동 연계)</span>';
     }
-    $modal.find('#p_modal_works_container').html(works_html);
+    $modal.find('#p_modal_works_container').html(worksHtml);
 
     var modal_display_name = p.name_ko || p.name_org || p.name || p.name_en || '인물';
     $modal.find('#person_modal_title').text('[' + modal_display_name + '] 인물 상세 정보 편집');
-    $modal.modal('show');
 }
 
-function openDbEditModalByData(row, $targetModal) {
-    if (!row) {
-        if (typeof notify === 'function') notify('편집 대상 데이터를 찾을 수 없습니다.', 'warning');
-        return;
-    }
+// 인물 모달 단일 공용 로더
+function renderDbEditModalContent(row, $modal) {
+    if (!row) return;
+    $modal = $modal || $('#dbEditModal');
 
-    var $modal = $targetModal || getOrCreateModal('#dbEditModal');
     var jd = row.json_data;
     if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch (err) { jd = {}; } }
     if (!jd || typeof jd !== 'object') jd = {};
 
-    var rawActors = jd.actor || (jd.extra_info && jd.extra_info.actor_cache) || [];
+    var rawActors = jd.actor || (jd.extra_info && (jd.extra_info._actors || jd.extra_info.actor_cache)) || [];
     var actorsList = Array.isArray(rawActors) ? rawActors.map(function(actor){
         if (typeof actor === 'string') return { name_org: actor, name_ko: '', name_en: '', role: '출연' };
         if (!actor || typeof actor !== 'object') return null;
@@ -2087,7 +2029,6 @@ function openDbEditModalByData(row, $targetModal) {
     var raw_pl_url = orig_thumb.landscape || '';
     var raw_fanarts = Array.isArray(orig_data.fanart) ? orig_data.fanart : [];
 
-    // 원본 필드에 혹시 로컬 이미지 서버 파일이 들어있었다면 순수 원본 유지를 위해 비움
     if (isLocalServerMediaUrl(raw_p_url)) raw_p_url = '';
     if (isLocalServerMediaUrl(raw_pl_url)) raw_pl_url = '';
 
@@ -2227,7 +2168,6 @@ function openDbEditModalByData(row, $targetModal) {
     $modal.find('#edit_series').val(jd.series || row.series || '');
     $modal.find('#edit_director').val(jd.director || row.director || '');
 
-    // AV 전용 모듈에서는 관람 등급(MPAA)을 숨김 처리하고 장르 입력창을 12컬럼 전체로 확장
     var currentCat = (row.category || get_list_context().category || '').toUpperCase();
     if (currentCat === 'GENERAL' || currentCat === 'MOVIE' || currentCat === 'KTV' || currentCat === 'FTV') {
         $modal.find('#div_edit_genres').removeClass('col-md-12').addClass('col-md-6');
@@ -2242,7 +2182,6 @@ function openDbEditModalByData(row, $targetModal) {
     $modal.find('#edit_title').val(row.title || jd.title || '');
     $modal.find('#edit_tagline').val(jd.tagline || row.tagline || '');
 
-    // 태그(tag)로의 교차 폴백을 원천 차단하고 순수 장르(genre) 목록만 입력 필드에 표시
     var genreDisplayStr = '';
     if (Array.isArray(jd.genre) && jd.genre.length > 0) {
         genreDisplayStr = jd.genre.join(', ');
@@ -2253,27 +2192,21 @@ function openDbEditModalByData(row, $targetModal) {
     }
     $modal.find('#edit_genres').val(genreDisplayStr);
 
-    // 사이트 원본 URL 필드에는 오직 실제 원본 URL만 채우며 로컬 이미지 서버 주소로 대체하지 않음
     $modal.find('#edit_poster_url').val(raw_p_url);
     $modal.find('#edit_poster_url_final').val(final_p_url).css('cursor', final_p_url ? 'pointer' : 'default').attr('title', final_p_url ? '클릭하여 이미지 크게 보기' : '');
 
     $modal.find('#edit_landscape_url').val(raw_pl_url);
     $modal.find('#edit_landscape_url_final').val(final_pl_url).css('cursor', final_pl_url ? 'pointer' : 'default').attr('title', final_pl_url ? '클릭하여 이미지 크게 보기' : '');
 
-    $modal.find('#edit_trailer_url').val(raw_trailer_url || final_trailer_url || '');
-
-    // 예고편 URL은 정규 원본 링크 또는 extras에서 추출
     var currentTrailerUrl = raw_trailer_url || final_trailer_url || '';
     $modal.find('#edit_trailer_url').val(currentTrailerUrl);
 
-    // 공식 트레일러 URL이 있을 때만 트레일러 재생 버튼 노출
     if (currentTrailerUrl) {
         $modal.find('#btn_modal_play_trailer').show();
     } else {
         $modal.find('#btn_modal_play_trailer').hide();
     }
 
-    // 프리뷰 클립 존재 여부에 따른 버튼 상태 및 안내 텍스트 갱신
     var extraData = (jd.extra_info && typeof jd.extra_info === 'object') ? jd.extra_info : (row.extra_info || {});
     var previewClip = extraData.preview_clip;
 
@@ -2292,7 +2225,6 @@ function openDbEditModalByData(row, $targetModal) {
         $modal.find('#div_preview_clip_info').hide().text('');
     }
 
-    // 인라인 경로 입력 바 닫기 및 기존 보관된 동영상 경로 사전 입력
     $modal.find('#div_preview_source_bar').hide();
     $modal.find('#input_preview_source_path').val(extraData.source_video_path || '');
 
@@ -2303,14 +2235,42 @@ function openDbEditModalByData(row, $targetModal) {
     $modal.find('#edit_info_url').val(rawInfoUrl);
 
     $modal.find('#db_edit_modal_title').text('[' + (row.code || '') + '] 메타데이터 편집');
-    $modal.modal('show');
 }
 
-// 열려 있는 DB 편집 모달 실시간 갱신 헬퍼
+// 작품 모달 단일 공용 로더
+var isMovieModalLoading = false;
+
+function loadAndOpenMovieModal(code, category, fallbackData, $targetModal) {
+    if (!code) return;
+    if (isMovieModalLoading) return;
+    isMovieModalLoading = true;
+
+    var $modal = $targetModal || getOrCreateModal('#dbEditModal');
+    var targetCat = category || (fallbackData && fallbackData.category) || get_list_context().category || 'JAV_CEN';
+
+    // 반응 속도를 위해 캐시된 기본 데이터로 먼저 모달 오픈
+    if (fallbackData) {
+        renderDbEditModalContent(fallbackData, $modal);
+        $modal.modal('show');
+    }
+
+    // 백엔드에서 힐링(Self-Healing) 및 관계 복원이 완료된 최신 메타데이터 수신
+    globalSendCommand('get_meta_by_code', String(code), String(targetCat), null, function(ret){
+        isMovieModalLoading = false;
+        if (ret && ret.ret === 'success' && ret.data) {
+            renderDbEditModalContent(ret.data, $modal);
+            $modal.modal('show');
+        } else if (!fallbackData) {
+            if (typeof notify === 'function') notify('[' + code + '] 작품 데이터를 조회하지 못했습니다.', 'warning');
+        }
+    });
+}
+
 function reloadDbEditModalData(code, category, $modal) {
     if (!code) return;
     $modal = $modal || $('#dbEditModal');
-    var target_cat = category || $modal.find('#edit_site').val() || get_list_context().category;
+    var row = $modal.data('row_data') || {};
+    var target_cat = category || row.category || get_list_context().category || 'JAV_CEN';
 
     globalSendCommand('get_meta_by_code', String(code), String(target_cat), null, function(ret){
         if (ret && ret.ret === 'success' && ret.data) {
@@ -2320,48 +2280,112 @@ function reloadDbEditModalData(code, category, $modal) {
     });
 }
 
+var isPersonModalLoading = false;
+
+function loadAndOpenPersonModal(targetIdentifier, targetDomain, $targetModal) {
+    if (!targetIdentifier) return;
+    if (isPersonModalLoading) return;
+    isPersonModalLoading = true;
+
+    var $modal = $targetModal || getOrCreateModal('#personEditModal');
+    var domain = targetDomain || (get_current_module_sub() === 'western' ? 'WESTERN' : 'JAV');
+
+    $modal.find('#p_modal_works_container').html('<div class="d-flex align-items-center py-2 text-info small"><span class="spinner-border spinner-border-sm mr-2" role="status"></span>실시간 소장 출연작 정보 조회 중...</div>');
+    $modal.modal('show');
+
+    globalSendCommand('person_get_detailed', String(targetIdentifier), String(domain), null, function(ret){
+        isPersonModalLoading = false;
+        if (ret && ret.ret === 'success' && ret.data) {
+            renderPersonModalContent(ret.data, $modal);
+        } else {
+            globalSendCommand('person_search', String(targetIdentifier), String(domain), JSON.stringify({ include_aliases: true }), function(sRet){
+                if (sRet && sRet.ret === 'success' && sRet.data && sRet.data.length > 0) {
+                    renderPersonModalContent(sRet.data[0], $modal);
+                } else {
+                    $modal.find('#p_modal_works_container').html('<span class="text-muted small py-1">출연작 정보를 불러오지 못했습니다.</span>');
+                    notify('[' + targetIdentifier + '] 인물 정보를 조회하지 못했습니다.', 'warning');
+                }
+            });
+        }
+    });
+}
+
 $(document).on('click', '.btn_edit_person', function(e){
     e.preventDefault();
     var idx = $(this).data('idx');
     var p = current_person_data[idx];
-    if (p) openPersonModalByData(p);
+    if (p) {
+        loadAndOpenPersonModal(p.person_idx || p.name_org || p.name_ko || p.id, p.domain || 'JAV');
+    }
 });
 
-// 작품 편집창 내 배우 배지 클릭 -> 인물 모달 상위 레이어 오버레이 점프
+$(document).on('click', '.person-name-clickable', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    var idx = parseInt($(this).data('idx'), 10);
+    var p = (current_person_data && !isNaN(idx) && idx >= 0 && idx < current_person_data.length) ? current_person_data[idx] : null;
+    if (p) {
+        loadAndOpenPersonModal(p.person_idx || p.name_org || p.name_ko || p.id, p.domain || 'JAV');
+    }
+});
+
+var isActorBadgeRequesting = false;
+
 $(document).on('click', '.actor-badge-clickable', function(e){
     e.preventDefault();
-    var actor_name = $(this).data('actor-name');
-    var actor_idx = $(this).data('actor-idx');
+    e.stopPropagation();
+
+    if (isActorBadgeRequesting) return;
+
+    var $badgeText = $(this);
+    var $badgeContainer = $badgeText.closest('.badge');
+    var actor_name = $badgeText.data('actor-name');
+    var actor_idx = $badgeText.data('actor-idx');
     if (!actor_name && !actor_idx) return;
 
     var current_sub = get_current_module_sub();
     var domain = (current_sub === 'western') ? 'WESTERN' : 'JAV';
 
-    globalSendCommand('person_search', actor_idx || actor_name, domain, JSON.stringify({ include_aliases: true }), function(ret){
-        if (ret && ret.ret === 'success' && ret.data && ret.data.length > 0) {
-            openPersonModalByData(ret.data[0]);
-        } else {
-            notify('[' + actor_name + '] 인물 DB 등록 정보를 찾을 수 없습니다.', 'warning');
-        }
-    });
+    isActorBadgeRequesting = true;
+    var originalBadgeHtml = $badgeContainer.html();
+    $badgeContainer.css({ 'pointer-events': 'none', 'opacity': '0.7' });
+    $badgeText.append(' <span class="spinner-border spinner-border-sm text-info ml-1" role="status" style="width: 0.75rem; height: 0.75rem; vertical-align: middle;"></span>');
+
+    loadAndOpenPersonModal(actor_idx || actor_name, domain, null);
+
+    setTimeout(function(){
+        isActorBadgeRequesting = false;
+        $badgeContainer.css({ 'pointer-events': '', 'opacity': '' });
+        $badgeContainer.html(originalBadgeHtml);
+    }, 400);
 });
 
-// 인물 모달 내 출연작 배지 클릭 -> 작품 메타 편집 모달 상위 레이어 오버레이 점프
+var isWorkBadgeRequesting = false;
+
 $(document).on('click', '.work-badge-clickable', function(e){
     e.preventDefault();
     e.stopPropagation();
-    var code = $(this).attr('data-code') || $(this).data('code');
-    var cat = $(this).attr('data-cat') || $(this).data('cat') || 'JAV_CEN';
+
+    if (isWorkBadgeRequesting) return;
+
+    var $badge = $(this);
+    var code = $badge.attr('data-code') || $badge.data('code');
+    var cat = $badge.attr('data-cat') || $badge.data('cat') || 'JAV_CEN';
 
     if (!code) return;
 
-    globalSendCommand('get_meta_by_code', String(code), String(cat), null, function(ret){
-        if (ret && ret.ret === 'success' && ret.data) {
-            openDbEditModalByData(ret.data);
-        } else {
-            notify('[' + code + '] 작품 데이터를 조회하지 못했습니다.', 'warning');
-        }
-    });
+    isWorkBadgeRequesting = true;
+    var originalBadgeContent = $badge.html();
+    $badge.css({ 'pointer-events': 'none', 'opacity': '0.7' });
+    $badge.append(' <span class="spinner-border spinner-border-sm text-info ml-1" role="status" style="width: 0.7rem; height: 0.7rem; vertical-align: middle;"></span>');
+
+    loadAndOpenMovieModal(code, cat, null);
+
+    setTimeout(function(){
+        isWorkBadgeRequesting = false;
+        $badge.css({ 'pointer-events': '', 'opacity': '' });
+        $badge.html(originalBadgeContent);
+    }, 400);
 });
 
 $(document).on('click', '#btn_search_actor_works', function(e){
@@ -2428,7 +2452,6 @@ $(document).on('click', '#btn_p_preview_next', function(e){
     update_p_modal_image_preview($modal);
 });
 
-// 현재 보고 있는 사진을 대표 사진으로 지정
 $(document).on('click', '#btn_set_primary_person_photo', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2468,7 +2491,6 @@ $(document).on('click', '#btn_person_save, #btn_save_person', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
     var heightVal = parseInt($modal.find('#p_edit_height').val(), 10);
-
     var site_img_urls_text = $modal.find('#p_edit_site_img_urls').val().split(/\r?\n/).map(function(v){ return v.trim(); }).filter(Boolean);
 
     var payload = {
@@ -2587,7 +2609,6 @@ $(document).on('click', '#globalSettingSaveBtn', function(e){
     }
 });
 
-// 드롭다운 토글 및 모달 내부 롤오버(Hover) 이벤트 핸들러
 $(document).off('click', '.custom-dropdown-toggle').on('click', '.custom-dropdown-toggle', function(e){
     e.preventDefault();
     e.stopPropagation();
@@ -2634,7 +2655,7 @@ $(document).off('click', '.btn_edit_db').on('click', '.btn_edit_db', function(e)
     var idx = parseInt($(this).data('idx'), 10);
     var row = (current_data && !isNaN(idx) && idx >= 0 && idx < current_data.length) ? current_data[idx] : null;
     if (row) {
-        openDbEditModalByData(row);
+        loadAndOpenMovieModal(row.code, row.category, row);
     } else {
         if (typeof notify === 'function') notify('선택한 행의 데이터를 찾을 수 없습니다.', 'warning');
     }
@@ -2663,7 +2684,6 @@ $(document).on('click', '#btn_save_db_edit', function(e){
     });
 });
 
-// JSON 보기 버튼 클릭 핸들러 (작품)
 $(document).on('click', '#btn_view_db_json', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2702,7 +2722,6 @@ $(document).on('click', '#btn_view_db_json', function(e){
     $('#dbJsonViewModal').modal('show');
 });
 
-// JSON 클립보드 복사 버튼
 $(document).on('click', '#btn_copy_db_json', function(e){
     e.preventDefault();
     var text = $('#db_json_modal_textarea').val();
@@ -2710,7 +2729,6 @@ $(document).on('click', '#btn_copy_db_json', function(e){
     copyTextToClipboard(text, 'JSON 데이터가 클립보드에 복사되었습니다.');
 });
 
-// 범용 텍스트 클립보드 복사 함수
 function copyTextToClipboard(text, successMsg) {
     if (!text) return;
     var msg = successMsg || '클립보드에 복사되었습니다.';
@@ -2745,29 +2763,16 @@ function fallbackExecCopy(text, msg) {
     document.body.removeChild(tempTextarea);
 }
 
-// 작품 타이틀 클릭 시 DB 편집 모달 즉시 실행
 $(document).on('click', '.item-title-clickable', function(e){
     e.preventDefault();
     e.stopPropagation();
     var idx = parseInt($(this).data('idx'), 10);
     var row = (current_data && !isNaN(idx) && idx >= 0 && idx < current_data.length) ? current_data[idx] : null;
     if (row) {
-        openDbEditModalByData(row);
+        loadAndOpenMovieModal(row.code, row.category, row);
     }
 });
 
-// 인물 이름 클릭 시 인물 상세 정보 편집 모달 즉시 실행
-$(document).on('click', '.person-name-clickable', function(e){
-    e.preventDefault();
-    e.stopPropagation();
-    var idx = parseInt($(this).data('idx'), 10);
-    var p = (current_person_data && !isNaN(idx) && idx >= 0 && idx < current_person_data.length) ? current_person_data[idx] : null;
-    if (p) {
-        openPersonModalByData(p);
-    }
-});
-
-// 코드/식별자 뱃지 클릭 시 클립보드 복사 실행
 $(document).on('click', '.badge-copy-code', function(e){
     e.preventDefault();
     e.stopPropagation();
@@ -2776,7 +2781,6 @@ $(document).on('click', '.badge-copy-code', function(e){
     copyTextToClipboard(code, '[' + code + '] 코드가 클립보드에 복사되었습니다.');
 });
 
-// 최종 적용 이미지 클릭 시 싱글 확대 라이트박스 실행
 $(document).off('click', '#edit_poster_url_final, #edit_landscape_url_final').on('click', '#edit_poster_url_final, #edit_landscape_url_final', function(e){
     e.preventDefault();
     var targetUrl = $(this).val().trim();
@@ -2795,7 +2799,6 @@ $(document).off('click', '#btn_open_meta_info_url').on('click', '#btn_open_meta_
     }
 });
 
-// 공용 비디오 모달 열기 및 오디오 복원 헬퍼
 function openVideoPlayerModal(targetUrl, title) {
     if (!targetUrl) return;
     var player = document.getElementById('video_preview_player');
@@ -2847,7 +2850,6 @@ function openVideoPlayerModal(targetUrl, title) {
     $modal.modal('show');
 }
 
-// 편집 모달 내 예고편 재생 버튼 클릭 핸들러
 $(document).off('click', '#btn_modal_play_trailer').on('click', '#btn_modal_play_trailer', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2862,7 +2864,6 @@ $(document).off('click', '#btn_modal_play_trailer').on('click', '#btn_modal_play
     openVideoPlayerModal(playUrl, currentTitle);
 });
 
-// 프리뷰 클립 수동 생성 및 재생성 핸들러
 $(document).off('click', '#btn_modal_create_preview').on('click', '#btn_modal_create_preview', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2875,13 +2876,11 @@ $(document).off('click', '#btn_modal_create_preview').on('click', '#btn_modal_cr
     });
 });
 
-// 인라인 경로 입력 바 취소 버튼
 $(document).off('click', '#btn_cancel_preview_source').on('click', '#btn_cancel_preview_source', function(e){
     e.preventDefault();
     $(this).closest('#div_preview_source_bar').slideUp(120);
 });
 
-// 인라인 바에서 [생성 실행] 클릭 시 실제 백그라운드 인코딩 파이프라인 가동
 $(document).off('click', '#btn_confirm_create_preview').on('click', '#btn_confirm_create_preview', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2918,7 +2917,6 @@ $(document).off('click', '#btn_confirm_create_preview').on('click', '#btn_confir
     });
 });
 
-// 프리뷰 클립 재생 핸들러
 $(document).off('click', '#btn_modal_play_preview').on('click', '#btn_modal_play_preview', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2949,7 +2947,6 @@ $(document).off('click', '#btn_modal_play_preview').on('click', '#btn_modal_play
     }
 });
 
-// 프리뷰 클립 영구 삭제 핸들러 (구글 드라이브 및 로컬 파일 완전 삭제)
 $(document).off('click', '#btn_modal_delete_preview').on('click', '#btn_modal_delete_preview', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -2971,7 +2968,6 @@ $(document).off('click', '#btn_modal_delete_preview').on('click', '#btn_modal_de
     });
 });
 
-// 목록 내 슬레이트(🎬) 아이콘 클릭 시 비디오 모달 즉시 재생
 $(document).on('click', '.btn-play-trailer-modal', function(e){
     e.preventDefault();
     e.stopPropagation();
@@ -2981,7 +2977,6 @@ $(document).on('click', '.btn-play-trailer-modal', function(e){
     openVideoPlayerModal(targetUrl, title);
 });
 
-// 사용자가 플레이어 볼륨 바 또는 음소거를 직접 조작할 때만 localStorage에 기록
 $(document).on('volumechange', '#video_preview_player', function(){
     if (isVideoAudioRestoring) return;
     var player = this;
@@ -2994,7 +2989,6 @@ $(document).on('volumechange', '#video_preview_player', function(){
     } catch(e){}
 });
 
-// 비디오 모달 닫힐 때 비디오 일시정지 및 리셋
 $(document).on('hidden.bs.modal', '#videoPreviewModal', function(){
     var player = document.getElementById('video_preview_player');
     if (player) {
@@ -3008,7 +3002,6 @@ $(document).on('hidden.bs.modal', '#videoPreviewModal', function(){
     }
 });
 
-// 모달 내 썸네일 미리보기 내비게이션 클릭 핸들러
 $(document).off('click', '#btn_preview_prev').on('click', '#btn_preview_prev', function(e){
     e.preventDefault();
     e.stopPropagation();
@@ -3035,7 +3028,6 @@ $(document).off('click', '#btn_preview_next').on('click', '#btn_preview_next', f
     update_modal_image_preview($modal);
 });
 
-// 배우 검색 모달 열기
 $(document).on('click', '#btn_open_actor_search_modal', function(e){
     e.preventDefault();
     var $callingModal = $(this).closest('.modal');
@@ -3233,7 +3225,6 @@ $(document).on('click', '.btn_remove_actor', function(e){
     }
 });
 
-// 이미지/미디어만 재동기화 (목록 드롭다운)
 $(document).off('click', '.btn_refresh_image_only').on('click', '.btn_refresh_image_only', function(e){
     e.preventDefault();
     var $dropdown = $(this).closest('.dropdown');
@@ -3251,7 +3242,6 @@ $(document).off('click', '.btn_refresh_image_only').on('click', '.btn_refresh_im
     });
 });
 
-// 이미지/미디어만 재동기화 (모달 드롭다운)
 $(document).on('click', '.btn_modal_refresh_image_only', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -3270,7 +3260,6 @@ $(document).on('click', '.btn_modal_refresh_image_only', function(e){
     });
 });
 
-// 현재 사이트 정보 제자리 갱신 (목록 드롭다운)
 $(document).off('click', '.btn_refresh_in_place').on('click', '.btn_refresh_in_place', function(e){
     e.preventDefault();
     var $dropdown = $(this).closest('.dropdown');
@@ -3288,7 +3277,6 @@ $(document).off('click', '.btn_refresh_in_place').on('click', '.btn_refresh_in_p
     });
 });
 
-// 현재 사이트 정보 제자리 갱신 (모달 드롭다운)
 $(document).on('click', '.btn_modal_refresh_in_place', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -3307,7 +3295,6 @@ $(document).on('click', '.btn_modal_refresh_in_place', function(e){
     });
 });
 
-// 전체 사이트 우선순위 자동 재검색 갱신 (목록 드롭다운)
 $(document).off('click', '.btn_refresh_auto_search').on('click', '.btn_refresh_auto_search', function(e){
     e.preventDefault();
     var $dropdown = $(this).closest('.dropdown');
@@ -3325,7 +3312,6 @@ $(document).off('click', '.btn_refresh_auto_search').on('click', '.btn_refresh_a
     });
 });
 
-// 전체 사이트 우선순위 자동 재검색 갱신 (모달 드롭다운)
 $(document).on('click', '.btn_modal_refresh_auto_search', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -3344,20 +3330,17 @@ $(document).on('click', '.btn_modal_refresh_auto_search', function(e){
     });
 });
 
-// 상단 헤더 전체선택 체크박스 토글
 $(document).on('change', '#check_all_meta', function(){
     var isChecked = $(this).is(':checked');
     $('.meta-item-chk').prop('checked', isChecked);
 });
 
-// 개별 항목 체크박스 상태 변경 시 전체선택 체크박스 상태 동기화
 $(document).on('change', '.meta-item-chk', function(){
     var totalCount = $('.meta-item-chk').length;
     var checkedCount = $('.meta-item-chk:checked').length;
     $('#check_all_meta').prop('checked', totalCount > 0 && totalCount === checkedCount);
 });
 
-// 선택항목 삭제 버튼 클릭 이벤트
 $(document).off('click', '#btn_delete_selected').on('click', '#btn_delete_selected', function(e){
     e.preventDefault();
     var selectedCodes = [];
@@ -3388,7 +3371,6 @@ $(document).off('click', '#btn_delete_selected').on('click', '#btn_delete_select
     });
 });
 
-// 데이터 삭제 버튼
 $(document).off('click', '.btn_delete_db').on('click', '.btn_delete_db', function(e){
     e.preventDefault();
     var code = $(this).data('code');
@@ -3402,7 +3384,6 @@ $(document).off('click', '.btn_delete_db').on('click', '.btn_delete_db', functio
     });
 });
 
-// 단일 통합 크롭 모달 오픈 헬퍼
 function openCropModal(opts) {
     current_crop_target_type = opts.target || 'meta';
     custom_upload_payload = null;
@@ -3535,7 +3516,6 @@ function openCropModal(opts) {
     });
 }
 
-// 목록에서 포스터 크롭 모달 열기
 $(document).off('click', '.btn_crop_modal').on('click', '.btn_crop_modal', function(e){
     e.preventDefault();
     var $dropdown = $(this).closest('.dropdown');
@@ -3577,7 +3557,6 @@ $(document).off('click', '.btn_crop_modal').on('click', '.btn_crop_modal', funct
     });
 });
 
-// 작품 편집 모달 내부에서 크롭 에디터 호출
 $(document).on('click', '.btn_modal_crop', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -3617,7 +3596,6 @@ $(document).on('click', '.btn_modal_crop', function(e){
     });
 });
 
-// 인물 편집 모달 내 '사진 편집' 버튼 클릭
 $(document).on('click', '#btn_open_person_crop_modal, .btn_open_person_crop_modal', function(e){
     e.preventDefault();
     var $pModal = $(this).closest('.modal');
@@ -3645,16 +3623,13 @@ $(document).on('click', '#btn_open_person_crop_modal, .btn_open_person_crop_moda
         filenamePreview = namePart + (cleanIdx ? '_' + cleanIdx : '') + '_user.jpg';
     }
 
-    // 1순위: 현재 모달 갤러리에서 활성화되어 보이는 이미지 주소
     var curThumb = $pModal.find('#p_modal_preview_img').attr('data-src') || 
                    $pModal.find('#p_modal_preview_img').attr('src') || '';
 
-    // 2순위: 갤러리 활성 주소가 없거나 플레이스홀더인 경우 인풋 필드 및 갤러리 목록 탐색
     if (!curThumb || curThumb.indexOf('data:image/svg') !== -1 || curThumb.indexOf('No Photo') !== -1) {
         curThumb = $pModal.find('#p_edit_thumb').val() || '';
     }
 
-    // 3순위: 로컬 서버 파일이 없는 경우를 대비해 외부 원본 URL(AVDBS, 구글 등) 확인
     if (!curThumb || curThumb.indexOf('data:image/svg') !== -1) {
         var pGallery = $pModal.data('p_preview_images') || [];
         for (var g = 0; g < pGallery.length; g++) {
@@ -3682,7 +3657,6 @@ $(document).on('click', '#btn_open_person_crop_modal, .btn_open_person_crop_moda
     });
 });
 
-// 인물 JSON 원본 뷰어 호출
 $(document).on('click', '#btn_view_person_json', function(e){
     e.preventDefault();
     var $pModal = $(this).closest('.modal');
@@ -3728,7 +3702,6 @@ $(document).on('click', '#btn_view_person_json', function(e){
     $('#dbJsonViewModal').modal('show');
 });
 
-// 크롭 모달 닫힘 정리
 $('#imageCropModal').on('hidden.bs.modal', function () {
     if (cropperInstance) {
         cropperInstance.destroy();
@@ -3744,7 +3717,6 @@ $('#imageCropModal').on('hidden.bs.modal', function () {
     custom_upload_payload = null;
 });
 
-// 비율 조절 버튼들 (1.42, 3:4, 1:1, 자유)
 $(document).on('click', '#btn_crop_ratio_lock', function(){
     if (cropperInstance) cropperInstance.setAspectRatio(1 / 1.4225);
     $('#imageCropModal .btn-group button').removeClass('btn-info font-weight-bold').addClass('btn-outline-light');
@@ -3783,7 +3755,6 @@ $(document).on('click', '#btn_crop_reset', function(){
     }
 });
 
-// 소스 전환 (PL / P)
 $(document).on('click', '#btn_source_pl', function(){
     if (!modal_pl_url) { if (typeof notify === 'function') notify('가로 커버(PL) 이미지가 없습니다.', 'warning'); return; }
     active_source_type = 'pl';
@@ -3800,7 +3771,6 @@ $(document).on('click', '#btn_source_p', function(){
     if (cropperInstance) cropperInstance.replace(modal_p_url);
 });
 
-// URL 로드 슬라이드 바 토글 & 처리
 $(document).on('click', '#btn_toggle_crop_url', function(e){
     e.preventDefault();
     $('#crop_url_bar').slideToggle(120, function(){
@@ -3865,7 +3835,6 @@ $(document).on('keydown', '#input_crop_url', function(e){
     }
 });
 
-// 파일 업로드 핸들러 (PL, P, 인물)
 $(document).on('change', '#input_upload_pl', function(e){
     var files = e.target.files;
     if (files && files.length > 0) {
@@ -3920,7 +3889,6 @@ $(document).on('change', '#input_upload_person', function(e){
     }
 });
 
-// 최종 크롭 결과 저장 버튼 (인물 vs 작품 분기)
 $(document).on('click', '#btn_save_crop_result', function(e){
     e.preventDefault();
     if (!cropperInstance) return;
@@ -3930,7 +3898,6 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     var cropData = cropperInstance.getData(true);
     var cropJson = JSON.stringify(cropData);
 
-    // 인물 프로필 사진 저장 분기
     if (current_crop_target_type === 'person') {
         var personId = $('#crop_person_id').val();
         var personDomain = $('#crop_person_domain').val() || 'JAV';
@@ -3938,7 +3905,6 @@ $(document).on('click', '#btn_save_crop_result', function(e){
 
         btn.prop('disabled', true).text('저장 중...');
 
-        // 브라우저 캔버스에서 잘라낸 이미지를 Base64 데이터로 직접 추출하여 전송
         var uploadPayload = '';
         try {
             var croppedCanvas = cropperInstance.getCroppedCanvas();
@@ -3956,11 +3922,10 @@ $(document).on('click', '#btn_save_crop_result', function(e){
                 $('#imageCropModal').modal('hide');
                 custom_upload_payload = null;
 
-                // 백엔드에서 반환받은 정확한 인물 객체로 모달 실시간 갱신
                 var $pModal = $('#personEditModal');
                 if ($pModal.hasClass('show')) {
                     if (ret.person) {
-                        openPersonModalByData(ret.person, $pModal);
+                        renderPersonModalContent(ret.person, $pModal);
                     } else if (ret.new_url) {
                         var bustedUrl = ret.new_url + (ret.new_url.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
                         $pModal.find('#p_edit_thumb').val(ret.new_url);
@@ -3977,7 +3942,6 @@ $(document).on('click', '#btn_save_crop_result', function(e){
         return;
     }
 
-    // 작품 포스터 크롭 저장 분기
     var code = $('#crop_target_code').val();
     var has_user = $('#crop_has_user_poster').val() === 'true';
     if (has_user && !confirm("⚠️ 이미 수동 설정된 유저 포스터(_p_user)가 존재합니다.\n새로운 이미지로 덮어쓰시겠습니까?")) return;
@@ -4006,7 +3970,6 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     });
 });
 
-// 모달 위치/크기 표준 키값 및 지오메트리 영구 지속성 핸들러
 (function() {
     var isDragging = false, offset = { x: 0, y: 0 };
     var $activeModal = null;
@@ -4150,7 +4113,6 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     });
 })();
 
-// DB 최적화 (VACUUM)
 $(document).on('click', '#btn_db_vacuum', function(e){
     e.preventDefault();
     var btn = $(this); var origText = btn.text(); btn.prop('disabled', true).text('최적화 중...');
@@ -4160,7 +4122,6 @@ $(document).on('click', '#btn_db_vacuum', function(e){
     });
 });
 
-// 메타 DB 설정 페이지 전용 함수 및 이벤트
 function set_db_engine_view(val) {
     if (val === 'postgres') {
         $('#meta_db_engine_postgres_div').collapse('show');
@@ -4198,7 +4159,6 @@ $(document).on('click', '#btn_test_db_conn', function(e){
     var password = ($('#meta_db_pg_pass').val() || '').trim();
     var dbname = ($('#meta_db_pg_name').val() || '').trim();
 
-    // 소켓 방식일 때는 소켓 디렉토리 경로를 호스트 파라미터로 전송
     var final_host = (conn_type === 'socket') ? socket_dir : host;
 
     var connPayload = {
@@ -4221,7 +4181,6 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
     var btn_id = $(this).attr('id');
     var action = (btn_id === 'btn_pg_test_admin') ? 'test_admin' : ((btn_id === 'btn_pg_create_db') ? 'create_db_and_user' : 'drop_db_and_user');
 
-    // 입력값이 비어있을 경우 플레이스홀더 또는 기본 추천값으로 안전 폴백
     var hostInput = $('#pg_target_host').val().trim();
     var host = hostInput || $('#pg_target_host').attr('placeholder') || 'postgres';
     if (host.indexOf(' ') !== -1) host = host.split(' ')[0];
@@ -4239,7 +4198,6 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
     var target_user = $('#pg_target_user').val().trim() || 'metadata';
     var target_pass = $('#pg_target_pass').val().trim();
 
-    // 관리자 접속 확인 시 필수 항목 검증
     if (!host) {
         if (typeof notify === 'function') notify('대상 서버 주소(Host)를 입력하세요.', 'warning');
         $('#pg_target_host').trigger('focus');
@@ -4251,7 +4209,6 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
         return;
     }
 
-    // DB 및 유저 생성/삭제 시 대상 DB명과 유저명 추가 검증
     if (action !== 'test_admin') {
         if (!target_db || !target_user) {
             if (typeof notify === 'function') notify('생성/삭제할 대상 DB명과 유저명을 입력하세요.', 'warning');
@@ -4289,7 +4246,6 @@ $(document).on('click', '#btn_pg_test_admin, #btn_pg_create_db, #btn_pg_drop_db'
     });
 });
 
-// DB 전송 실시간 진행률 폴링 타이머 헬퍼
 function start_transfer_status_timer() {
     if (transfer_timer) {
         clearInterval(transfer_timer);
@@ -4354,7 +4310,6 @@ function start_transfer_status_timer() {
     }, 1000);
 }
 
-// DB 임포트 실시간 진행률 폴링 타이머
 var import_status_timer = null;
 function start_import_status_timer() {
     if (import_status_timer) {
@@ -4544,7 +4499,6 @@ $(document).on('click', '#btn_db_export_full_all, #btn_db_export_clean', functio
     });
 });
 
-// 이미지 확대 라이트박스 팝업 연동
 $(document).on('click', '.enlarge-img, .enlarge-person-photo', function(e){
     var $modal = $(this).closest('.modal');
 
@@ -4583,7 +4537,6 @@ $(document).on('click', '.enlarge-img, .enlarge-person-photo', function(e){
     }
 });
 
-// 서브 인물 상세 버튼 클릭 시 추가 오버레이 모달 오픈
 $(document).on('click', '.btn_open_sub_person_modal', function(e){
     e.preventDefault();
     var rawSubAttr = $(this).attr('data-sub-actor');
@@ -4624,17 +4577,16 @@ $(document).on('click', '.btn_open_sub_person_modal', function(e){
         works_detailed: {}
     };
 
-    openPersonModalByData(subPersonObj);
+    renderPersonModalContent(subPersonObj, getOrCreateModal('#personEditModal'));
+    $('#personEditModal').modal('show');
 });
 
-// 서브 인물 접기/펼치기 토글
 $(document).on('click', '#btn_toggle_sub_actors', function(e){
     e.preventDefault();
     var $tableDiv = $(this).closest('#p_merged_sub_actors_wrapper').find('#p_merged_sub_table_collapse');
     $tableDiv.slideToggle(150);
 });
 
-// 서브 인물을 마스터 대표 ID로 지정
 $(document).on('click', '.btn_person_sub_set_master', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -4662,7 +4614,6 @@ $(document).on('click', '.btn_person_sub_set_master', function(e){
     });
 });
 
-// 서브 인물을 단독 레코드로 그룹 분리
 $(document).on('click', '.btn_person_sub_split', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');

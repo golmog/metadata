@@ -10,6 +10,10 @@ Plex, KODI, Jellyfin 등과 연동하여 메타데이터를 제공하는 플러�
 
 
 ## Changelog
+- 1.3.9 (2026.09.11) by golmog
+    - 커스텀 비디오 지문(Fingerprints) 테이블 추가
+    - DB 처리 로직/속도 개선
+<br><br>
 - 1.3.8 (2026.09.09) by golmog
     - 메타 DB 모듈 PostgreSQL 연동 수정/확인
     - Preview Video Clip 생성 기능 추가(AV)
