@@ -523,49 +523,43 @@ class ModuleWestern(PluginModuleBase):
             cleaned_keyword = self._clean_search_keyword(keyword)
 
         logger.info(f"======= Western search START - keyword:[{cleaned_keyword}] video:[{target_video_file}] manual:[{manual}] use_db:[{use_db}] =======")
+
         all_results = []
-        
-        # 1. Local DB 캐시 선행 검색 (전역 meta_db_use 기준)
         has_db_match = False
-        if use_db and P.ModelSetting.get_bool("meta_db_use"):
+        use_db_flag = use_db and P.ModelSetting.get_bool("meta_db_use")
+
+        # 0순위: 비디오 지문(OSHash) 로컬 B-Tree 인덱스 즉시 조회
+        if use_db_flag and target_video_file and os.path.exists(target_video_file) and not manual:
+            local_oshash = SiteAvBase.calculate_oshash(target_video_file)
+            if local_oshash:
+                local_db_items = ModuleMetaDb.search_by_fingerprint(self.category, 'OSHASH', local_oshash)
+                if local_db_items:
+                    hit_results = []
+                    for idx, db_item in enumerate(local_db_items):
+                        jd = db_item.get('json_data', {})
+                        site_key = db_item.get('site', 'stashdb')
+                        hit_item = EntityAVSearch(site_key)
+                        hit_item.code = db_item.get('code')
+                        hit_item.ui_code = jd.get('ui_code') or db_item.get('originaltitle') or hit_item.code
+                        hit_item.title = f"📁 [MetaDB] {db_item.get('title')}"
+                        hit_item.title_ko = hit_item.title
+                        hit_item.year = int(jd.get('year') or 1900)
+                        hit_item.image_url = db_item.get('poster_url') or ''
+                        hit_item.desc = f"[로컬 지문 히트] {local_oshash} | 스튜디오: {jd.get('studio') or '정보없음'}"
+                        hit_item.score = max(90, 100 - idx)
+
+                        hit_dict = hit_item.as_dict()
+                        hit_dict['site_key'] = site_key
+                        hit_dict['is_db_cached'] = db_item.get('has_item', True)
+                        hit_dict['is_priority_label_site'] = True
+                        hit_results.append(hit_dict)
+
+                    logger.info(f"[{self.name}] 로컬 DB 지문 B-Tree 색인 히트! ({len(hit_results)}건 중 최우선 채택: {hit_results[0]['code']}) 즉시 반환")
+                    return hit_results
+
+        # 1. DB 텍스트 선행 검색
+        if use_db_flag and not manual:
             try:
-                target_hash = None
-                if target_video_file and os.path.exists(target_video_file):
-                    target_hash = SiteAvBase.calculate_oshash(target_video_file)
-                elif re.match(r'^[0-9a-fA-F]{16}$', keyword.strip()):
-                    target_hash = keyword.strip().lower()
-
-                if target_hash:
-                    sess, _, _ = ModuleMetaDb.get_session_and_domain(self.category)
-                    from .mod_meta_db import MetaItem
-                    try:
-                        db_items = sess.query(MetaItem).filter(MetaItem.category == self.category).all()
-                        for m in db_items:
-                            e_info = m.extra_info or {}
-                            hash_matched = False
-                            m_oshash = e_info.get('oshash') or e_info.get('hash')
-                            m_phash = e_info.get('phash')
-                            if (m_oshash and str(m_oshash).lower() == target_hash.lower()) or (m_phash and str(m_phash).lower() == target_hash.lower()):
-                                hash_matched = True
-
-                            if not hash_matched and isinstance(e_info.get('fingerprints'), list):
-                                for fp_item in e_info['fingerprints']:
-                                    if isinstance(fp_item, dict) and str(fp_item.get('hash', '')).lower() == target_hash.lower():
-                                        hash_matched = True
-                                        break
-
-                            if hash_matched:
-                                logger.info(f"[{self.name}] Local DB Fingerprint Match Hit! (Hash: {target_hash})")
-                                meta_dict = ModuleMetaDb.to_entity_dict(m)
-                                db_item = self._create_search_item_from_dict(meta_dict, 105)
-                                item_dict = db_item.as_dict()
-                                item_dict['original_score'] = 105
-                                item_dict['is_db_cached'] = True
-                                all_results.append(item_dict)
-                                
-                    finally:
-                        sess.remove()
-
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, cleaned_keyword)
                 if valid_db_records:
                     for record in valid_db_records:
@@ -648,7 +642,7 @@ class ModuleWestern(PluginModuleBase):
         db_item = EntityAVSearch(jd.get('site', 'stashdb'))
         db_item.code = jd.get('code')
         db_item.ui_code = jd.get('ui_code') or jd.get('originaltitle') or jd.get('code')
-        db_item.title = f"📁 [Meta DB] {jd.get('title', '')}"
+        db_item.title = f"📁 [MetaDB] {jd.get('title', '')}"
         db_item.originaltitle = jd.get('originaltitle', '')
         db_item.title_ko = db_item.title
         try: db_item.year = int(jd.get('year', 1900))
@@ -753,18 +747,47 @@ class ModuleWestern(PluginModuleBase):
                         if females_only:
                             cached_json['actor'] = females_only
 
+                    # 기존 등록 코드에 새 로컬 파일의 지문이 누락되어 있다면 자동 학습 보강
+                    media_path_opt = opts.get('media_path')
+                    if media_path_opt and os.path.exists(media_path_opt):
+                        local_oshash = SiteAvBase.calculate_oshash(media_path_opt)
+                        if local_oshash:
+                            ModuleMetaDb.append_fingerprint(code, self.category, 'OSHASH', local_oshash, source='user')
+
                     return MetaResponseUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
         data = None
+        scrape_opts = {'skip_trans': skip_trans, 'media_path': media_path}
+
         try:
-            scrape_opts = {'skip_trans': skip_trans, 'media_path': media_path}
             data = SiteClass.info(code, extra_opts=scrape_opts)
         except Exception as e:
-            logger.exception(f"[{self.name}] Info 조회 중 오류: {e}")
-            return None
+            logger.exception(f"[{self.name}] Info 조회 중 오류 ({code}): {e}")
 
+        # 1차 지정 사이트에서 정보 취득 실패 시, 동일 지문을 공유하는 타 사이트 대체 코드로 자동 폴백
+        if (not data or data.get("ret") != "success" or not data.get("data")) and use_db:
+            alt_codes = ModuleMetaDb.get_alternative_codes_by_code(self.category, code)
+            for alt_code in alt_codes:
+                alt_site_key = 'stashdb' if (len(alt_code) >= 2 and alt_code[1] == 'S') else 'tpdb'
+                AltSiteClass = self.site_map.get(alt_site_key)
+                if not AltSiteClass:
+                    continue
+
+                logger.info(f"[{self.name}] 1차 코드({code}, {site_key.upper()}) 취득 실패 ➔ 지문 공유 대체 코드({alt_code}, {alt_site_key.upper()})로 자동 우회 시도...")
+                try:
+                    alt_data = AltSiteClass.info(alt_code, extra_opts=scrape_opts)
+                    if alt_data and alt_data.get("ret") == "success" and alt_data.get("data"):
+                        logger.info(f"[{self.name}] ★★★ 지문 공유 대체 사이트({alt_site_key.upper()})에서 메타데이터 구출 성공! ({alt_code}) ★★★")
+                        data = alt_data
+                        code = alt_code
+                        site_key = alt_site_key
+                        break
+                except Exception as e_alt:
+                    logger.debug(f"[{self.name}] 대체 코드 시도 중 예외 ({alt_code}): {e_alt}")
+
+        # 모든 사이트 및 대체 경로에서 최종 실패 시 Plex 미매칭(Unmatched) 유도를 위해 정직하게 None 반환
         if not data or data.get("ret") != "success" or not data.get("data"):
-            logger.warning(f"[{self.name}] Info 조회 실패: {code}")
+            logger.warning(f"[{self.name}] Info 조회 최종 실패: {code}")
             return None
 
         ret = data["data"]
