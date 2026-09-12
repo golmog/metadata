@@ -287,7 +287,7 @@ class ModuleJavUncensored(PluginModuleBase):
             ret = {'ret': 'success'}
 
             # --- 포스터 수동 크롭 저장 (MetaImageUtil 위임) ---
-            if command == "db_crop_save":
+            if command in ["crop_save", "db_crop_save"]:
                 code = arg1
                 crop_data = arg2
                 upload_payload = arg3
@@ -552,7 +552,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 version_info = f"파일 버전: {file_ver} / DB 반영 버전: {last_ver}"
                 return jsonify({'ret': 'success', 'version_info': version_info, 'file_version': file_ver, 'db_version': last_ver})
 
-            elif command in ['person_sub_set_master', 'person_sub_split', 'person_crop_save']:
+            elif command.startswith('person_'):
                 meta_module = P.get_module('meta_db')
                 if meta_module:
                     return meta_module.process_command(command, arg1, arg2, arg3, req)
@@ -1008,7 +1008,8 @@ class ModuleJavUncensored(PluginModuleBase):
                     'name_en': act_it.get('name_en', ''),
                     'thumb': act_it.get('thumb', ''),
                     'actor_idx': act_it.get('actor_idx', '') or act_it.get('person_idx', ''),
-                    'role': act_it.get('role', '출연')
+                    'role': act_it.get('role', '출연'),
+                    'extra_info': act_it.get('extra_info', {})
                 })
             else:
                 act_name = getattr(act_it, 'name', '') or getattr(act_it, 'name_ko', '') or getattr(act_it, 'name_org', '')
@@ -1019,7 +1020,8 @@ class ModuleJavUncensored(PluginModuleBase):
                     'name_en': getattr(act_it, 'name_en', ''),
                     'thumb': getattr(act_it, 'thumb', ''),
                     'actor_idx': getattr(act_it, 'actor_idx', '') or getattr(act_it, 'person_idx', ''),
-                    'role': getattr(act_it, 'role', '출연')
+                    'role': getattr(act_it, 'role', '출연'),
+                    'extra_info': getattr(act_it, 'extra_info', {}) if hasattr(act_it, 'extra_info') else {}
                 })
 
         ret['actor'] = clean_actors

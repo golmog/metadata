@@ -406,12 +406,23 @@ class ModuleJavCensored(PluginModuleBase):
             ret = {'ret': 'success'}
 
             # --- 포스터 수동 크롭 저장 ---
-            if command == "db_crop_save":
+            if command in ["crop_save", "db_crop_save"]:
                 code = arg1
                 crop_data = arg2
-                pl_base64 = arg3
+                upload_payload = arg3
+                pl_base64, p_base64 = None, None
+
+                if upload_payload:
+                    try:
+                        p_json = json.loads(upload_payload)
+                        if isinstance(p_json, dict):
+                            if p_json.get('type') == 'p': p_base64 = p_json.get('data')
+                            elif p_json.get('type') == 'pl': pl_base64 = p_json.get('data')
+                    except Exception:
+                        pl_base64 = upload_payload
+
                 success, result_msg = MetaImageUtil.save_user_cropped_poster(
-                    code, crop_data, pl_image_base64_data=pl_base64, category=self.category
+                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
 
@@ -740,7 +751,7 @@ class ModuleJavCensored(PluginModuleBase):
                 version_info = f"파일 버전: {file_ver} / DB 반영 버전: {last_ver}"
                 return jsonify({'ret': 'success', 'version_info': version_info, 'file_version': file_ver, 'db_version': last_ver})
 
-            elif command in ['person_sub_set_master', 'person_sub_split']:
+            elif command.startswith('person_'):
                 meta_module = P.get_module('meta_db')
                 if meta_module:
                     return meta_module.process_command(command, arg1, arg2, arg3, req)
@@ -781,6 +792,30 @@ class ModuleJavCensored(PluginModuleBase):
                 if call == "kodi":
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
+
+            if sub == "crop_save":
+                if req.is_json:
+                    body_json = req.get_json(silent=True) or {}
+                    code = body_json.get("code")
+                    crop_data = body_json.get("crop_data")
+                    pl_base64 = body_json.get("pl_base64")
+                    p_base64 = body_json.get("p_base64")
+                else:
+                    code = req.form.get("code") or req.args.get("code")
+                    crop_data = req.form.get("crop_data") or req.args.get("crop_data")
+                    pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
+                    p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
+
+                if isinstance(crop_data, dict):
+                    crop_data = json.dumps(crop_data)
+
+                if not code or (not crop_data and not p_base64):
+                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭 데이터 누락'}), 400
+
+                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
+                )
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
 
             return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
 
@@ -1541,6 +1576,35 @@ class ModuleJavCensored(PluginModuleBase):
             elif tag_option == "site":
                 label = ret.get("originaltitle", "").split("-")[0] if ret.get("originaltitle") else None
                 ret["tag"] = [_ for _ in ret.get("tag", []) if label is None or _ != label]
+
+        clean_actors = []
+        for act_it in (ret.get('actor') or []):
+            if isinstance(act_it, dict):
+                act_name = act_it.get('name') or act_it.get('name_ko') or act_it.get('name_org', '')
+                clean_actors.append({
+                    'name': act_name,
+                    'name_org': act_it.get('name_org', ''),
+                    'name_ko': act_it.get('name_ko', ''),
+                    'name_en': act_it.get('name_en', ''),
+                    'thumb': act_it.get('thumb', ''),
+                    'actor_idx': act_it.get('actor_idx', '') or act_it.get('person_idx', ''),
+                    'role': act_it.get('role', '출연'),
+                    'extra_info': act_it.get('extra_info', {})
+                })
+            else:
+                act_name = getattr(act_it, 'name', '') or getattr(act_it, 'name_ko', '') or getattr(act_it, 'name_org', '')
+                clean_actors.append({
+                    'name': act_name,
+                    'name_org': getattr(act_it, 'name_org', ''),
+                    'name_ko': getattr(act_it, 'name_ko', ''),
+                    'name_en': getattr(act_it, 'name_en', ''),
+                    'thumb': getattr(act_it, 'thumb', ''),
+                    'actor_idx': getattr(act_it, 'actor_idx', '') or getattr(act_it, 'person_idx', ''),
+                    'role': getattr(act_it, 'role', '출연'),
+                    'extra_info': getattr(act_it, 'extra_info', {}) if hasattr(act_it, 'extra_info') else {}
+                })
+
+        ret['actor'] = clean_actors
 
         if ret:
             title_log = ret.get('title', 'No Title')
