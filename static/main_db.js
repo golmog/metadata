@@ -887,9 +887,12 @@ function injectDbModals() {
                 <div class="form-group mb-0 p-2 rounded" style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08);">
                   <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="small font-weight-bold text-white mb-0">소장 출연작 목록 <span class="badge badge-success small ml-1" id="p_modal_works_count">0편</span></label>
-                    <button type="button" class="btn btn-xs btn-outline-success font-weight-bold py-1 px-2" id="btn_search_actor_works" title="새 탭에서 이 배우의 작품 목록 검색 열기">🔍 작품 목록에서 검색 (새 탭)</button>
+                    <div>
+                      <button type="button" class="btn btn-xs btn-outline-primary font-weight-bold py-1 px-2 mr-1" id="btn_sync_actor_works" title="현재 등록된 소장 출연작을 실제 소장 메타와 대조하여 오매칭을 정제하고 최신 제목으로 갱신합니다.">🔄 출연작 검증/갱신</button>
+                      <button type="button" class="btn btn-xs btn-outline-success font-weight-bold py-1 px-2" id="btn_search_actor_works" title="새 탭에서 이 배우의 작품 목록 검색 열기">🔍 작품 목록에서 검색 (새 탭)</button>
+                    </div>
                   </div>
-                  <div id="p_modal_works_container" class="d-flex flex-wrap align-items-center" style="max-height: 120px; min-height: 32px; overflow-y: auto;">
+                  <div id="p_modal_works_container" class="d-flex flex-column align-items-stretch w-100" style="min-height: 32px;">
                     <span class="text-muted small py-1">등록된 소장 출연작이 없습니다. (작품 메타데이터 등록 시 자동 연계)</span>
                   </div>
                 </div>
@@ -1226,8 +1229,8 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
         }];
         payload.extras = [{
             mode: 'mp4',
-            title: payload.tagline || payload.title,
-            content_url: edited_trailer,
+            title: payload.title || payload.tagline,
+            content_url: getDisplayMediaUrl(edited_trailer, payload.site, 'video'),
             content_type: 'trailer'
         }];
     } else {
@@ -1740,6 +1743,7 @@ function make_person_list(data) {
 function renderPersonModalContent(p, $modal) {
     if (!p) return;
     $modal = $modal || $('#personEditModal');
+    $modal.data('person_data', p);
 
     var media = p.media_src || {};
     var extra = p.extra_info || {};
@@ -1942,42 +1946,56 @@ function renderPersonModalContent(p, $modal) {
         $subWrapper.hide();
     }
 
-    // 소장 출연작 뱃지 렌더링 (제목 우선 출력)
+    // 소장 출연작 뱃지 렌더링
     var worksMap = (p.works_detailed && Object.keys(p.works_detailed).length > 0) ? p.works_detailed : (p.works || {});
     var totalWorks = 0;
     var worksHtml = '';
 
     for (var cat in worksMap) {
-        var list = worksMap[cat];
-        if (Array.isArray(list) && list.length > 0) {
-            totalWorks += list.length;
-            for (var w = 0; w < list.length; w++) {
-                var it = list[w];
+        var rawList = worksMap[cat];
+        if (Array.isArray(rawList) && rawList.length > 0) {
+            // 원본 배열 사본을 만들어 제목순(A-Z / ㄱ-ㅎ)으로 정렬
+            var sortedList = rawList.slice().sort(function(a, b){
+                var titleA = (typeof a === 'object' && a) ? (a.title || a.ui_code || a.code || '') : String(a);
+                var titleB = (typeof b === 'object' && b) ? (b.title || b.ui_code || b.code || '') : String(b);
+                return titleA.localeCompare(titleB, 'ko');
+            });
+
+            totalWorks += sortedList.length;
+
+            for (var w = 0; w < sortedList.length; w++) {
+                var it = sortedList[w];
                 var wCode = '';
                 var wUiCode = '';
                 var wTitle = '';
+                var wYear = '';
 
                 if (typeof it === 'object' && it !== null) {
                     wCode = it.code || '';
                     wUiCode = it.ui_code || wCode;
                     wTitle = it.title || '';
+                    wYear = (it.year && it.year !== '0' && it.year !== 1900) ? String(it.year) : '';
                 } else {
                     wCode = String(it);
                     wUiCode = wCode;
                     wTitle = '';
+                    wYear = '';
                 }
 
                 var displayCode = wUiCode || wCode;
                 var displayTitle = wTitle ? (' ' + wTitle) : '';
-                var tooltipText = '[' + cat + '] [' + displayCode + ']' + displayTitle + '\n(클릭하여 작품 메타 편집창 열기)';
+                var yearBadge = wYear ? (' <span class="text-muted font-weight-normal ml-1">(' + wYear + ')</span>') : '';
+                var tooltipText = '[' + cat + '] [' + displayCode + ']' + displayTitle + (wYear ? ' (' + wYear + ')' : '') + '\n(클릭하여 작품 메타 편집창 열기)';
 
-                worksHtml += '<span class="badge badge-dark mr-1 mb-1 p-1 work-badge-clickable border border-secondary d-inline-flex align-items-center" data-code="' + wCode + '" data-cat="' + cat + '" title="' + tooltipText.replace(/"/g, '&quot;') + '" style="max-width: 100%; font-size: 0.82rem; cursor: pointer;">';
-                worksHtml += '  <span class="badge badge-info mr-1" style="font-size: 0.76rem;">' + cat + '</span>';
-                worksHtml += '  <span class="badge badge-secondary mr-1" style="font-size: 0.76rem;">' + displayCode + '</span>';
+                worksHtml += '<div class="badge badge-dark mb-1 p-1 work-badge-clickable border border-secondary d-flex align-items-center w-100 text-left" data-code="' + wCode + '" data-cat="' + cat + '" title="' + tooltipText.replace(/"/g, '&quot;') + '" style="font-size: 0.82rem; cursor: pointer;">';
+                worksHtml += '  <span class="badge badge-info mr-1 flex-shrink-0" style="font-size: 0.76rem;">' + cat + '</span>';
+                worksHtml += '  <span class="badge badge-secondary mr-2 flex-shrink-0" style="font-size: 0.76rem;">' + displayCode + '</span>';
                 if (wTitle) {
-                    worksHtml += '  <span class="text-light text-truncate font-weight-normal ml-1 work-badge-title" style="max-width: 420px;">' + wTitle + '</span>';
+                    worksHtml += '  <span class="text-light text-truncate font-weight-normal flex-grow-1 work-badge-title" style="min-width: 0;">' + wTitle + yearBadge + '</span>';
+                } else {
+                    worksHtml += '  <span class="text-muted text-truncate font-weight-normal flex-grow-1 work-badge-title" style="min-width: 0;">(제목 정보 없음)' + yearBadge + '</span>';
                 }
-                worksHtml += '</span>';
+                worksHtml += '</div>';
             }
         }
     }
@@ -2274,7 +2292,7 @@ function reloadDbEditModalData(code, category, $modal) {
 
     globalSendCommand('get_meta_by_code', String(code), String(target_cat), null, function(ret){
         if (ret && ret.ret === 'success' && ret.data) {
-            openDbEditModalByData(ret.data, $modal);
+            renderDbEditModalContent(ret.data, $modal);
             window.globalRequestSearch(null, true);
         }
     });
@@ -2404,6 +2422,42 @@ $(document).on('click', '#btn_search_actor_works', function(e){
 
     var target_url = '/' + package_name + '/' + target_sub + '/meta_list';
     window.open(target_url, '_blank');
+});
+
+$(document).on('click', '#btn_sync_actor_works', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+
+    var $modal = $(this).closest('.modal');
+    var pData = $modal.data('person_data') || {};
+    var targetId = $modal.find('#p_edit_idx').val() || pData.person_idx || $modal.find('#p_edit_id').val() || pData.id;
+    var domain = $modal.find('#p_edit_domain').val() || pData.domain || 'JAV';
+
+    if (!targetId) {
+        if (typeof notify === 'function') notify('검증할 인물 식별자가 없습니다.', 'warning');
+        return;
+    }
+
+    var $btn = $(this);
+    var origHtml = $btn.html();
+    $btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm mr-1" role="status"></span>검증 중...');
+
+    globalSendCommand('person_verify_works', String(targetId), String(domain), null, function(ret){
+        $btn.prop('disabled', false).html(origHtml);
+        if (ret && ret.ret === 'success') {
+            var successMsg = ret.msg || '출연작 검증 및 동기화가 완료되었습니다.';
+            if (typeof notify === 'function') notify(successMsg, 'success');
+            if (ret.works_detailed) {
+                pData.works_detailed = ret.works_detailed;
+                pData.works = ret.works_detailed;
+                $modal.data('person_data', pData);
+                renderPersonModalContent(pData, $modal);
+            }
+        } else {
+            var errMsg = (ret && (ret.msg || ret.message)) ? (ret.msg || ret.message) : '출연작 검증에 실패했습니다.';
+            if (typeof notify === 'function') notify(errMsg, 'warning');
+        }
+    });
 });
 
 $(document).on('click', '#btn_open_person_info_url', function(e) {
@@ -3660,45 +3714,47 @@ $(document).on('click', '#btn_open_person_crop_modal, .btn_open_person_crop_moda
 $(document).on('click', '#btn_view_person_json', function(e){
     e.preventDefault();
     var $pModal = $(this).closest('.modal');
-    var pName = $pModal.find('#p_edit_name_ko').val() || $pModal.find('#p_edit_name_org').val() || $pModal.find('#p_edit_name_en').val() || '인물';
-    var pIdx = $pModal.find('#p_edit_idx').val() || '';
+    var pData = $pModal.data('person_data') || {};
+
+    var fullJson = JSON.parse(JSON.stringify(pData));
+
+    fullJson.id = $pModal.find('#p_edit_id').val() ? parseInt($pModal.find('#p_edit_id').val(), 10) : fullJson.id;
+    fullJson.domain = $pModal.find('#p_edit_domain').val() || fullJson.domain;
+    fullJson.person_idx = $pModal.find('#p_edit_idx').val().trim() || fullJson.person_idx;
+    fullJson.name_org = $pModal.find('#p_edit_name_org').val().trim() || fullJson.name_org;
+    fullJson.name_ko = $pModal.find('#p_edit_name_ko').val().trim() || fullJson.name_ko;
+    fullJson.name_en = $pModal.find('#p_edit_name_en').val().trim() || fullJson.name_en;
+    fullJson.thumb = $pModal.find('#p_edit_thumb').val().trim() || fullJson.thumb;
 
     var aliasesText = $pModal.find('#p_edit_aliases').val().trim();
-    var aliasesList = aliasesText ? aliasesText.split(',').map(function(s){ return s.trim(); }).filter(Boolean) : [];
+    if (aliasesText) {
+        fullJson.aliases = aliasesText.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+        fullJson.other_names = fullJson.aliases.join(', ');
+    }
+
+    if (!fullJson.media_src) fullJson.media_src = {};
+    fullJson.media_src.local_img_path = $pModal.find('#p_edit_local_img_path').val().trim();
+    fullJson.media_src.google_fileid = $pModal.find('#p_edit_google_fileid').val().trim();
+    fullJson.media_src.site_img_url = $pModal.find('#p_edit_site_img_url').val().trim();
+
     var sitePhotosText = $pModal.find('#p_edit_site_img_urls').val().split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+    fullJson.media_src.site_img_urls = sitePhotosText;
+
+    if (!fullJson.extra_info) fullJson.extra_info = {};
+    fullJson.extra_info.birth = $pModal.find('#p_edit_birth').val().trim();
     var heightVal = parseInt($pModal.find('#p_edit_height').val(), 10);
+    fullJson.extra_info.height = (heightVal > 0) ? heightVal : null;
+    fullJson.extra_info.body_size = $pModal.find('#p_edit_body_size').val().trim();
+    fullJson.extra_info.bra_size = $pModal.find('#p_edit_bra_size').val().trim();
+    fullJson.extra_info.debut = $pModal.find('#p_edit_debut').val().trim();
+    fullJson.extra_info.info_url = $pModal.find('#p_edit_info_url').val().trim();
+    fullJson.extra_info.agency = $pModal.find('#p_edit_agency').val().trim();
+    fullJson.extra_info.blood = $pModal.find('#p_edit_blood').val().trim();
+    fullJson.extra_info.hobby = $pModal.find('#p_edit_hobby').val().trim();
 
-    var personPayload = {
-        id: $pModal.find('#p_edit_id').val() ? parseInt($pModal.find('#p_edit_id').val(), 10) : null,
-        domain: $pModal.find('#p_edit_domain').val() || 'JAV',
-        person_idx: pIdx,
-        name_org: $pModal.find('#p_edit_name_org').val().trim(),
-        name_ko: $pModal.find('#p_edit_name_ko').val().trim(),
-        name_en: $pModal.find('#p_edit_name_en').val().trim(),
-        thumb: $pModal.find('#p_edit_thumb').val().trim(),
-        aliases: aliasesList,
-        other_names: aliasesList.join(', '),
-        media_src: {
-            local_img_path: $pModal.find('#p_edit_local_img_path').val().trim(),
-            google_fileid: $pModal.find('#p_edit_google_fileid').val().trim(),
-            site_img_url: $pModal.find('#p_edit_site_img_url').val().trim(),
-            site_img_urls: sitePhotosText
-        },
-        extra_info: {
-            birth: $pModal.find('#p_edit_birth').val().trim(),
-            height: (heightVal > 0) ? heightVal : null,
-            body_size: $pModal.find('#p_edit_body_size').val().trim(),
-            bra_size: $pModal.find('#p_edit_bra_size').val().trim(),
-            debut: $pModal.find('#p_edit_debut').val().trim(),
-            info_url: $pModal.find('#p_edit_info_url').val().trim(),
-            agency: $pModal.find('#p_edit_agency').val().trim(),
-            blood: $pModal.find('#p_edit_blood').val().trim(),
-            hobby: $pModal.find('#p_edit_hobby').val().trim()
-        }
-    };
-
-    $('#db_json_modal_title').text('[' + (pName || pIdx || '인물') + '] 인물 데이터 JSON 원본');
-    $('#db_json_modal_textarea').val(JSON.stringify(personPayload, null, 2));
+    var displayName = fullJson.name_ko || fullJson.name_org || fullJson.name_en || '인물';
+    $('#db_json_modal_title').text('[' + displayName + '] 인물 데이터 JSON 원본 (전체 DB 데이터)');
+    $('#db_json_modal_textarea').val(JSON.stringify(fullJson, null, 2));
     $('#dbJsonViewModal').modal('show');
 });
 
@@ -3950,7 +4006,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     cropData.source_type = active_source_type;
     cropJson = JSON.stringify(cropData);
 
-    globalSendCommand('db_crop_save', code, cropJson, uploadPayload, function(ret){
+    globalSendCommand('crop_save', code, cropJson, uploadPayload, function(ret){
         btn.prop('disabled', false).text(origText);
         if (ret && ret.ret === 'success') {
             if (typeof notify === 'function') notify(ret.msg || '포스터 저장 완료', 'success');

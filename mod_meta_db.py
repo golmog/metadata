@@ -742,8 +742,27 @@ class ModuleMetaDb(PluginModuleBase):
             if m_num:
                 a_idx_val = f"PA{m_num.group(1)}"
 
+        a_extra = actor_data.get('extra_info') if isinstance(actor_data.get('extra_info'), dict) else {}
+        site_actor_id = str(a_extra.get('site_actor_id') or actor_data.get('site_actor_id') or '').strip()
+        site_actor_url = str(a_extra.get('site_actor_url') or actor_data.get('site_actor_url') or '').strip()
+
+        p_rec = None
+
+        # 1순위: 사이트 고유 배우 ID(site_actors)로 동명이인 구분 직결 매칭
+        if site_actor_id:
+            all_domain_persons = person_session.query(MetaPerson).filter_by(domain=person_domain).all()
+            for cand_p in all_domain_persons:
+                p_site_actors = (cand_p.extra_info or {}).get('site_actors', {})
+                for s_key, s_data in p_site_actors.items():
+                    if isinstance(s_data, dict) and str(s_data.get('id')) == site_actor_id:
+                        p_rec = cand_p
+                        logger.debug(f"[MetaDB Actor Link Match] 사이트 고유 ID 일치 ({s_key}:{site_actor_id}) -> {p_rec.name_ko or p_rec.name_org}")
+                        break
+                if p_rec:
+                    break
+
         matched_db_row = None
-        if person_domain == 'JAV':
+        if not p_rec and person_domain == 'JAV':
             actors_map, _ = cls.get_cached_actors_map()
             if actors_map:
                 if a_idx_val and a_idx_val in actors_map:
@@ -759,13 +778,21 @@ class ModuleMetaDb(PluginModuleBase):
                 if not raw_name_en:
                     raw_name_en = str(matched_db_row.get('name_en') or matched_db_row.get('inner_name_en') or '').strip()
 
-            # JAV 도메인은 한국어 표기명이 없는 경우 메타 인물 DB 등록을 스킵
             if not raw_name_ko:
                 return None
-        else:
-            # Western 등 타 도메인은 원문명/영문명만으로 등록 허용
-            if not raw_name_org and not raw_name_ko and not raw_name_en:
-                return None
+
+        # 2순위: 고유 식별코드(PA/PS) 또는 원문 100% 완전 일치 매칭
+        if not p_rec and a_idx_val:
+            p_rec = person_session.query(MetaPerson).filter_by(domain=person_domain, person_idx=a_idx_val).first()
+
+        if not p_rec:
+            p_rec = person_session.query(MetaPerson).filter(
+                MetaPerson.domain == person_domain,
+                or_(
+                    MetaPerson.name_org == raw_name_org,
+                    MetaPerson.name_ko == raw_name_ko
+                )
+            ).first()
 
         raw_aliases = actor_data.get('aliases') or actor_data.get('other_names') or actor_data.get('onm') or []
         if isinstance(raw_aliases, str):
@@ -891,6 +918,7 @@ class ModuleMetaDb(PluginModuleBase):
             )
             person_session.add(p_rec)
             person_session.flush()
+
         else:
             if raw_name_org: p_rec.name_org = raw_name_org
             if raw_name_ko: p_rec.name_ko = raw_name_ko
@@ -906,6 +934,18 @@ class ModuleMetaDb(PluginModuleBase):
             for k, v in extra_data.items():
                 if v and not merged_extra.get(k):
                     merged_extra[k] = v
+
+            # 스크래핑된 사이트 고유 ID가 있다면 site_actors에 자동 누적 등록
+            if site_actor_id:
+                current_site_actors = merged_extra.get('site_actors', {})
+                infer_site = 'dmm' if 'dmm' in site_actor_url else ('javbus' if 'javbus' in site_actor_url else ('javdb' if 'javdb' in site_actor_url else 'site'))
+                current_site_actors[infer_site] = {
+                    'id': site_actor_id,
+                    'url': site_actor_url
+                }
+                merged_extra['site_actors'] = current_site_actors
+                logger.debug(f"[MetaDB Actor Link Learn] 인물 [{p_rec.name_ko or p_rec.name_org}]에 사이트 고유 ID 자동 영구 누적 ({infer_site}:{site_actor_id})")
+
             p_rec.extra_info = merged_extra
 
             if a_idx_val and not p_rec.person_idx:
@@ -1236,6 +1276,42 @@ class ModuleMetaDb(PluginModuleBase):
                     'gender': final_gender,
                     'role': a_role
                 })
+
+            if person_sess:
+                try:
+                    prev_actors = (item.extra_info or {}).get('_actors') or (item.extra_info or {}).get('actor_cache') or []
+                    new_actor_indices = {a.get('actor_idx') for a in stored_actors if a.get('actor_idx')}
+                    new_actor_names = {a.get('name_org') for a in stored_actors if a.get('name_org')}
+
+                    for prev_a in prev_actors:
+                        p_idx = prev_a.get('actor_idx')
+                        p_name = prev_a.get('name_org')
+                        is_removed = False
+                        if p_idx and p_idx not in new_actor_indices:
+                            is_removed = True
+                        elif not p_idx and p_name and p_name not in new_actor_names:
+                            is_removed = True
+
+                        if is_removed:
+                            p_target = None
+                            if p_idx:
+                                p_target = person_sess.query(MetaPerson).filter_by(domain=person_dom, person_idx=p_idx).first()
+                            if not p_target and p_name:
+                                p_target = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_org=p_name).first()
+
+                            if p_target and p_target.works and std_cat in p_target.works:
+                                updated_w_list = []
+                                for w_item in p_target.works[std_cat]:
+                                    w_code = w_item.get('code') if isinstance(w_item, dict) else str(w_item)
+                                    if w_code not in (code, ui_code, originaltitle):
+                                        updated_w_list.append(w_item)
+                                if len(updated_w_list) != len(p_target.works[std_cat]):
+                                    p_target_works = copy.deepcopy(p_target.works)
+                                    p_target_works[std_cat] = updated_w_list
+                                    p_target.works = p_target_works
+                                    logger.info(f"[MetaDB Auto-Healing] 오매칭 해제: 인물 [{p_target.name_ko or p_target.name_org}]의 출연작에서 [{code}] 자동 삭제 완료")
+                except Exception as e_clean_prev:
+                    logger.debug(f"[MetaDB Auto-Healing] 이전 배우 출연작 정리 예외: {e_clean_prev}")
 
             merged_extra_info['_actors'] = stored_actors
             item.extra_info = merged_extra_info
@@ -1851,6 +1927,7 @@ class ModuleMetaDb(PluginModuleBase):
             []
         )
 
+        # 관계 테이블(MetaItemPersonMap) 매핑 확인
         if not actors_bridge and hasattr(item, 'person_maps') and item.person_maps:
             for pm in item.person_maps:
                 if pm.person:
@@ -1864,54 +1941,13 @@ class ModuleMetaDb(PluginModuleBase):
                         'role': pm.role_name or '출연'
                     })
 
+        # 원문 백업 데이터(original.actor) 확인
         if not actors_bridge and isinstance(raw_original.get('actor'), list):
             for act in raw_original['actor']:
                 if isinstance(act, dict):
                     actors_bridge.append(act)
                 elif isinstance(act, str) and act.strip():
                     actors_bridge.append({'name_org': act.strip(), 'name_ko': '', 'role': '출연'})
-
-        if not actors_bridge and not for_list:
-            person_sess, _, _ = cls.get_session_and_domain('PERSON')
-            person_dom = cls._person_domain_from_item_category(item.category)
-            if person_sess:
-                try:
-                    c_target = item.code
-                    ui_target = item.ui_code or item.originaltitle or ''
-                    healing_persons = person_sess.query(MetaPerson).filter(
-                        MetaPerson.domain == person_dom,
-                        or_(
-                            cast(MetaPerson.works, Text).ilike(f'%"{c_target}"%'),
-                            cast(MetaPerson.works, Text).ilike(f'%"{ui_target}"%')
-                        )
-                    ).all()
-
-                    for hp in healing_persons:
-                        actors_bridge.append({
-                            'actor_idx': hp.person_idx or '',
-                            'name_org': hp.name_org or '',
-                            'name_ko': hp.name_ko or '',
-                            'name_en': hp.name_en or '',
-                            'thumb': cls.resolve_person_active_thumb(hp),
-                            'gender': (hp.extra_info or {}).get('gender', ''),
-                            'role': '출연'
-                        })
-
-                    if actors_bridge and hasattr(item, 'extra_info'):
-                        updated_extra = dict(item.extra_info or {})
-                        updated_extra['_actors'] = actors_bridge
-                        item.extra_info = updated_extra
-                        sess_item, _, _ = cls.get_session_and_domain(item.category)
-                        if sess_item:
-                            try:
-                                sess_item.commit()
-                                logger.info(f"[MetaDB Self-Healing] 작품 [{item.code}]에 누락되었던 배우 {len(actors_bridge)}명 역추적 자동 치유 완료")
-                            except Exception:
-                                sess_item.rollback()
-                except Exception as e_heal:
-                    logger.debug(f"[MetaDB Self-Healing] 역추적 치유 예외: {e_heal}")
-                finally:
-                    person_sess.remove()
 
         if actors_bridge:
             if for_list:
@@ -2209,7 +2245,9 @@ class ModuleMetaDb(PluginModuleBase):
                         MetaItem.code,
                         MetaItem.ui_code,
                         MetaItem.title,
-                        MetaItem.originaltitle
+                        MetaItem.originaltitle,
+                        MetaItem.year,
+                        MetaItem.premiered
                     ).filter(
                         MetaItem.category == cat_k,
                         or_(
@@ -2219,17 +2257,20 @@ class ModuleMetaDb(PluginModuleBase):
                         )
                     ).all()
 
-                    for mi_code, mi_ui_code, mi_title, mi_orig_title in light_rows:
+                    for mi_code, mi_ui_code, mi_title, mi_orig_title, mi_year, mi_prem in light_rows:
+                        y_val = str(mi_year) if (mi_year and mi_year != 1900) else (str(mi_prem)[:4] if mi_prem else '')
                         info_dict = {
                             'code': mi_code,
                             'ui_code': mi_ui_code or mi_orig_title or mi_code,
-                            'title': mi_title or mi_orig_title or ''
+                            'title': mi_title or mi_orig_title or '',
+                            'year': y_val
                         }
                         works_meta_map[f"{cat_k}_{mi_code}"] = info_dict
                         if mi_ui_code:
                             works_meta_map[f"{cat_k}_{mi_ui_code}"] = info_dict
                         if mi_orig_title:
                             works_meta_map[f"{cat_k}_{mi_orig_title}"] = info_dict
+
                 except Exception as e_wmap:
                     logger.debug(f"[MetaDB WorksMap] 출연작 매핑 쿼리 예외 ({cat_k}): {e_wmap}")
                 finally:
@@ -2239,7 +2280,7 @@ class ModuleMetaDb(PluginModuleBase):
 
     @classmethod
     def get_person_detailed_info(cls, person_identifier, domain='JAV'):
-        """단일 인물의 소장 출연작을 실시간 MetaItem 테이블에서 조회하고 오염된 이미지 주소를 자동 치유"""
+        """단일 인물의 소장 출연작을 MetaItem 테이블에서 실시간 쿼리하여 최신 제목과 연도로 구성하고 오염 데이터를 자동 치유"""
         cls.ensure_db_ready()
         sess, _, _ = cls.get_session_and_domain('PERSON')
         if not sess:
@@ -2271,9 +2312,9 @@ class ModuleMetaDb(PluginModuleBase):
             if not p_rec:
                 return None
 
+            is_healing_needed = False
             p_works = copy.deepcopy(p_rec.works if isinstance(p_rec.works, dict) else {})
             works_detailed = {}
-            is_healing_needed = False
 
             # 인물에 등록된 출연작 코드를 바탕으로 실시간 MetaItem 테이블에서 최신 정보 조회
             for cat_k, c_list in p_works.items():
@@ -2310,7 +2351,9 @@ class ModuleMetaDb(PluginModuleBase):
                         MetaItem.code,
                         MetaItem.ui_code,
                         MetaItem.title,
-                        MetaItem.originaltitle
+                        MetaItem.originaltitle,
+                        MetaItem.year,
+                        MetaItem.premiered
                     ).filter(
                         MetaItem.category == std_cat,
                         or_(
@@ -2324,11 +2367,13 @@ class ModuleMetaDb(PluginModuleBase):
                     ).all()
 
                     lookup = {}
-                    for mi_code, mi_ui_code, mi_title, mi_orig_title in rows:
+                    for mi_code, mi_ui_code, mi_title, mi_orig_title, mi_year, mi_prem in rows:
+                        y_val = str(mi_year) if (mi_year and mi_year != 1900) else (str(mi_prem)[:4] if mi_prem else '')
                         info_dict = {
                             'code': mi_code,
                             'ui_code': mi_ui_code or mi_orig_title or mi_code,
-                            'title': mi_title or mi_orig_title or ''
+                            'title': mi_title or mi_orig_title or '',
+                            'year': y_val
                         }
                         for k_val in [mi_code, mi_ui_code, mi_orig_title]:
                             if k_val:
@@ -2349,10 +2394,12 @@ class ModuleMetaDb(PluginModuleBase):
                         else:
                             fallback_ui = c_item.get('ui_code') if isinstance(c_item, dict) else raw_c
                             fallback_title = c_item.get('title') if isinstance(c_item, dict) else ''
+                            fallback_year = c_item.get('year') if isinstance(c_item, dict) else ''
                             entry = {
                                 'code': raw_c,
                                 'ui_code': fallback_ui or raw_c,
-                                'title': fallback_title or (meta_info.get('title', '') if meta_info else '')
+                                'title': fallback_title or (meta_info.get('title', '') if meta_info else ''),
+                                'year': fallback_year or (meta_info.get('year', '') if meta_info else '')
                             }
                             works_detailed[std_cat].append(entry)
                             healed_work_entries.append(entry)
@@ -2361,7 +2408,7 @@ class ModuleMetaDb(PluginModuleBase):
                 finally:
                     work_query_session.close()
 
-            # site_img_urls 내 로컬 이미지 서버 주소 오염 자가 치유 (영구 정제)
+            # site_img_urls 내 로컬 이미지 서버 주소 오염 자가 치유
             p_media = copy.deepcopy(p_rec.media_src if isinstance(p_rec.media_src, dict) else {})
             if 'site_img_urls' in p_media and isinstance(p_media['site_img_urls'], list):
                 cleaned_urls = [u for u in p_media['site_img_urls'] if not cls.is_local_server_url(u)]
@@ -2412,6 +2459,192 @@ class ModuleMetaDb(PluginModuleBase):
         except Exception as e:
             logger.error(f"[MetaDB] get_person_detailed_info 오류 ({person_identifier}): {e}")
             return None
+        finally:
+            sess.remove()
+
+
+    @classmethod
+    def verify_and_sync_person_works(cls, person_identifier, domain='JAV'):
+        """현재 인물의 등록된 출연작들만 타겟으로 실제 소장 작품의 출연 여부를 검증하고 오매칭을 자동 정제"""
+        cls.ensure_db_ready()
+        sess, _, _ = cls.get_session_and_domain('PERSON')
+        if not sess:
+            return False, "인물 세션 획득 실패", {}
+
+        try:
+            target_str = str(person_identifier).strip()
+            p_rec = None
+            if target_str.isdigit():
+                p_rec = sess.query(MetaPerson).filter_by(id=int(target_str)).first()
+            if not p_rec and target_str:
+                p_rec = sess.query(MetaPerson).filter(
+                    MetaPerson.domain == domain,
+                    or_(MetaPerson.person_idx == target_str, MetaPerson.name_org == target_str, MetaPerson.name_ko == target_str)
+                ).first()
+            if not p_rec and target_str:
+                p_rec = sess.query(MetaPerson).filter(
+                    or_(MetaPerson.person_idx == target_str, MetaPerson.name_org == target_str, MetaPerson.name_ko == target_str)
+                ).first()
+
+            if not p_rec:
+                return False, "인물 정보를 찾을 수 없습니다.", {}
+
+            p_works = copy.deepcopy(p_rec.works if isinstance(p_rec.works, dict) else {})
+
+            # 인물 측의 모든 식별자 및 이름(원문, 한글, 영문, 별칭 전체) 집합 구성
+            person_identifiers = set()
+            if p_rec.person_idx:
+                raw_idx = p_rec.person_idx.strip().upper()
+                person_identifiers.add(raw_idx)
+                num_only = re.sub(r'^[A-Za-z]+', '', raw_idx)
+                if num_only:
+                    person_identifiers.add(num_only)
+
+            person_names = set()
+            for n_val in [p_rec.name_org, p_rec.name_ko, p_rec.name_en]:
+                if n_val and str(n_val).strip():
+                    person_names.add(str(n_val).strip().lower())
+
+            for al in (p_rec.aliases or []):
+                if al and str(al).strip():
+                    person_names.add(str(al).strip().lower())
+
+            if p_rec.other_names:
+                for onm in re.split(r'[,/]', p_rec.other_names):
+                    clean_onm = str(onm).strip().lower()
+                    if clean_onm:
+                        person_names.add(clean_onm)
+
+            verified_works = {}
+            total_verified = 0
+            total_removed = 0
+
+            for cat_k, c_list in p_works.items():
+                if not isinstance(c_list, list) or not c_list:
+                    continue
+
+                std_cat = 'WESTERN' if cat_k.upper() in ['WEST', 'WESTERN'] else ('JAV_UNCEN' if cat_k.upper() in ['JAV_UNCEN', 'UNCENSORED'] else 'JAV_CEN')
+                if std_cat not in DOMAIN_MAP:
+                    continue
+
+                item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(DOMAIN_MAP[std_cat][0])
+                if not item_engine:
+                    continue
+
+                work_session = sessionmaker(bind=item_engine, autocommit=False, autoflush=False, expire_on_commit=False)()
+                try:
+                    verified_works[std_cat] = []
+                    for c_item in c_list:
+                        raw_c = c_item.get('code') if isinstance(c_item, dict) else str(c_item)
+                        if not raw_c:
+                            continue
+
+                        m_item = work_session.query(MetaItem).filter(
+                            MetaItem.category == std_cat,
+                            or_(
+                                MetaItem.code == raw_c,
+                                MetaItem.ui_code == raw_c,
+                                MetaItem.originaltitle == raw_c,
+                                func.lower(MetaItem.code) == raw_c.lower(),
+                                func.lower(MetaItem.ui_code) == raw_c.lower()
+                            )
+                        ).first()
+
+                        if m_item:
+                            is_actor_present = False
+
+                            # 관계 테이블(MetaItemPersonMap) 매핑 확인
+                            if hasattr(m_item, 'person_maps') and m_item.person_maps:
+                                for pm in m_item.person_maps:
+                                    if pm.person_id == p_rec.id:
+                                        is_actor_present = True
+                                        break
+
+                            # 작품의 모든 배우 저장소 수집
+                            movie_actors = []
+                            for src in [
+                                (m_item.extra_info or {}).get('_actors'),
+                                (m_item.extra_info or {}).get('actor_cache'),
+                                (m_item.extra_info or {}).get('actors'),
+                                (m_item.original or {}).get('actor')
+                            ]:
+                                if isinstance(src, list):
+                                    movie_actors.extend(src)
+
+                            # 작품 출연진에 해당 인물이 포함되어 있는지 다각도 교차 대조
+                            if not is_actor_present and movie_actors:
+                                for a in movie_actors:
+                                    if not a:
+                                        continue
+
+                                    if isinstance(a, str):
+                                        if a.strip().lower() in person_names:
+                                            is_actor_present = True
+                                            break
+                                    elif isinstance(a, dict):
+                                        act_idx = str(a.get('actor_idx') or a.get('person_idx') or '').strip().upper()
+                                        if act_idx and act_idx in person_identifiers:
+                                            is_actor_present = True
+                                            break
+                                        act_num = re.sub(r'^[A-Za-z]+', '', act_idx)
+                                        if act_num and act_num in person_identifiers:
+                                            is_actor_present = True
+                                            break
+
+                                        act_names = [
+                                            a.get('name_org'),
+                                            a.get('name_ko'),
+                                            a.get('name_en'),
+                                            a.get('name'),
+                                            a.get('originalname')
+                                        ]
+                                        for n_cand in act_names:
+                                            if n_cand and str(n_cand).strip().lower() in person_names:
+                                                is_actor_present = True
+                                                break
+                                        if is_actor_present:
+                                            break
+
+                            # 작품에 실제 출연한 것이 확인된 경우에만 최신 메타로 유지
+                            if is_actor_present:
+                                y_val = str(m_item.year) if (m_item.year and m_item.year != 1900) else (str(m_item.premiered)[:4] if m_item.premiered else '')
+                                verified_entry = {
+                                    'code': m_item.code,
+                                    'ui_code': m_item.ui_code or m_item.originaltitle or m_item.code,
+                                    'title': m_item.title or m_item.originaltitle or '',
+                                    'year': y_val
+                                }
+                                verified_works[std_cat].append(verified_entry)
+                                total_verified += 1
+                            else:
+                                total_removed += 1
+                                logger.info(f"[MetaDB WorkVerify] 오매칭 작품 배제: [{m_item.code}]의 출연진에 [{p_rec.name_ko or p_rec.name_org}] 부재 확인 (인물 works에서 제거)")
+                        else:
+                            fallback_ui = c_item.get('ui_code') if isinstance(c_item, dict) else raw_c
+                            fallback_title = c_item.get('title') if isinstance(c_item, dict) else ''
+                            fallback_year = c_item.get('year') if isinstance(c_item, dict) else ''
+                            verified_works[std_cat].append({
+                                'code': raw_c,
+                                'ui_code': fallback_ui or raw_c,
+                                'title': fallback_title,
+                                'year': fallback_year
+                            })
+                            total_verified += 1
+                finally:
+                    work_session.close()
+
+            p_rec.works = verified_works
+            sess.commit()
+            cls.checkpoint_wal()
+
+            msg = f"출연작 검증 완료: 정상 유지 {total_verified}편, 오매칭 제거 {total_removed}편"
+            logger.info(f"[MetaDB WorkVerify] 인물 [{p_rec.name_ko or p_rec.name_org}] {msg}")
+            return True, msg, verified_works
+
+        except Exception as e:
+            sess.rollback()
+            logger.error(f"[MetaDB] verify_and_sync_person_works 오류: {e}")
+            return False, str(e), {}
         finally:
             sess.remove()
 
@@ -2531,10 +2764,25 @@ class ModuleMetaDb(PluginModuleBase):
             search_domain = str(params.get('search_domain', default_domain)).strip().upper()
             search_status = str(params.get('search_status', 'all')).strip()
             search_order = str(params.get('search_order', 'desc')).strip()
+            search_site = str(params.get('search_site', 'all')).strip().lower()
 
             base_query = sess.query(MetaPerson)
             if search_domain != 'ALL':
                 base_query = base_query.filter(func.upper(MetaPerson.domain) == search_domain)
+
+            if search_domain == 'WESTERN' and search_site not in ['all', '']:
+                if search_site == 'stashdb':
+                    base_query = base_query.filter(or_(
+                        MetaPerson.person_idx.ilike('PS%'),
+                        cast(MetaPerson.extra_info, Text).ilike('%stashdb%')
+                    ))
+                elif search_site == 'tpdb':
+                    base_query = base_query.filter(or_(
+                        MetaPerson.person_idx.ilike('PP%'),
+                        MetaPerson.person_idx.ilike('PT%'),
+                        cast(MetaPerson.extra_info, Text).ilike('%theporndb%'),
+                        cast(MetaPerson.extra_info, Text).ilike('%tpdb%')
+                    ))
 
             if search_status == 'no_photo':
                 base_query = base_query.filter(
@@ -2601,31 +2849,20 @@ class ModuleMetaDb(PluginModuleBase):
                 else_=4
             )
 
+            effective_person_name = func.coalesce(func.nullif(MetaPerson.name_ko, ''), MetaPerson.name_org)
+
             if search_order == 'match' or (search_word and search_order == 'desc'):
                 query = query.order_by(
                     match_priority.asc(),
-                    func.length(MetaPerson.person_idx).asc(),
-                    MetaPerson.person_idx.asc(),
-                    MetaPerson.id.desc()
-                )
-            elif search_order == 'id_asc':
-                query = query.order_by(
-                    func.length(MetaPerson.person_idx).asc(),
-                    MetaPerson.person_idx.asc(),
-                    MetaPerson.id.asc()
-                )
-            elif search_order == 'id_desc':
-                query = query.order_by(
-                    func.length(MetaPerson.person_idx).desc(),
-                    MetaPerson.person_idx.desc(),
+                    effective_person_name.asc(),
                     MetaPerson.id.desc()
                 )
             elif search_order == 'asc':
                 query = query.order_by(MetaPerson.id.asc())
             elif search_order == 'name_asc':
-                query = query.order_by(func.coalesce(MetaPerson.name_ko, MetaPerson.name_org).asc())
+                query = query.order_by(effective_person_name.asc())
             elif search_order == 'name_desc':
-                query = query.order_by(func.coalesce(MetaPerson.name_ko, MetaPerson.name_org).desc())
+                query = query.order_by(effective_person_name.desc())
             else:
                 query = query.order_by(MetaPerson.id.desc())
 
@@ -3257,7 +3494,7 @@ class ModuleMetaDb(PluginModuleBase):
                     MetaItem.plot != None
                 ))
 
-            # B-Tree 인덱스 컬럼 대상 고속 검색 (전체 JSON 텍스트 캐스팅 풀스캔 제외)
+            # B-Tree 인덱스 컬럼 대상 고속 검색
             if search_word:
                 search_like = f"%{search_word.replace('-', '%')}%"
                 filter_conditions.append(or_(
@@ -3269,7 +3506,7 @@ class ModuleMetaDb(PluginModuleBase):
                     MetaItem.director.ilike(f'%{search_word}%')
                 ))
 
-            # 조인 없는 단일 초고속 카운트 쿼리
+            # 조인 없는 단일 초고속 카운트 쿼리 실행
             try:
                 count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
             except Exception as e_tbl_chk:
@@ -3291,7 +3528,7 @@ class ModuleMetaDb(PluginModuleBase):
             start_page = ((page - 1) // 10) * 10 + 1
             end_page = min(start_page + 9, total_page)
 
-            # 4중 관계 조인을 비활성화하고 순수 MetaItem 25건만 쿼리
+            # 관계 테이블 자동 조인을 차단하여 7개 테이블 조인 오버헤드 방지
             query = sess.query(MetaItem).filter(and_(*filter_conditions)).options(
                 lazyload(MetaItem.media_files),
                 lazyload(MetaItem.person_maps),
@@ -3299,10 +3536,15 @@ class ModuleMetaDb(PluginModuleBase):
                 lazyload(MetaItem.fingerprints)
             )
 
-            if search_order == 'asc': query = query.order_by(MetaItem.created_time.asc())
-            elif search_order == 'code_asc': query = query.order_by(MetaItem.originaltitle.asc(), MetaItem.code.asc())
-            elif search_order == 'code_desc': query = query.order_by(MetaItem.originaltitle.desc(), MetaItem.code.desc())
-            else: query = query.order_by(MetaItem.created_time.desc())
+            # query 객체 생성 직후 정렬 옵션 바인딩
+            if search_order == 'asc':
+                query = query.order_by(MetaItem.created_time.asc())
+            elif search_order == 'title_asc':
+                query = query.order_by(MetaItem.title.asc())
+            elif search_order == 'title_desc':
+                query = query.order_by(MetaItem.title.desc())
+            else:
+                query = query.order_by(MetaItem.created_time.desc())
 
             items = query.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -3316,7 +3558,6 @@ class ModuleMetaDb(PluginModuleBase):
 
             item_list = []
             for item in items:
-                # 목록용 고속 렌더링 플래그 전달
                 entity_dict = cls.to_entity_dict(item, for_list=True)
                 entity_dict = cls.apply_transient_overrides(
                     entity_dict, {'meta_db_display': True, 'for_list': True}, category=item.category
@@ -4456,7 +4697,7 @@ class ModuleMetaDb(PluginModuleBase):
                     default_domain = req.form.get('search_domain', 'ALL') or 'ALL'
                     return jsonify(self.person_web_list(req, default_domain=default_domain))
 
-                if req_command in ['person_search', 'person_get_detailed', 'person_get_works', 'person_save', 'person_delete', 'person_clear', 'person_sync_jav_actors', 'person_version_status', 'person_sub_set_master', 'person_sub_split', 'db_vacuum']:
+                if req_command in ['person_search', 'person_get_detailed', 'person_get_works', 'person_verify_works', 'person_save', 'person_delete', 'person_clear', 'person_sync_jav_actors', 'person_version_status', 'person_sub_set_master', 'person_sub_split', 'db_vacuum']:
                     res = self.process_command(req_command, req.form.get('arg1'), req.form.get('arg2'), req.form.get('arg3'), req)
                     return res if res is not None else jsonify({'ret': 'error', 'msg': 'PERSON 처리 결과 없음'})
 
@@ -4509,6 +4750,12 @@ class ModuleMetaDb(PluginModuleBase):
                 if person_detail:
                     return jsonify({'ret': 'success', 'data': person_detail, 'works_detailed': person_detail.get('works_detailed', {})})
                 return jsonify({'ret': 'error', 'msg': '인물 상세 정보를 찾을 수 없습니다.'})
+
+            elif command == 'person_verify_works':
+                person_id = arg1 or ''
+                domain = arg2 or 'JAV'
+                success, msg, verified_works = self.verify_and_sync_person_works(person_id, domain=domain)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': msg, 'works_detailed': verified_works})
 
             elif command == 'person_save':
                 p_data = json.loads(arg1) if arg1 else {}
