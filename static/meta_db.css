@@ -200,9 +200,7 @@
 }
 
 #p_modal_works_container {
-  max-height: 120px;
   min-height: 32px;
-  overflow-y: auto;
 }
 
 /* 이미지 확대 라이트박스 네비게이션 스타일 */

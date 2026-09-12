@@ -18,6 +18,11 @@
           <div class="input-group input-group-sm">
             <input type="hidden" id="search_category" name="category" value="PERSON">
             <input type="hidden" id="search_domain" name="search_domain" value="WESTERN">
+            <select id="search_site" name="search_site" class="form-control form-control-sm">
+              <option value="all">전체 사이트</option>
+              <option value="stashdb">StashDB</option>
+              <option value="tpdb">ThePornDB</option>
+            </select>
             <select id="search_status" name="search_status" class="form-control form-control-sm">
               <option value="all">전체 상태</option>
               <option value="has_photo">사진 등록</option>
@@ -28,10 +33,8 @@
               <option value="desc">최근 등록순</option>
               <option value="asc">과거 등록순</option>
               <option value="match">정확도/일치순</option>
-              <option value="id_asc">코드/ID 번호순 (1-9)</option>
-              <option value="id_desc">코드/ID 번호순 (9-1)</option>
-              <option value="name_asc">이름순 (ㄱ-ㅎ/A-Z)</option>
-              <option value="name_desc">이름 역순 (ㅎ-ㄱ/Z-A)</option>
+              <option value="name_asc">이름순 (A-Z/ㄱ-ㅎ)</option>
+              <option value="name_desc">이름 역순 (Z-A/ㅎ-ㄱ)</option>
             </select>
             <select id="page_size" name="page_size" class="form-control form-control-sm">
               <option value="30" selected>30개씩</option>
