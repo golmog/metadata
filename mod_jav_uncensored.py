@@ -105,6 +105,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f'{self.name}_fc2com_use_javten_web': 'True',
             f'{self.name}_fc2com_use_javten_proxy': 'False',
             f'{self.name}_fc2com_javten_proxy_url': '',
+            f'{self.name}_fc2com_use_javten_flaresolverr': 'False',
 
             f"{self.name}_use_preview_clip": "False",
             f"{self.name}_preview_auto_create": "False",

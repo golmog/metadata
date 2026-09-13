@@ -926,6 +926,7 @@ function getOrCreateModal(baseModalId) {
     var contentClass = isPerson ? 'person-modal-content' : 'db-modal-content';
 
     var $clone = $base.clone(false).attr('id', cloneId).addClass('dynamic-modal-clone');
+    $clone.removeClass('show in').css('display', 'none').removeAttr('aria-modal').attr('aria-hidden', 'true');
     $clone.find('.modal-content').addClass(contentClass);
 
     var $baseDialog = $base.find('.modal-dialog');
@@ -951,6 +952,12 @@ function getOrCreateModal(baseModalId) {
             height: $baseContent.outerHeight() + 'px'
         });
     }
+
+    $clone.on('click', '[data-dismiss="modal"]', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        $clone.modal('hide');
+    });
 
     $('body').append($clone);
     $clone.on('hidden.bs.modal', function(){
@@ -4633,8 +4640,9 @@ $(document).on('click', '.btn_open_sub_person_modal', function(e){
         works_detailed: {}
     };
 
-    renderPersonModalContent(subPersonObj, getOrCreateModal('#personEditModal'));
-    $('#personEditModal').modal('show');
+    var $subModal = getOrCreateModal('#personEditModal');
+    renderPersonModalContent(subPersonObj, $subModal);
+    $subModal.modal('show');
 });
 
 $(document).on('click', '#btn_toggle_sub_actors', function(e){
