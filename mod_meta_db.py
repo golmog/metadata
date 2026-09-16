@@ -5109,54 +5109,34 @@ class ModuleMetaDb(PluginModuleBase):
                 found_item = None
                 found_session = None
 
-                # 코드에서 숫자 및 알파벳 추출 (예: CMABP-576 -> ABP, 576)
-                num_match = re.search(r'(\d+)', target_code)
-                num_part = num_match.group(1) if num_match else ''
-                alpha_match = re.search(r'([A-Za-z]+)', target_code)
-                alpha_part = alpha_match.group(1) if alpha_match else ''
+                match_targets = {target_code.lower()}
+                try:
+                    from support_site import SiteAvBase
+                    raw_cid = target_code
+                    if len(target_code) >= 3 and target_code[0] in ['C', 'E', 'W']:
+                        raw_cid = target_code[2:].lstrip('_')
+
+                    parsed_ui, _, _ = SiteAvBase._parse_ui_code(raw_cid)
+                    if parsed_ui:
+                        match_targets.add(parsed_ui.lower())
+                        match_targets.add(parsed_ui.replace('-', '').lower())
+                except Exception as e_parse:
+                    logger.debug(f"[MetaDB get_meta_by_code] 코드 파싱 예외: {e_parse}")
 
                 for try_cat in categories_to_try:
                     sess, _, std_cat = self.get_session_and_domain(try_cat)
                     if not sess:
                         continue
                     try:
-                        # code, ui_code, originaltitle 정확 일치 (대소문자 무시)
+                        # code, ui_code, originaltitle 필드와 100% 완전 일치하는 레코드만 엄격하게 조회
                         item = sess.query(MetaItem).filter(
+                            MetaItem.category == std_cat,
                             or_(
-                                func.lower(MetaItem.code) == target_code.lower(),
-                                func.lower(MetaItem.ui_code) == target_code.lower(),
-                                func.lower(MetaItem.originaltitle) == target_code.lower()
+                                func.lower(MetaItem.code).in_(match_targets),
+                                func.lower(MetaItem.ui_code).in_(match_targets),
+                                func.lower(MetaItem.originaltitle).in_(match_targets)
                             )
                         ).first()
-
-                        # ILIKE 부분 포함 검색
-                        if not item:
-                            search_code_like = f"%{target_code}%"
-                            item = sess.query(MetaItem).filter(
-                                or_(
-                                    MetaItem.code.ilike(search_code_like),
-                                    MetaItem.ui_code.ilike(search_code_like),
-                                    MetaItem.originaltitle.ilike(search_code_like)
-                                )
-                            ).first()
-
-                        # 품번 분해 매칭 (알파벳 레이블 + 숫자 동시 포함 검색)
-                        if not item and num_part and len(alpha_part) >= 2:
-                            pure_alpha = alpha_part[-3:] if len(alpha_part) >= 3 else alpha_part
-                            item = sess.query(MetaItem).filter(
-                                and_(
-                                    or_(
-                                        MetaItem.originaltitle.ilike(f"%{pure_alpha}%"),
-                                        MetaItem.ui_code.ilike(f"%{pure_alpha}%"),
-                                        MetaItem.code.ilike(f"%{pure_alpha}%")
-                                    ),
-                                    or_(
-                                        MetaItem.originaltitle.ilike(f"%{num_part}%"),
-                                        MetaItem.ui_code.ilike(f"%{num_part}%"),
-                                        MetaItem.code.ilike(f"%{num_part}%")
-                                    )
-                                )
-                            ).first()
 
                         if item:
                             found_item = item
