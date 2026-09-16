@@ -971,6 +971,8 @@ class ModuleJavUncensored(PluginModuleBase):
             }
             
             final_title = title_format.format(**format_dict)
+            # 포맷팅된 최종 제목 내 개행문자(\r, \n, \t)를 단일 공백으로 치환
+            final_title = re.sub(r'[\r\n\t]+', ' ', final_title).strip()
             ret["title"] = final_title
 
             if ret.get("extras"):
