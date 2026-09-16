@@ -530,17 +530,36 @@ function injectDbModals() {
 
                 <div class="form-group mb-2"><label class="small font-weight-bold mb-1">팬아트 이미지 URLs <span class="text-muted font-weight-normal">(줄바꿈으로 구분)</span></label><textarea class="form-control form-control-sm" id="edit_fanarts" rows="2" placeholder="https://... (엔터로 여러 개)"></textarea></div>
 
-                <div class="form-group mb-2">
+                <!-- 예고편 및 프리뷰 클립 분리 관리 영역 -->
+                <div class="form-group mb-2 p-2 border rounded" style="background: rgba(255, 255, 255, 0.02); border-color: #343a40 !important;">
+                  <!-- 공식 예고편 영역 -->
                   <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="small font-weight-bold mb-0">예고편 비디오 (Trailer)</label>
+                    <label class="small font-weight-bold mb-0 text-white">공식 예고편 (Official Trailer)</label>
+                    <span class="badge badge-dark border border-secondary text-info btn-play-trailer-modal" id="btn_modal_play_trailer" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="공식 예고편 재생">🎬 공식 트레일러 재생</span>
+                  </div>
+                  <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="공식 예고편 스트림 URL이 없습니다. (수동 입력 가능)">
+
+                  <!-- 자체 생성 프리뷰 클립 영역 -->
+                  <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top border-secondary">
+                    <div>
+                      <span class="small font-weight-bold text-muted mr-1">자체 프리뷰 클립 (Preview Clip)</span>
+                      <span id="badge_preview_status" class="badge badge-secondary small font-weight-normal">미생성</span>
+                    </div>
                     <div class="btn-group btn-group-sm" role="group">
-                      <span class="badge badge-dark border border-secondary text-info btn-play-trailer-modal mr-1" id="btn_modal_play_trailer" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="공식 예고편 재생">🎬 트레일러 재생</span>
                       <span class="badge badge-dark border border-success text-success mr-1" id="btn_modal_play_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 재생">▶ 프리뷰 재생</span>
                       <span class="badge badge-dark border border-primary text-primary mr-1" id="btn_modal_create_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px;" title="원본 영상에서 프리뷰 클립 수동 생성">⚡ 프리뷰 생성</span>
                       <span class="badge badge-dark border border-danger text-danger" id="btn_modal_delete_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 및 파일 삭제">🗑️ 프리뷰 삭제</span>
                     </div>
                   </div>
-                  <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="공식 예고편 스트림 URL">
+                  <div id="div_preview_clip_box" class="mt-1" style="display: none;">
+                    <div class="input-group input-group-sm">
+                      <input type="text" class="form-control bg-light" id="edit_preview_url" readonly placeholder="등록된 프리뷰 주소가 없습니다.">
+                      <div class="input-group-append">
+                        <button class="btn btn-outline-secondary font-weight-bold" type="button" id="btn_copy_preview_url" title="프리뷰 스트림 주소 클립보드 복사">📋 복사</button>
+                      </div>
+                    </div>
+                    <div id="div_preview_clip_info" class="small text-info mt-1"></div>
+                  </div>
 
                   <div id="div_preview_source_bar" class="p-2 my-2 rounded bg-dark border border-secondary shadow-sm" style="display: none;">
                     <div class="d-flex align-items-center">
@@ -1247,6 +1266,22 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
 
     payload.original.fanart = fanarts_text;
 
+    // 프리뷰 클립이 존재하는 경우 extra_info 및 extras에 실제 스트림 주소 동기화 반영
+    var previewUrlVal = $m.find('#edit_preview_url').val() ? $m.find('#edit_preview_url').val().trim() : '';
+    if (payload.extra_info && payload.extra_info.preview_clip) {
+        if (previewUrlVal) {
+            payload.extra_info.preview_clip.stream_url = previewUrlVal;
+        }
+        if (!edited_trailer && previewUrlVal) {
+            payload.extras = [{
+                mode: 'mp4',
+                title: '[Preview] ' + (payload.title || payload.tagline || payload.originaltitle),
+                content_url: previewUrlVal,
+                content_type: 'trailer'
+            }];
+        }
+    }
+
     var preservedInfoUrl = (srcJson && srcJson.extra_info && srcJson.extra_info.info_url) ||
                            (row && row.info_url) ||
                            $m.find('#edit_info_url').val().trim() || '';
@@ -1432,9 +1467,42 @@ function make_item_list(data) {
             if (!jd) jd = {};
 
             var raw_title = row.title || row.originaltitle || jd.title || row.code || '';
+            // 개행문자(\n, \r, \t) 및 줄바꿈 태그를 단일 공백으로 치환
+            raw_title = raw_title.replace(/<\/?(br|p|div)[^>]*>/gi, ' ').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+            // 제목 끝에 스페이스 없이 붙은 (YYYY) 분리 보정
+            raw_title = raw_title.replace(/(?<=[^\s])\((\d{4})\)$/, ' ($1)');
+
             var year_val = jd.year || (jd.premiered ? jd.premiered.substring(0, 4) : '');
             var year_html = (year_val && year_val != 0 && year_val != 1900 && raw_title.indexOf('(' + year_val + ')') === -1) 
-                ? ' <span class="text-muted small font-weight-normal">(' + year_val + ')</span>' : '';
+                ? '&nbsp;<span class="text-muted small font-weight-normal">(' + year_val + ')</span>' : '';
+
+            var current_cat = (row.category || get_list_context().category || '').toUpperCase();
+            var is_jav = (current_cat === 'JAV_CEN' || current_cat === 'JAV_UNCEN' || sub === 'jav_censored' || sub === 'jav_uncensored');
+            var actor_html = '';
+
+            if (is_jav && jd.actor && Array.isArray(jd.actor) && jd.actor.length > 0) {
+                var actor_names = [];
+                for (var a_idx = 0; a_idx < jd.actor.length; a_idx++) {
+                    var a_item = jd.actor[a_idx];
+                    var a_name = '';
+                    if (typeof a_item === 'object' && a_item !== null) {
+                        a_name = (a_item.name_ko || a_item.name_org || a_item.name || '').trim();
+                    } else if (typeof a_item === 'string') {
+                        a_name = a_item.trim();
+                    }
+                    if (a_name && actor_names.indexOf(a_name) === -1) {
+                        actor_names.push(a_name);
+                    }
+                }
+
+                if (actor_names.length > 0) {
+                    var top_actors = actor_names.slice(0, 3).join(', ');
+                    if (actor_names.length > 3) {
+                        top_actors += ' 외';
+                    }
+                    actor_html = '&nbsp;<span class="text-muted small font-weight-normal">- ' + top_actors + '</span>';
+                }
+            }
 
             var trailer_url = '';
             if (jd.extras && Array.isArray(jd.extras)) {
@@ -1573,8 +1641,8 @@ function make_item_list(data) {
             
             str += '<div class="col-sm-8 pl-1 pr-2">';
             str += '  <div style="line-height: 1.4;">';
-            str += '    <div class="mb-1 d-flex align-items-center flex-wrap">';
-            str += '      <strong class="text-primary item-title-clickable font-weight-bold" data-idx="' + i + '" style="font-size: 1.05em; cursor: pointer;" title="클릭하여 메타데이터 편집">' + raw_title + '</strong>' + year_html;
+            str += '    <div class="mb-1" style="word-break: break-word;">';
+            str += '      <strong class="text-primary item-title-clickable font-weight-bold mr-1" data-idx="' + i + '" style="font-size: 1.05em; cursor: pointer;" title="클릭하여 메타데이터 편집">' + raw_title + '</strong>' + year_html + actor_html;
             str += '    </div>';
             str += '    <div class="d-flex align-items-center flex-wrap text-muted mb-2" style="font-size: 0.82em;">';
             str += '      <span class="badge badge-info mr-2 badge-copy-code" data-code="' + (row.code || '') + '" style="cursor: pointer;" title="클릭하여 코드 복사">' + (row.code || '') + '</span>';
@@ -2223,31 +2291,63 @@ function renderDbEditModalContent(row, $modal) {
     $modal.find('#edit_landscape_url').val(raw_pl_url);
     $modal.find('#edit_landscape_url_final').val(final_pl_url).css('cursor', final_pl_url ? 'pointer' : 'default').attr('title', final_pl_url ? '클릭하여 이미지 크게 보기' : '');
 
-    var currentTrailerUrl = raw_trailer_url || final_trailer_url || '';
-    $modal.find('#edit_trailer_url').val(currentTrailerUrl);
+    // 프리뷰 클립을 배제한 순수 공식 예고편 URL 추출
+    var official_trailer_url = raw_trailer_url || '';
+    if (!official_trailer_url && final_trailer_url && final_trailer_url.indexOf('mode=preview_') === -1) {
+        official_trailer_url = final_trailer_url;
+    }
 
-    if (currentTrailerUrl) {
+    $modal.find('#edit_trailer_url').val(official_trailer_url);
+
+    // 공식 예고편이 실제로 존재할 때만 트레일러 재생 버튼 노출
+    if (official_trailer_url && official_trailer_url.trim() !== '') {
         $modal.find('#btn_modal_play_trailer').show();
     } else {
         $modal.find('#btn_modal_play_trailer').hide();
     }
 
+    // 자체 생성 프리뷰 클립 상태 바인딩
     var extraData = (jd.extra_info && typeof jd.extra_info === 'object') ? jd.extra_info : (row.extra_info || {});
     var previewClip = extraData.preview_clip;
+
+    // 프리뷰 클립 스트림 주소 산출
+    var previewStreamUrl = '';
+    if (previewClip) {
+        var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1) || (row.category === 'JAV_UNCEN');
+        var videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
+        var hostOrigin = window.location.origin;
+
+        if (previewClip.storage_type === 'gdrive' && previewClip.google_fileid) {
+            previewStreamUrl = hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_gdrive&fileid=' + previewClip.google_fileid + '&cat=' + (row.category || get_list_context().category);
+        } else if (previewClip.local_path) {
+            previewStreamUrl = hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_local&path=' + encodeURIComponent(previewClip.local_path);
+        }
+    }
+
+    $modal.find('#edit_preview_url').val(previewStreamUrl);
 
     if (previewClip && (previewClip.google_fileid || previewClip.local_path)) {
         $modal.find('#btn_modal_play_preview').show();
         $modal.find('#btn_modal_delete_preview').show();
         $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 재생성');
+        $modal.find('#badge_preview_status').removeClass('badge-secondary').addClass('badge-success').text('등록됨');
+        $modal.find('#div_preview_clip_box').show();
 
         var storageLabel = (previewClip.storage_type === 'gdrive') ? '구글 드라이브' : '로컬 디스크';
         var clipDetailText = '🎞️ 프리뷰 클립 등록됨: [' + storageLabel + '] ' + (previewClip.duration || 60) + '초 (' + (previewClip.created_time || '') + ')';
-        $modal.find('#div_preview_clip_info').text(clipDetailText).show();
+        if (previewClip.local_path) {
+            clipDetailText += ' | 파일: ' + previewClip.local_path;
+        } else if (previewClip.google_fileid) {
+            clipDetailText += ' | FileID: ' + previewClip.google_fileid;
+        }
+        $modal.find('#div_preview_clip_info').text(clipDetailText);
     } else {
         $modal.find('#btn_modal_play_preview').hide();
         $modal.find('#btn_modal_delete_preview').hide();
         $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 생성');
-        $modal.find('#div_preview_clip_info').hide().text('');
+        $modal.find('#badge_preview_status').removeClass('badge-success').addClass('badge-secondary').text('미생성');
+        $modal.find('#div_preview_clip_box').hide();
+        $modal.find('#div_preview_clip_info').text('');
     }
 
     $modal.find('#div_preview_source_bar').hide();
@@ -2291,8 +2391,42 @@ function loadAndOpenMovieModal(code, category, fallbackData, $targetModal) {
     });
 }
 
-function reloadDbEditModalData(code, category, $modal) {
-    if (!code) return;
+// 모달 내부 갱신 작업 시 오버레이 스피너 및 푸터 버튼 상태 제어 헬퍼
+function setModalLoadingState($modal, isLoading, actionText, $btn) {
+    if (!$modal || !$modal.length) return;
+    var $body = $modal.find('.modal-body');
+
+    if (isLoading) {
+        $body.css('position', 'relative');
+        if ($body.find('.modal-body-overlay').length === 0) {
+            var overlayHtml = '<div class="modal-body-overlay d-flex flex-column align-items-center justify-content-center position-absolute w-100 h-100" style="top:0; left:0; background: rgba(13, 17, 23, 0.75); z-index: 1050; backdrop-filter: blur(2px); border-radius: 4px;">' +
+                '<div class="spinner-border text-info mb-3" role="status" style="width: 2.8rem; height: 2.8rem;"></div>' +
+                '<span class="text-white font-weight-bold" id="modal_refresh_status_text" style="font-size: 0.95rem;">' + (actionText || '데이터 갱신 중...') + '</span>' +
+                '</div>';
+            $body.append(overlayHtml);
+        } else {
+            $body.find('#modal_refresh_status_text').text(actionText || '데이터 갱신 중...');
+        }
+
+        if ($btn && $btn.length) {
+            $btn.data('orig-html', $btn.html());
+            $btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm mr-1" role="status"></span>처리 중...');
+        }
+        $modal.find('#btn_save_db_edit').prop('disabled', true);
+    } else {
+        $body.find('.modal-body-overlay').fadeOut(120, function(){ $(this).remove(); });
+        if ($btn && $btn.length && $btn.data('orig-html')) {
+            $btn.prop('disabled', false).html($btn.data('orig-html'));
+        }
+        $modal.find('#btn_save_db_edit').prop('disabled', false);
+    }
+}
+
+function reloadDbEditModalData(code, category, $modal, callback) {
+    if (!code) {
+        if (typeof callback === 'function') callback();
+        return;
+    }
     $modal = $modal || $('#dbEditModal');
     var row = $modal.data('row_data') || {};
     var target_cat = category || row.category || get_list_context().category || 'JAV_CEN';
@@ -2302,6 +2436,7 @@ function reloadDbEditModalData(code, category, $modal) {
             renderDbEditModalContent(ret.data, $modal);
             window.globalRequestSearch(null, true);
         }
+        if (typeof callback === 'function') callback();
     });
 }
 
@@ -2850,6 +2985,17 @@ $(document).off('click', '#edit_poster_url_final, #edit_landscape_url_final').on
     }
 });
 
+// 트레일러 URL 입력값 변경 시 공식 재생 버튼 노출 여부 동적 갱신
+$(document).on('input change', '#edit_trailer_url', function(){
+    var val = $(this).val().trim();
+    var $btn = $(this).closest('.modal').find('#btn_modal_play_trailer');
+    if (val && val.indexOf('mode=preview_') === -1) {
+        $btn.show();
+    } else {
+        $btn.hide();
+    }
+});
+
 $(document).off('click', '#btn_open_meta_info_url').on('click', '#btn_open_meta_info_url', function(e) {
     e.preventDefault();
     var url = $(this).closest('.modal').find('#edit_info_url').val().trim();
@@ -2978,34 +3124,29 @@ $(document).off('click', '#btn_confirm_create_preview').on('click', '#btn_confir
     });
 });
 
+// 프리뷰 클립 스트림 주소 복사 핸들러
+$(document).on('click', '#btn_copy_preview_url', function(e){
+    e.preventDefault();
+    var url = $(this).closest('.modal').find('#edit_preview_url').val().trim();
+    if (!url) {
+        if (typeof notify === 'function') notify('복사할 프리뷰 스트림 주소가 없습니다.', 'warning');
+        return;
+    }
+    copyTextToClipboard(url, '프리뷰 재생 주소가 클립보드에 복사되었습니다.');
+});
+
 $(document).off('click', '#btn_modal_play_preview').on('click', '#btn_modal_play_preview', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
-    var code = $modal.find('#edit_code').val();
-    var row = $modal.data('row_data') || {};
-    var jd = row.json_data || {};
-    var extraData = jd.extra_info || {};
-    var pClip = extraData.preview_clip;
+    var streamUrl = $modal.find('#edit_preview_url').val().trim();
 
-    if (!pClip) {
-        if (typeof notify === 'function') notify('등록된 프리뷰 클립이 없습니다.', 'warning');
+    if (!streamUrl) {
+        if (typeof notify === 'function') notify('등록된 프리뷰 클립 주소가 없습니다.', 'warning');
         return;
     }
 
-    var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1);
-    var videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
-    var streamUrl = '';
-
-    if (pClip.storage_type === 'gdrive' && pClip.google_fileid) {
-        streamUrl = '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_gdrive&fileid=' + pClip.google_fileid + '&cat=' + (row.category || get_list_context().category);
-    } else if (pClip.local_path) {
-        streamUrl = '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_local&path=' + encodeURIComponent(pClip.local_path);
-    }
-
-    if (streamUrl) {
-        var currentTitle = $modal.find('#edit_title').val() || '프리뷰 영상';
-        openVideoPlayerModal(streamUrl, '[프리뷰] ' + currentTitle);
-    }
+    var currentTitle = $modal.find('#edit_title').val() || '프리뷰 영상';
+    openVideoPlayerModal(streamUrl, '[프리뷰] ' + currentTitle);
 });
 
 $(document).off('click', '#btn_modal_delete_preview').on('click', '#btn_modal_delete_preview', function(e){
@@ -3038,16 +3179,58 @@ $(document).on('click', '.btn-play-trailer-modal', function(e){
     openVideoPlayerModal(targetUrl, title);
 });
 
-$(document).on('volumechange', '#video_preview_player', function(){
+document.addEventListener('volumechange', function(e){
     if (isVideoAudioRestoring) return;
-    var player = this;
-    if (!player || player.readyState === 0) return;
+    var player = e.target;
+    if (!player || player.id !== 'video_preview_player') return;
+    if (player.readyState === 0) return;
     if (!$('#videoPreviewModal').hasClass('show')) return;
 
     try {
         localStorage.setItem('video_preview_volume', player.volume.toString());
         localStorage.setItem('video_preview_muted', player.muted ? 'true' : 'false');
-    } catch(e){}
+    } catch(err){}
+}, true);
+
+// 타임라인 슬라이더나 뮤트 클릭/드래그 후 네이티브 컨트롤 포커스를 해제하고 모달로 포커스 복원
+$(document).on('mouseup pointerup touchend', '#videoPreviewModal video, #videoPreviewModal .modal-body', function(){
+    setTimeout(function(){
+        var player = document.getElementById('video_preview_player');
+        if (player && document.activeElement === player) {
+            player.blur();
+        }
+        $('#videoPreviewModal').trigger('focus');
+    }, 60);
+});
+
+// 탐색(seek) 완료 시 포커스를 모달로 복귀시켜 ESC 및 단축키 동작 보장
+document.addEventListener('seeked', function(e){
+    if (e.target && e.target.id === 'video_preview_player') {
+        setTimeout(function(){
+            if (document.activeElement === e.target) {
+                e.target.blur();
+            }
+            $('#videoPreviewModal').trigger('focus');
+        }, 60);
+    }
+}, true);
+
+// 모달 활성화 시 스페이스바로 재생/일시정지 토글 지원
+$(document).on('keydown', '#videoPreviewModal', function(e){
+    if (e.key === ' ' || e.keyCode === 32) {
+        var activeTag = (document.activeElement && document.activeElement.tagName || '').toLowerCase();
+        if (activeTag !== 'input' && activeTag !== 'textarea') {
+            e.preventDefault();
+            var player = document.getElementById('video_preview_player');
+            if (player) {
+                if (player.paused) {
+                    player.play();
+                } else {
+                    player.pause();
+                }
+            }
+        }
+    }
 });
 
 $(document).on('hidden.bs.modal', '#videoPreviewModal', function(){
@@ -3307,16 +3490,23 @@ $(document).on('click', '.btn_modal_refresh_image_only', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
     var $dropdown = $(this).closest('.dropdown');
+    var $toggleBtn = $dropdown.find('.custom-dropdown-toggle');
     $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
     if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 동기화를 요청합니다...', 'info');
 
+    setModalLoadingState($modal, true, '이미지 및 미디어 재동기화 중...', $toggleBtn);
+
     globalSendCommand('db_refresh_image_only', String(code), null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal);
+            reloadDbEditModalData(code, null, $modal, function(){
+                setModalLoadingState($modal, false, '', $toggleBtn);
+            });
+        } else {
+            setModalLoadingState($modal, false, '', $toggleBtn);
         }
     });
 });
@@ -3342,16 +3532,23 @@ $(document).on('click', '.btn_modal_refresh_in_place', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
     var $dropdown = $(this).closest('.dropdown');
+    var $toggleBtn = $dropdown.find('.custom-dropdown-toggle');
     $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
     if (typeof notify === 'function') notify('[' + code + '] 현재 사이트 메타 갱신을 요청합니다...', 'info');
 
+    setModalLoadingState($modal, true, '현재 사이트 메타데이터 갱신 중...', $toggleBtn);
+
     globalSendCommand('db_refresh_in_place', String(code), null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal);
+            reloadDbEditModalData(code, null, $modal, function(){
+                setModalLoadingState($modal, false, '', $toggleBtn);
+            });
+        } else {
+            setModalLoadingState($modal, false, '', $toggleBtn);
         }
     });
 });
@@ -3377,16 +3574,23 @@ $(document).on('click', '.btn_modal_refresh_auto_search', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
     var $dropdown = $(this).closest('.dropdown');
+    var $toggleBtn = $dropdown.find('.custom-dropdown-toggle');
     $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
     if (typeof notify === 'function') notify('[' + code + '] 전체 사이트 자동 재검색 갱신을 요청합니다...', 'info');
 
+    setModalLoadingState($modal, true, '전체 우선순위 자동 재검색 갱신 중...', $toggleBtn);
+
     globalSendCommand('db_refresh_auto_search', String(code), null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '재검색 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal);
+            reloadDbEditModalData(code, null, $modal, function(){
+                setModalLoadingState($modal, false, '', $toggleBtn);
+            });
+        } else {
+            setModalLoadingState($modal, false, '', $toggleBtn);
         }
     });
 });
@@ -4555,9 +4759,8 @@ $(document).on('click', '#btn_db_export_full_all, #btn_db_export_clean', functio
         btn.prop('disabled', false).text(origText);
         if (ret.ret === 'success') {
             notify(ret.msg, 'success');
-            window.location.href = '/' + package_name + '/normal/' + sub + '/db_download?filename=' + ret.filename;
         } else {
-            notify('Export 실패: ' + ret.msg, 'warning');
+            notify('Export 실패: ' + (ret.msg || '알 수 없는 오류'), 'warning');
         }
     });
 });

@@ -767,17 +767,26 @@ class ModuleMetaDb(PluginModuleBase):
             if actors_map:
                 if a_idx_val and a_idx_val in actors_map:
                     matched_db_row = actors_map[a_idx_val]
-                elif raw_name_org and raw_name_org in actors_map:
-                    matched_db_row = actors_map[raw_name_org]
+                elif raw_name_org:
+                    # 대소문자 무관 탐색 지원 (AIKA, Aika 등)
+                    for k_map, v_map in actors_map.items():
+                        if k_map and k_map.lower() == raw_name_org.lower():
+                            matched_db_row = v_map
+                            break
 
             if matched_db_row:
-                a_idx_val = str(matched_db_row.get('actor_id') or '').strip()
+                raw_actor_id = str(matched_db_row.get('actor_id') or '').strip()
+                if raw_actor_id:
+                    m_num = re.search(r'(\d+)', raw_actor_id)
+                    a_idx_val = f"PA{m_num.group(1)}" if m_num else raw_actor_id
+
                 raw_name_org = str(matched_db_row.get('name_org') or matched_db_row.get('inner_name_cn') or raw_name_org).strip()
                 if not raw_name_ko:
                     raw_name_ko = str(matched_db_row.get('name_ko') or matched_db_row.get('inner_name_kr') or '').strip()
                 if not raw_name_en:
                     raw_name_en = str(matched_db_row.get('name_en') or matched_db_row.get('inner_name_en') or '').strip()
 
+            # JAV 배우는 한국어 표기명이 없는 경우 빈 레코드 등록 방지를 위해 중단
             if not raw_name_ko:
                 return None
 
@@ -786,13 +795,21 @@ class ModuleMetaDb(PluginModuleBase):
             p_rec = person_session.query(MetaPerson).filter_by(domain=person_domain, person_idx=a_idx_val).first()
 
         if not p_rec:
-            p_rec = person_session.query(MetaPerson).filter(
-                MetaPerson.domain == person_domain,
-                or_(
-                    MetaPerson.name_org == raw_name_org,
-                    MetaPerson.name_ko == raw_name_ko
-                )
-            ).first()
+            # 영문명 및 대소문자 무시(func.lower)를 지원하여 AIKA/Aika 동시 매칭
+            match_conditions = []
+            if raw_name_org:
+                match_conditions.extend([
+                    func.lower(MetaPerson.name_org) == raw_name_org.lower(),
+                    func.lower(MetaPerson.name_en) == raw_name_org.lower()
+                ])
+            if raw_name_ko:
+                match_conditions.append(MetaPerson.name_ko == raw_name_ko)
+
+            if match_conditions:
+                p_rec = person_session.query(MetaPerson).filter(
+                    MetaPerson.domain == person_domain,
+                    or_(*match_conditions)
+                ).first()
 
         raw_aliases = actor_data.get('aliases') or actor_data.get('other_names') or actor_data.get('onm') or []
         if isinstance(raw_aliases, str):
@@ -801,22 +818,9 @@ class ModuleMetaDb(PluginModuleBase):
             alias_list = [str(x).strip() for x in raw_aliases if str(x).strip()]
         else:
             alias_list = []
-
+ 
         if raw_name_en and raw_name_en not in alias_list:
             alias_list.append(raw_name_en)
-
-        p_rec = None
-        if a_idx_val:
-            p_rec = person_session.query(MetaPerson).filter_by(domain=person_domain, person_idx=a_idx_val).first()
-        elif person_domain != 'JAV':
-            target_match_name = raw_name_org
-            p_rec = person_session.query(MetaPerson).filter(
-                MetaPerson.domain == person_domain,
-                or_(
-                    MetaPerson.name_org == target_match_name,
-                    MetaPerson.name_en == target_match_name
-                )
-            ).first()
 
         a_media = actor_data.get('media_src') if isinstance(actor_data.get('media_src'), dict) else {}
         a_extra = actor_data.get('extra_info') if isinstance(actor_data.get('extra_info'), dict) else {}
@@ -989,8 +993,13 @@ class ModuleMetaDb(PluginModuleBase):
             sorttitle = str(entity_dict.get('sorttitle') or entity_dict.get('title') or originaltitle)[:500]
             ui_code = str(entity_dict.get('ui_code') or originaltitle)[:255]
             site = str(entity_dict.get('site') or 'unknown')[:50]
-            title = str(entity_dict.get('title') or originaltitle)[:500]
-            tagline = entity_dict.get('tagline') or ''
+            # 제목(title)과 부제(tagline)의 개행문자(\r, \n, \t)를 단일 공백으로 정규화하여 DB 저장
+            title_raw = str(entity_dict.get('title') or originaltitle)
+            title = re.sub(r'[\r\n\t]+', ' ', title_raw).strip()[:500]
+
+            tagline_raw = str(entity_dict.get('tagline') or '')
+            tagline = re.sub(r'[\r\n\t]+', ' ', tagline_raw).strip()[:500]
+
             plot = entity_dict.get('plot') or ''
             director = str(entity_dict.get('director') or '')[:255]
             studio = str(entity_dict.get('studio') or '')[:255]
@@ -4202,13 +4211,13 @@ class ModuleMetaDb(PluginModuleBase):
         exp_engine = None
         sess = None
         try:
-            tmp_dir = os.path.join(path_data, 'tmp')
-            os.makedirs(tmp_dir, exist_ok=True)
+            target_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
+            os.makedirs(target_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             cat_suffix = str(target_category).upper() if category_mode == 'current' else "ALL"
             san_suffix = "_clean" if is_sanitized else "_full"
             filename = f"metadata_{cat_suffix}_{timestamp}{san_suffix}.db"
-            filepath = os.path.join(tmp_dir, filename)
+            filepath = os.path.join(target_dir, filename)
 
             exp_engine = create_engine(f"sqlite:///{filepath}", poolclass=NullPool)
             Base.metadata.create_all(bind=exp_engine)
@@ -4286,8 +4295,8 @@ class ModuleMetaDb(PluginModuleBase):
                     person_sess.remove()
 
             elapsed = time.time() - t_start
-            logger.info(f"[MetaDB Export] 완료: {filename} (총 {count:,}건, 소요시간: {elapsed:.2f}초)")
-            return True, filename, count
+            logger.info(f"[MetaDB Export] 완료: {filepath} (총 {count:,}건, 소요시간: {elapsed:.2f}초)")
+            return True, filepath, count
         except Exception as e:
             logger.error(f"[MetaDB Export] 오류: {e}")
             logger.error(traceback.format_exc())
@@ -5338,11 +5347,13 @@ class ModuleMetaDb(PluginModuleBase):
             elif command == 'db_export':
                 cat_mode = arg1 or 'all'
                 is_clean = (arg2 == 'true')
-                success, filename_or_msg, count = self.export_database(category_mode=cat_mode, is_sanitized=is_clean)
+                success, filepath_or_msg, count = self.export_database(category_mode=cat_mode, is_sanitized=is_clean)
                 if success:
-                    return jsonify({'ret': 'success', 'filename': filename_or_msg, 'msg': f'Export 완료: {filename_or_msg} (총 {count:,}건)'})
+                    filename = os.path.basename(filepath_or_msg)
+                    msg = f"Export 완료: {filepath_or_msg} (총 {count:,}건)"
+                    return jsonify({'ret': 'success', 'filename': filename, 'filepath': filepath_or_msg, 'msg': msg})
                 else:
-                    return jsonify({'ret': 'error', 'msg': f'Export 실패: {filename_or_msg}'})
+                    return jsonify({'ret': 'error', 'msg': f'Export 실패: {filepath_or_msg}'})
 
             return jsonify({'ret': 'error', 'msg': f'알 수 없는 명령: {command}'})
         except Exception as e:

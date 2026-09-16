@@ -976,7 +976,68 @@ class ModuleJavCensored(PluginModuleBase):
 
         all_results = []
         
-        # 1. DB 선행 검색 (전역 meta_db_use 기준)
+        # 검색어 레이블 분석 및 사이트별 지정 우선순위 사전 결정
+        original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",")
+        current_keyword_label = ""
+        is_special_format = False
+
+        special_format_match = re.match(r'^(741[a-z]\d{3})-g\d{2,}$', keyword.lower())
+        if special_format_match:
+            is_special_format = True
+            current_keyword_label = special_format_match.group(1).upper()
+
+        if not is_special_format:
+            if keyword and '-' in keyword:
+                current_keyword_label = keyword.split('-', 1)[0].upper()
+            elif keyword: 
+                match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
+                if match_kw_label:
+                    current_keyword_label = match_kw_label.group(1)
+
+        # MGS 레이블 매핑 테이블 우선 처리 여부 확인
+        is_mgs_forced_priority = False
+        if current_keyword_label and P.ModelSetting.get_bool(f"{self.name}_mgs_label_priority"):
+            exclude_raw_str = P.ModelSetting.get(f"{self.name}_mgs_label_priority_exclude")
+            exclude_labels_set = {x.strip().upper() for x in re.split(r'[\s,\n]', exclude_raw_str) if x.strip()} if exclude_raw_str else set()
+
+            if current_keyword_label.upper() not in exclude_labels_set:
+                try:
+                    from support_site.constants import MGS_LABEL_MAP
+                    if current_keyword_label.upper() in MGS_LABEL_MAP:
+                        is_mgs_forced_priority = True
+                        logger.debug(f"[{self.name}] MGS 강제 우선순위 감지: 레이블 '{current_keyword_label}' -> MGStage 최우선 설정")
+                except Exception as e_mgs_map:
+                    logger.debug(f"[{self.name}] MGS_LABEL_MAP 참조 예외: {e_mgs_map}")
+
+        # 사용자 설정 기반 지정 레이블 최우선 사이트 확인
+        special_priority_site = None 
+        if current_keyword_label:
+            for site_key_check_priority in original_site_order_list:
+                if site_key_check_priority not in self.site_map:
+                    continue
+                db_prefix_check = f"{self.name}_{site_key_check_priority}"
+                priority_labels_str = P.ModelSetting.get(f"{db_prefix_check}_priority_search_labels")
+                if priority_labels_str:
+                    site_priority_labels_set = {lbl.strip().upper() for lbl in priority_labels_str.split(',') if lbl.strip()}
+                    if current_keyword_label in site_priority_labels_set:
+                        special_priority_site = site_key_check_priority
+                        logger.debug(f"[{self.name}] 사용자 지정 우선순위: 레이블 '{current_keyword_label}' -> '{special_priority_site}'")
+                        break
+
+        if not special_priority_site and is_mgs_forced_priority:
+            special_priority_site = 'mgstage'
+            logger.debug(f"[{self.name}] 자동 우선순위: 레이블 '{current_keyword_label}' -> 'mgstage'")
+
+        # 지정 우선 사이트가 있을 경우 탐색 순서 최상단으로 전진 배치
+        site_list_for_current_search = list(original_site_order_list)
+        if special_priority_site and special_priority_site in site_list_for_current_search:
+            site_list_for_current_search.remove(special_priority_site)
+            site_list_for_current_search.insert(0, special_priority_site)
+            logger.debug(f"[{self.name}] 우선순위 반영 검색 사이트 순서: {site_list_for_current_search}")
+        else:
+            logger.debug(f"[{self.name}] 기본 검색 사이트 순서 사용: {site_list_for_current_search}")
+
+        # 로컬 Meta DB 선행 검색 및 우선순위 대조
         has_db_perfect_match = False
         if use_db and P.ModelSetting.get_bool("meta_db_use") and not manual:
             try:
@@ -985,16 +1046,19 @@ class ModuleJavCensored(PluginModuleBase):
                     from support_site import SiteAvBase
                     for record in valid_db_records:
                         jd = record['json_data']
-                        db_item = EntityAVSearch(record['site'])
+                        rec_site = record['site']
+                        db_item = EntityAVSearch(rec_site)
                         db_item.code = record['code']
                         db_item.ui_code = jd.get('ui_code') or record['originaltitle'] or record['code']
                         db_item.title = f"📁 [DB] {record['title']}"
                         db_item.originaltitle = record['originaltitle']
                         db_item.title_ko = db_item.title
-                        try: db_item.year = int(jd.get('year') or 1900)
-                        except: db_item.year = 1900
+                        try:
+                            db_item.year = int(jd.get('year') or 1900)
+                        except:
+                            db_item.year = 1900
                         db_item.image_url = record['poster_url'] or ''
-                        
+
                         actor_list = jd.get('actor') or []
                         actor_names = [(a.get('name_ko') or a.get('name_org', '')) if isinstance(a, dict) else (a.name_ko or a.name_org) for a in actor_list if a]
                         actor_str = ", ".join(actor_names[:3]) if actor_names else "배우 정보 없음"
@@ -1002,24 +1066,39 @@ class ModuleJavCensored(PluginModuleBase):
                         premiered_str = jd.get('premiered', '') or (str(db_item.year) if db_item.year != 1900 else '미상')
                         raw_plot = str(jd.get('plot') or '')
                         plot_snippet = (raw_plot[:120] + "...") if len(raw_plot) > 120 else (raw_plot or "줄거리 없음")
-                        
-                        db_item.desc = f"출처: {record['site'].upper()} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
-                        
+
+                        db_item.desc = f"출처: {rec_site.upper()} | 출시: {premiered_str} | 출연: {actor_str}\n{plot_snippet}"
+
                         calc_score = SiteAvBase._calculate_score(keyword, db_item.ui_code) or 99
                         db_item.score = calc_score
                         db_item.content_type = jd.get('content_type', 'unknown')
 
                         item_dict = db_item.as_dict()
                         item_dict['original_score'] = calc_score
-                        item_dict['site_key'] = record['site']
+                        item_dict['site_key'] = rec_site
                         item_dict['is_db_cached'] = True
-                        item_dict['is_priority_label_site'] = True 
+
+                        # 지정 우선 사이트와 DB 캐시 출처 사이트의 일치 여부 판정
+                        is_priority_match = bool(special_priority_site and rec_site == special_priority_site)
+                        item_dict['is_priority_label_site'] = is_priority_match
+
                         all_results.append(item_dict)
 
-                    # 오직 품번과 레이블이 100% 완벽히 일치(100점)할 때만 외부 검색 생략
-                    if any(x.get('original_score', 0) >= 100 for x in all_results):
-                        has_db_perfect_match = True
-                        logger.info(f"[{self.name}] DB 선행 검색 100점 완벽 매칭 확인 ({len(all_results)}건)")
+                    # 지정 최우선 사이트가 존재하는 경우의 외부 검색 건너뜀 분기
+                    if special_priority_site:
+                        # DB 캐시 중에 지정 최우선 사이트에서 수집된 100점 레코드가 있을 때만 외부 검색 생략
+                        if any(x.get('site_key') == special_priority_site and x.get('original_score', 0) >= 100 for x in all_results):
+                            has_db_perfect_match = True
+                            logger.info(f"[{self.name}] DB 선행 검색: 지정 최우선 사이트({special_priority_site.upper()}) 일치 레코드 확인 -> 외부 검색 생략")
+                        else:
+                            has_db_perfect_match = False
+                            cached_sites = list(set(x.get('site_key', '').upper() for x in all_results))
+                            logger.info(f"[{self.name}] DB 캐시({cached_sites}) 존재하나 지정 우선 사이트({special_priority_site.upper()})와 불일치 -> 라이브 우선 탐색 진행: {keyword}")
+                    else:
+                        # 지정 우선 사이트가 없는 일반 품번은 기존대로 100점 일치 시 외부 검색 생략
+                        if any(x.get('original_score', 0) >= 100 for x in all_results):
+                            has_db_perfect_match = True
+                            logger.info(f"[{self.name}] DB 선행 검색 100점 완벽 매칭 확인 ({len(all_results)}건)")
 
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
@@ -1027,59 +1106,6 @@ class ModuleJavCensored(PluginModuleBase):
         skip_external_search = (has_db_perfect_match and not manual and use_db)
 
         if not skip_external_search:
-            original_site_order_list = P.ModelSetting.get_list(f"{self.name}_order", ",")
-            current_keyword_label = ""
-            is_special_format = False
-            
-            special_format_match = re.match(r'^(741[a-z]\d{3})-g\d{2,}$', keyword.lower())
-            if special_format_match:
-                is_special_format = True
-                current_keyword_label = special_format_match.group(1).upper()
-
-            if not is_special_format:
-                if keyword and '-' in keyword:
-                    current_keyword_label = keyword.split('-', 1)[0].upper()
-                elif keyword: 
-                    match_kw_label = re.match(r'^([A-Z]+)', keyword.upper())
-                    if match_kw_label: current_keyword_label = match_kw_label.group(1)
-
-            is_mgs_forced_priority = False
-            if current_keyword_label and P.ModelSetting.get_bool(f"{self.name}_mgs_label_priority"):
-                exclude_raw_str = P.ModelSetting.get(f"{self.name}_mgs_label_priority_exclude")
-                exclude_labels_set = {x.strip().upper() for x in re.split(r'[\s,\n]', exclude_raw_str) if x.strip()} if exclude_raw_str else set()
-                
-                if current_keyword_label.upper() not in exclude_labels_set:
-                    try:
-                        from support_site.constants import MGS_LABEL_MAP
-                        if current_keyword_label.upper() in MGS_LABEL_MAP:
-                            is_mgs_forced_priority = True
-                            logger.debug(f"[{self.name}] MGS Forced Priority: Label '{current_keyword_label}' is in MGS_LABEL_MAP. Forcing MGStage priority.")
-                    except: pass
-
-            special_priority_site = None 
-            if current_keyword_label:
-                for site_key_check_priority in original_site_order_list:
-                    if site_key_check_priority not in self.site_map: continue
-                    db_prefix_check = f"{self.name}_{site_key_check_priority}"
-                    priority_labels_str = P.ModelSetting.get(f"{db_prefix_check}_priority_search_labels")
-                    if priority_labels_str:
-                        site_priority_labels_set = {lbl.strip().upper() for lbl in priority_labels_str.split(',') if lbl.strip()}
-                        if current_keyword_label in site_priority_labels_set:
-                            special_priority_site = site_key_check_priority
-                            logger.debug(f"User Specified Priority: Label '{current_keyword_label}' is assigned to '{special_priority_site}' by user.")
-                            break
-
-            if not special_priority_site and is_mgs_forced_priority:
-                special_priority_site = 'mgstage'
-                logger.debug(f"Automatic Priority: Label '{current_keyword_label}' is automatically assigned to 'mgstage'.")
-
-            site_list_for_current_search = list(original_site_order_list)
-            if special_priority_site and special_priority_site in site_list_for_current_search:
-                site_list_for_current_search.remove(special_priority_site)
-                site_list_for_current_search.insert(0, special_priority_site)
-                logger.debug(f"Dynamically adjusted site search order: {site_list_for_current_search}")
-            else:
-                logger.debug(f"Using default site search order: {site_list_for_current_search}")
 
             def process_site_search(site_key):
                 results = []
@@ -1555,6 +1581,7 @@ class ModuleJavCensored(PluginModuleBase):
                 'tagline': ret.get("tagline", ""),
             }
             final_title = title_format.format(**format_dict)
+            final_title = re.sub(r'[\r\n\t]+', ' ', final_title).strip()
             ret["title"] = final_title
 
             if ret.get("extras"):
