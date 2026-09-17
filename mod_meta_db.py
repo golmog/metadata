@@ -4255,7 +4255,18 @@ class ModuleMetaDb(PluginModuleBase):
                     clean_extra = copy.deepcopy(m_dict.get('extra_info') or {})
                     clean_extra.pop('local_img_url', None)
                     clean_extra.pop('actor_cache', None)
+                    clean_extra.pop('preview_clip', None)
+                    clean_extra.pop('source_video_path', None)
                     m_dict['extra_info'] = clean_extra
+
+                    if 'original' in m_dict and isinstance(m_dict['original'], dict):
+                        orig_clean = copy.deepcopy(m_dict['original'])
+                        if 'extras' in orig_clean and isinstance(orig_clean['extras'], list):
+                            orig_clean['extras'] = [
+                                ex for ex in orig_clean['extras']
+                                if isinstance(ex, dict) and 'mode=preview_' not in str(ex.get('content_url', ''))
+                            ]
+                        m_dict['original'] = orig_clean
 
                 cls.save_metadata(m.category, m_dict, target_session=exp_sess)
                 processed += 1
@@ -4274,6 +4285,16 @@ class ModuleMetaDb(PluginModuleBase):
                 try:
                     all_persons = person_sess.query(MetaPerson).all()
                     for p in all_persons:
+                        p_media = copy.deepcopy(p.media_src or {})
+                        p_extra = copy.deepcopy(p.extra_info or {})
+
+                        # 공유용 Export 시 개인 이미지 서버 주소 및 유저 크롭 사진 경로 정제
+                        if is_sanitized:
+                            p_media.pop('local_img_url', None)
+                            p_extra.pop('local_img_url', None)
+                            if p_media.get('local_img_path') and '_user.' in str(p_media['local_img_path']):
+                                p_media['local_img_path'] = ''
+
                         p_copy = MetaPerson(
                             domain=p.domain,
                             name_org=p.name_org,
@@ -4283,9 +4304,9 @@ class ModuleMetaDb(PluginModuleBase):
                             aliases=p.aliases,
                             person_type=p.person_type,
                             person_idx=p.person_idx,
-                            media_src=copy.deepcopy(p.media_src or {}),
+                            media_src=p_media,
                             works=copy.deepcopy(p.works or {}),
-                            extra_info=copy.deepcopy(p.extra_info or {})
+                            extra_info=p_extra
                         )
                         exp_sess.add(p_copy)
                     exp_sess.commit()
