@@ -1467,15 +1467,24 @@ class ModuleJavCensored(PluginModuleBase):
             raw_ui_code = ret.get('originaltitle') or ret.get('ui_code') or keyword or code
             ui_code = str(raw_ui_code).strip()
 
-            logger.info(f"[{self.name}] 이미지 구출 파이프라인 가동 ({site} 실패) ➔ 대상 품번: {ui_code}")
+            from support_site import SiteAvBase
+            _, target_label, target_num = SiteAvBase._parse_ui_code(ui_code)
 
-            # 사용자가 설정한 메타 우선순위(jav_censored_order) 로드
+            pure_code = f"{target_label.upper()}-{target_num}" if (target_label and target_num) else ui_code
+            orig_kw = str(keyword or '').strip()
+            if orig_kw and not orig_kw.startswith(('http://', 'https://', 'C', 'E', 'W')):
+                rescue_search_kw = orig_kw
+            else:
+                rescue_search_kw = pure_code
+
+            logger.info(f"[{self.name}] 이미지 구출 파이프라인 가동 ({site} 실패) ➔ 원본 검색어: '{rescue_search_kw}' (품번: {pure_code})")
+
             user_order_list = [
                 s.strip().lower() for s in P.ModelSetting.get_list(f"{self.name}_order", ",") 
                 if s.strip()
             ]
-            
-            # 현재 사이트의 '후순위(다음 순위)' 사이트들만 슬라이싱
+
+            # 현재 실패한 사이트의 후순위 사이트 슬라이싱
             current_site = site.lower()
             if current_site in user_order_list:
                 site_idx = user_order_list.index(current_site)
@@ -1485,25 +1494,22 @@ class ModuleJavCensored(PluginModuleBase):
 
             backup_sites = [s for s in candidate_sites if s in self.site_map]
             logger.debug(f"[{self.name}] 구출 대상 후순위 백업 사이트 목록: {backup_sites}")
-            
-            from support_site import SiteAvBase
-            _, target_label, target_num = SiteAvBase._parse_ui_code(ui_code)
 
             for b_site in backup_sites:
                 b_SiteClass = self.site_map.get(b_site)
                 if not b_SiteClass:
                     continue
                 try:
-                    b_search = self.search2(ui_code, b_site, manual=True)
+                    b_search = self.search2(rescue_search_kw, b_site, manual=True)
                     if b_search and len(b_search) > 0:
                         for s_cand in b_search:
                             cand_score = s_cand.get('score', 0)
                             cand_code = s_cand.get('code')
                             cand_ui = str(s_cand.get('ui_code') or '').strip()
-                            
+
                             _, c_label, c_num = SiteAvBase._parse_ui_code(cand_ui)
                             if cand_score >= 99 and target_label == c_label and target_num == c_num and cand_code:
-                                b_info = self.info2(cand_code, b_site, keyword=ui_code, skip_trans=True)
+                                b_info = self.info2(cand_code, b_site, keyword=rescue_search_kw, skip_trans=True)
                                 if b_info and b_info.get('thumb'):
                                     b_target_url = next((t['value'] for t in b_info['thumb'] if t.get('aspect') == 'poster'), None)
                                     b_im_obj = b_SiteClass.imopen(b_target_url) if b_target_url else None
@@ -1514,9 +1520,9 @@ class ModuleJavCensored(PluginModuleBase):
                                                 b_is_valid = True
                                         finally:
                                             b_im_obj.close()
-                                    
+
                                     if b_is_valid:
-                                        logger.info(f"[{self.name}] '{b_site}'에서 유효한 백업 이미지 획득/교체 성공 ({ui_code})")
+                                        logger.info(f"[{self.name}] '{b_site}'에서 유효한 백업 이미지 획득/교체 성공 ({pure_code})")
                                         ret['thumb'] = b_info['thumb']
                                         ret['fanart'] = b_info.get('fanart', [])
                                         is_invalid_image = False
