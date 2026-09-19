@@ -50,7 +50,7 @@ class ModuleRoute(PluginModuleBase):
                         abort(500)
                 
                 app.add_url_rule('/images/<path:filename>', 'serve_global_images', serve_global_images, methods=['GET'])
-                logger.debug("[Metadata] Successfully injected global route '/images' into Flask Core.")
+                # logger.debug("[Metadata] Successfully injected global route '/images' into Flask Core.")
             else:
                 logger.debug("[Metadata] Global route '/images' already exists in Flask Core. Injection skipped.")
 
@@ -113,7 +113,7 @@ class ModuleRoute(PluginModuleBase):
                         )
 
                 app.add_url_rule(person_api_rule, person_api_endpoint, person_api, methods=['POST'])
-                logger.debug(f"[Metadata] Successfully injected route '{person_api_rule}'.")
+                # logger.debug(f"[Metadata] Successfully injected route '{person_api_rule}'.")
 
             else:
                 logger.debug(f"[Metadata] Route '{person_api_rule}' already exists. Injection skipped.")
@@ -170,7 +170,7 @@ class ModuleRoute(PluginModuleBase):
                         )
 
                 app.add_url_rule(meta_api_rule, meta_api_endpoint, meta_api, methods=['POST'])
-                logger.debug(f"[Metadata] Successfully injected route '{meta_api_rule}'.")
+                # logger.debug(f"[Metadata] Successfully injected route '{meta_api_rule}'.")
             else:
                 logger.debug(f"[Metadata] Route '{meta_api_rule}' already exists. Injection skipped.")
                 

@@ -110,7 +110,7 @@ class ModuleWestern(PluginModuleBase):
         try:
             ModuleMetaDb.init_engines()
             self.web_list_model = ModuleMetaDb
-            logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
+            # logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
         except Exception as e:
             logger.error(f"[{self.name}] DB Init Error: {e}")
         self._set_site_setting()
@@ -168,7 +168,7 @@ class ModuleWestern(PluginModuleBase):
     def _set_site_setting(self):
         for site_key, site_cls in self.site_map.items():
             try:
-                P.logger.debug(f"[{self.name}] Setting config for {site_cls.__name__}.")
+                # P.logger.debug(f"[{self.name}] Setting config for {site_cls.__name__}.")
                 site_cls.set_config(self.P.ModelSetting)
             except Exception as e:
                 P.logger.error(f"[{self.name}] Error initializing site {site_key}: {e}")
