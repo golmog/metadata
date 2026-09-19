@@ -273,7 +273,7 @@ class ModuleJavCensored(PluginModuleBase):
         try:
             ModuleMetaDb.init_engines()
             self.web_list_model = ModuleMetaDb
-            logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
+            # logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
         except Exception as e_db_create:
             logger.error(f"[{self.name}] Failed to initialize Metadata DB engine: {e_db_create}")
             logger.error(traceback.format_exc())
@@ -311,7 +311,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         for ins in ins_list:
             try:
-                P.logger.debug(f"set_config site {ins.__name__} with settings.")
+                # P.logger.debug(f"set_config site {ins.__name__} with settings.")
                 ins.set_config(self.P.ModelSetting)
             except Exception as e:
                 P.logger.error(f"Error initializing site {ins}: {str(e)}")

@@ -134,7 +134,7 @@ class ModuleJavUncensored(PluginModuleBase):
         try:
             ModuleMetaDb.init_engines()
             self.web_list_model = ModuleMetaDb
-            logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
+            # logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
         except Exception as e:
             logger.error(f"[{self.name}] DB Init Error: {e}")
         self._set_site_setting()

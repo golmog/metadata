@@ -4643,7 +4643,7 @@ class ModuleMetaDb(PluginModuleBase):
                     logger.info(f"[MetaDB] 시작 시 새 배포 DB 파일 감지 ({last_synced} ➔ {latest_ver}). 자동 동기화를 진행합니다...")
                     threading.Thread(target=self.sync_jav_actors_db, daemon=True).start()
 
-            logger.debug(f"[{self.name}] Universal Metadata DB Infrastructure Loaded.")
+            # logger.debug(f"[{self.name}] Universal Metadata DB Infrastructure Loaded.")
         except Exception as e:
             logger.error(f"[{self.name}] plugin_load 에러: {e}")
 
