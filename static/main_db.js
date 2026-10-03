@@ -62,13 +62,17 @@ function isLocalServerMediaUrl(url) {
 function getCleanSourceUrl(url) {
     if (!url || typeof url !== 'string') return '';
     var clean = url.trim();
-    if (clean.indexOf('/metadata/normal/jav_image') !== -1 && clean.indexOf('url=') !== -1) {
+    while ((clean.indexOf('/metadata/normal/jav_image') !== -1 || clean.indexOf('/metadata/normal/jav_image_un') !== -1) && clean.indexOf('url=') !== -1) {
         try {
             var match = clean.match(/[?&]url=([^&]+)/);
             if (match && match[1]) {
-                return decodeURIComponent(match[1]);
+                clean = decodeURIComponent(match[1]).trim();
+            } else {
+                break;
             }
-        } catch (e) {}
+        } catch (e) {
+            break;
+        }
     }
     return clean;
 }
@@ -97,19 +101,20 @@ function getDisplayMediaUrl(url, site, mediaType) {
     return clean;
 }
 
-// 크롭 에디터 로드 헬퍼 (로컬 이미지 서버 주소는 다이렉트 로드)
-function getSameOriginProxyUrl(url) {
+// 크롭 에디터 로드 헬퍼 (중첩 프록시를 완전히 벗겨낸 후 순수 원본 URL에 대해 프록시 생성)
+function getSameOriginProxyUrl(url, site) {
     if (!url) return '';
-    var cleanUrl = String(url).trim();
-    if (isLocalServerMediaUrl(cleanUrl)) {
-        return cleanUrl;
+    var rawUrl = getCleanSourceUrl(String(url));
+    if (isLocalServerMediaUrl(rawUrl)) {
+        return rawUrl;
     }
-    if (cleanUrl.indexOf('http://') === 0 || cleanUrl.indexOf('https://') === 0) {
+    if (rawUrl.indexOf('http://') === 0 || rawUrl.indexOf('https://') === 0) {
         var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1);
         var routePath = isUncen ? 'jav_image_un' : 'jav_image';
-        return '/' + package_name + '/normal/' + routePath + '?url=' + encodeURIComponent(cleanUrl) + '&mode=';
+        var siteParam = site ? ('&site=' + encodeURIComponent(site)) : '';
+        return '/' + package_name + '/normal/' + routePath + '?url=' + encodeURIComponent(rawUrl) + siteParam + '&mode=';
     }
-    return cleanUrl;
+    return rawUrl;
 }
 
 // FlaskFarm AJAX 명령 단일 라우팅 제어 함수
@@ -3808,8 +3813,8 @@ $(document).off('click', '.btn_crop_modal').on('click', '.btn_crop_modal', funct
 
     var raw_p = row.poster_url || (jd.original && jd.original.thumb ? jd.original.thumb.poster : '') || '';
 
-    var plUrl = getSameOriginProxyUrl(raw_pl);
-    var pUrl = getSameOriginProxyUrl(raw_p);
+    var plUrl = getSameOriginProxyUrl(raw_pl, row.site);
+    var pUrl = getSameOriginProxyUrl(raw_p, row.site);
 
     openCropModal({
         target: 'meta',
@@ -3847,8 +3852,9 @@ $(document).on('click', '.btn_modal_crop', function(e){
 
     var raw_p = $modal.find('#edit_poster_url_final').val() || row.poster_url || (jd.original && jd.original.thumb ? jd.original.thumb.poster : '') || '';
 
-    var plUrl = getSameOriginProxyUrl(raw_pl);
-    var pUrl = getSameOriginProxyUrl(raw_p);
+    var currentSite = row.site || $modal.find('#edit_site').val() || '';
+    var plUrl = getSameOriginProxyUrl(raw_pl, currentSite);
+    var pUrl = getSameOriginProxyUrl(raw_p, currentSite);
 
     openCropModal({
         target: 'meta',
