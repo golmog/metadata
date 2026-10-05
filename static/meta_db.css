@@ -465,3 +465,26 @@
     transform: translateX(100%);
   }
 }
+
+/* 배우 추가 모달 썸네일 마우스 오버 플로팅 프리뷰 */
+#actor_hover_preview {
+  position: fixed;
+  z-index: 1090;
+  display: none;
+  pointer-events: none;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.85);
+  width: 180px;
+  height: 240px;
+}
+
+#actor_hover_preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+  display: block;
+}

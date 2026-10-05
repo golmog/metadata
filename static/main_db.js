@@ -741,6 +741,7 @@ function injectDbModals() {
 
                   <div class="d-flex align-items-center flex-nowrap">
                     <button type="button" class="btn btn-sm btn-outline-info font-weight-bold py-1 mr-1" id="btn_toggle_crop_url" title="이미지 웹 주소 입력">🔗 URL 로드</button>
+                    <button type="button" class="btn btn-sm btn-warning font-weight-bold py-1 mr-1" id="btn_direct_save_user" style="display: none;" title="현재 로드된 이미지를 크롭 없이 직접 저장합니다."><span id="text_direct_save_user">💾 _pl_user 저장</span></button>
                     <label class="btn btn-sm btn-outline-success mb-0 font-weight-bold py-1 mr-1" id="lbl_upload_pl" style="cursor: pointer;" title="가로 커버 업로드"><span>📁 가로(PL)</span><input type="file" id="input_upload_pl" accept="image/*" style="display: none;"></label>
                     <label class="btn btn-sm btn-success mb-0 font-weight-bold py-1" id="lbl_upload_p" style="cursor: pointer;" title="세로 포스터 업로드"><span>🖼️ 세로(P)</span><input type="file" id="input_upload_p" accept="image/*" style="display: none;"></label>
                     <label class="btn btn-sm btn-success mb-0 font-weight-bold py-1" id="lbl_upload_person" style="cursor: pointer; display: none;" title="프로필 사진 업로드"><span>🖼️ 사진 업로드</span><input type="file" id="input_upload_person" accept="image/*" style="display: none;"></label>
@@ -3291,6 +3292,46 @@ $(document).on('shown.bs.modal', '#actorSearchModal', function() {
     $('#actor_search_kw').trigger('focus').select();
 });
 
+$(document).on('mouseenter', '.actor-search-thumb-hover', function() {
+    var src = $(this).attr('data-src') || $(this).attr('src');
+    if (!src) return;
+
+    var $preview = $('#actor_hover_preview');
+    if ($preview.length === 0) {
+        $('body').append('<div id="actor_hover_preview"><img src="" alt="Actor Preview"></div>');
+        $preview = $('#actor_hover_preview');
+    }
+
+    $preview.find('img').attr('src', src);
+
+    var rect = this.getBoundingClientRect();
+    var previewW = 180;
+    var previewH = 240;
+    var left = rect.right + 12;
+    if (left + previewW > window.innerWidth - 12) {
+        left = rect.left - previewW - 12;
+    }
+
+    var top = rect.top - 20;
+    top = Math.max(12, Math.min(window.innerHeight - previewH - 12, top));
+
+    $preview.css({
+        top: top + 'px',
+        left: left + 'px'
+    }).stop(true, true).fadeIn(120);
+});
+
+$(document).on('mouseleave', '.actor-search-thumb-hover', function() {
+    $('#actor_hover_preview').stop(true, true).fadeOut(100);
+});
+
+$(document).on('scroll', '#actorSearchModal .table-responsive', function() {
+    $('#actor_hover_preview').hide();
+});
+$(document).on('hidden.bs.modal', '#actorSearchModal', function() {
+    $('#actor_hover_preview').hide();
+});
+
 $(document).on('keydown', '#actor_search_kw', function(e){
     if (e.key === 'Enter') {
         e.preventDefault();
@@ -3376,7 +3417,7 @@ function render_sorted_actor_search_results() {
     for (var i = 0; i < list.length; i++) {
         var a = list[i];
         var img_tag = a.thumb
-            ? '<img src="' + a.thumb + '" class="enlarge-person-photo shadow-sm rounded" data-src="' + a.thumb + '" style="height: 60px; width: 60px; object-fit: cover; cursor: zoom-in;" title="클릭하여 크게 보기">'
+            ? '<img src="' + a.thumb + '" class="enlarge-person-photo shadow-sm rounded actor-search-thumb-hover" data-src="' + a.thumb + '" style="height: 60px; width: 60px; object-fit: cover; cursor: zoom-in;" title="클릭하여 크게 보기">'
             : '<div class="d-flex align-items-center justify-content-center rounded text-muted small" style="height: 60px; width: 60px; background: #2b3035;">No Img</div>';
 
         var code_badge = a.person_idx ? '<span class="badge badge-info mr-1">' + a.person_idx + '</span>' : '';
@@ -3658,8 +3699,10 @@ function openCropModal(opts) {
     current_crop_target_type = opts.target || 'meta';
     custom_upload_payload = null;
 
+    current_loaded_temp_path = null;
     $('#crop_url_bar').hide();
     $('#input_crop_url').val('');
+    $('#btn_direct_save_user').hide();
 
     var defaultRatio = 1 / 1.4225;
 
@@ -3703,6 +3746,7 @@ function openCropModal(opts) {
     modal_p_url = opts.p_url || '';
     active_source_type = modal_pl_url ? 'pl' : (modal_p_url ? 'p' : 'pl');
 
+    $('#text_direct_save_user').text(active_source_type === 'p' ? '💾 _p_user 저장' : '💾 _pl_user 저장');
     $('#btn_source_pl').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
     $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
 
@@ -4029,19 +4073,19 @@ $(document).on('click', '#btn_crop_reset', function(){
 });
 
 $(document).on('click', '#btn_source_pl', function(){
-    if (!modal_pl_url) { if (typeof notify === 'function') notify('가로 커버(PL) 이미지가 없습니다.', 'warning'); return; }
     active_source_type = 'pl';
     $(this).removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
     $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
-    if (cropperInstance) cropperInstance.replace(modal_pl_url);
+    $('#text_direct_save_user').text('💾 _pl_user 저장');
+    if (modal_pl_url && cropperInstance) cropperInstance.replace(modal_pl_url);
 });
 
 $(document).on('click', '#btn_source_p', function(){
-    if (!modal_p_url) { if (typeof notify === 'function') notify('세로 포스터(P) 이미지가 없습니다.', 'warning'); return; }
     active_source_type = 'p';
     $(this).removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
     $('#btn_source_pl').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
-    if (cropperInstance) cropperInstance.replace(modal_p_url);
+    $('#text_direct_save_user').text('💾 _p_user 저장');
+    if (modal_p_url && cropperInstance) cropperInstance.replace(modal_p_url);
 });
 
 $(document).on('click', '#btn_toggle_crop_url', function(e){
@@ -4064,9 +4108,11 @@ function applyDirectCropUrl() {
         if (typeof notify === 'function') notify('불러올 이미지 URL을 입력하세요.', 'warning');
         return;
     }
-    var proxyUrl = getSameOriginProxyUrl(rawUrl);
-    custom_upload_payload = JSON.stringify({ type: 'url', url: rawUrl });
-    
+
+    var currentSite = get_list_context().type === 'person' ? '' : ($('#edit_site').val() || '');
+    var proxyUrl = getSameOriginProxyUrl(rawUrl, currentSite);
+    custom_upload_payload = JSON.stringify({ type: active_source_type, crop_url: rawUrl });
+
     var imageElement = document.getElementById('cropper_image');
     var targetRatio = (current_crop_target_type === 'person') ? (3 / 4) : (1 / 1.4225);
 
@@ -4090,8 +4136,116 @@ function applyDirectCropUrl() {
     }
 
     $('#crop_url_bar').slideUp(120);
-    if (typeof notify === 'function') notify('URL 이미지를 불러왔습니다.', 'info');
+    if (current_crop_target_type === 'meta') {
+        $('#btn_direct_save_user').show();
+        var labelText = (active_source_type === 'p') ? '💾 _p_user 저장' : '💾 _pl_user 저장';
+        $('#text_direct_save_user').text(labelText);
+    }
+
+    if (typeof notify === 'function') notify('URL 이미지를 성공적으로 불러왔습니다.', 'info');
 }
+
+$(document).on('click', '#btn_direct_save_user', function(e){
+    e.preventDefault();
+    var code = $('#crop_target_code').val();
+    var targetType = active_source_type === 'p' ? 'p' : 'pl';
+    var targetLabel = targetType === 'p' ? '_p_user' : '_pl_user';
+
+    var sourceVal = $('#input_crop_url').val().trim();
+    var b64Data = null;
+
+    if (custom_upload_payload) {
+        try {
+            var parsedPayload = JSON.parse(custom_upload_payload);
+            if (parsedPayload.data) {
+                b64Data = parsedPayload.data;
+            } else if (parsedPayload.crop_url) {
+                sourceVal = parsedPayload.crop_url;
+            }
+        } catch (e_payload) {}
+    }
+
+    if (!code || (!sourceVal && !b64Data)) {
+        if (typeof notify === 'function') notify('저장할 소스 이미지 정보가 없습니다.', 'warning');
+        return;
+    }
+
+    if (!confirm("현재 로드된 원본 이미지를 크롭 없이 [" + targetLabel + "] 파일로 직접 저장하시겠습니까?")) {
+        return;
+    }
+
+    var $btn = $(this);
+    var origHtml = $btn.html();
+    $btn.prop('disabled', true).html('<span>저장 중...</span>');
+
+    var context = get_list_context();
+    var postData = {
+        code: code,
+        type: targetType,
+        url: sourceVal,
+        data: b64Data,
+        category: context.category
+    };
+
+    globalSendCommand('crop_direct_save', code, sourceVal, targetType, function(ret){
+        $btn.prop('disabled', false).html(origHtml);
+        if (ret && ret.ret === 'success') {
+            var newUrl = ret.new_url || (ret.data && ret.data.new_url);
+            var cacheBustedUrl = newUrl + (newUrl.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
+
+            if (typeof notify === 'function') notify(targetLabel + ' 이미지가 성공적으로 저장되었습니다.', 'success');
+
+            if (targetType === 'pl') {
+                modal_pl_url = cacheBustedUrl;
+                active_source_type = 'pl';
+                $('#btn_source_pl').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+                $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+                $('#text_direct_save_user').text('💾 _pl_user 저장');
+            } else {
+                modal_p_url = cacheBustedUrl;
+                active_source_type = 'p';
+                $('#btn_source_p').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+                $('#btn_source_pl').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+                $('#text_direct_save_user').text('💾 _p_user 저장');
+            }
+
+            if (cropperInstance) {
+                cropperInstance.replace(cacheBustedUrl);
+            } else {
+                var imageElement = document.getElementById('cropper_image');
+                imageElement.src = cacheBustedUrl;
+                var targetRatio = (current_crop_target_type === 'person') ? (3 / 4) : (1 / 1.4225);
+                cropperInstance = new Cropper(imageElement, {
+                    aspectRatio: targetRatio,
+                    viewMode: 1,
+                    dragMode: 'move',
+                    autoCropArea: 1.0,
+                    responsive: true,
+                    restore: false,
+                    checkCrossOrigin: false,
+                    zoomable: true,
+                    rotatable: true,
+                    scalable: true,
+                    wheelZoomRatio: 0.08
+                });
+            }
+
+            $('#crop_url_bar').slideUp(120);
+            $('#input_crop_url').val('');
+            custom_upload_payload = null;
+
+            var $dbModal = $('#dbEditModal');
+            if ($dbModal.hasClass('show') && ($dbModal.find('#edit_code').val() === code)) {
+                reloadDbEditModalData(code, null, $dbModal);
+            }
+            window.globalRequestSearch(null, true);
+
+        } else {
+            var errMsg = (ret && ret.msg) ? ret.msg : '저장 실패';
+            if (typeof notify === 'function') notify(errMsg, 'warning');
+        }
+    }, postData);
+});
 
 $(document).on('click', '#btn_apply_crop_url', function(e){
     e.preventDefault();
@@ -4114,7 +4268,33 @@ $(document).on('change', '#input_upload_pl', function(e){
         var reader = new FileReader();
         reader.onload = function(evt){
             custom_upload_payload = JSON.stringify({ type: 'pl', data: evt.target.result });
-            if (cropperInstance) cropperInstance.replace(evt.target.result);
+            var imageElement = document.getElementById('cropper_image');
+            active_source_type = 'pl';
+            $('#btn_source_pl').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+            $('#btn_source_p').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+
+            if (cropperInstance) {
+                cropperInstance.replace(evt.target.result);
+            } else {
+                imageElement.src = evt.target.result;
+                cropperInstance = new Cropper(imageElement, {
+                    aspectRatio: 1 / 1.4225,
+                    viewMode: 1,
+                    dragMode: 'move',
+                    autoCropArea: 1.0,
+                    responsive: true,
+                    restore: false,
+                    checkCrossOrigin: false,
+                    zoomable: true,
+                    rotatable: true,
+                    scalable: true,
+                    wheelZoomRatio: 0.08
+                });
+            }
+
+            $('#btn_direct_save_user').show();
+            $('#text_direct_save_user').text('💾 _pl_user 저장');
+            $('#crop_url_bar').slideUp(120);
         };
         reader.readAsDataURL(files[0]);
     }
@@ -4126,7 +4306,33 @@ $(document).on('change', '#input_upload_p', function(e){
         var reader = new FileReader();
         reader.onload = function(evt){
             custom_upload_payload = JSON.stringify({ type: 'p', data: evt.target.result });
-            if (cropperInstance) cropperInstance.replace(evt.target.result);
+            var imageElement = document.getElementById('cropper_image');
+            active_source_type = 'p';
+            $('#btn_source_p').removeClass('btn-outline-light').addClass('btn-primary font-weight-bold');
+            $('#btn_source_pl').removeClass('btn-primary font-weight-bold').addClass('btn-outline-light');
+
+            if (cropperInstance) {
+                cropperInstance.replace(evt.target.result);
+            } else {
+                imageElement.src = evt.target.result;
+                cropperInstance = new Cropper(imageElement, {
+                    aspectRatio: 1 / 1.4225,
+                    viewMode: 1,
+                    dragMode: 'move',
+                    autoCropArea: 1.0,
+                    responsive: true,
+                    restore: false,
+                    checkCrossOrigin: false,
+                    zoomable: true,
+                    rotatable: true,
+                    scalable: true,
+                    wheelZoomRatio: 0.08
+                });
+            }
+
+            $('#btn_direct_save_user').show();
+            $('#text_direct_save_user').text('💾 _p_user 저장');
+            $('#crop_url_bar').slideUp(120);
         };
         reader.readAsDataURL(files[0]);
     }
@@ -4223,7 +4429,27 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     cropData.source_type = active_source_type;
     cropJson = JSON.stringify(cropData);
 
-    globalSendCommand('crop_save', code, cropJson, uploadPayload, function(ret){
+    var metaPayload = {
+        type: active_source_type,
+        crop_url: $('#input_crop_url').val().trim()
+    };
+
+    if (custom_upload_payload) {
+        try {
+            var parsedCustom = JSON.parse(custom_upload_payload);
+            if (parsedCustom.data) {
+                if (active_source_type === 'p') metaPayload.p_base64 = parsedCustom.data;
+                else metaPayload.pl_base64 = parsedCustom.data;
+            }
+            if (parsedCustom.crop_url) {
+                metaPayload.crop_url = parsedCustom.crop_url;
+            }
+        } catch (e_p) {}
+    }
+
+    var uploadPayloadStr = JSON.stringify(metaPayload);
+
+    globalSendCommand('crop_save', code, cropJson, uploadPayloadStr, function(ret){
         btn.prop('disabled', false).text(origText);
         if (ret && ret.ret === 'success') {
             if (typeof notify === 'function') notify(ret.msg || '포스터 저장 완료', 'success');

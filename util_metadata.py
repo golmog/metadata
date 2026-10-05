@@ -97,6 +97,7 @@ class MetaImageUtil:
             # 2. 소스 이미지 타입 및 원본 데이터 로드
             src_img = None
             source_type = 'pl'
+            crop_info_tmp = None
 
             try:
                 if isinstance(crop_data_or_base64, str) and crop_data_or_base64.startswith('{'):
@@ -106,12 +107,12 @@ class MetaImageUtil:
             except:
                 pass
 
-            # (Case 1) 사용자가 세로 포스터(P)를 직접 업로드한 경우
+            # 사용자가 세로 포스터(P)를 직접 업로드한 경우
             if p_image_base64_data:
                 raw_b64 = p_image_base64_data.split(',', 1)[1] if ',' in p_image_base64_data else p_image_base64_data
                 src_img = Image.open(BytesIO(base64.b64decode(raw_b64)))
 
-            # (Case 2) 사용자가 가로 커버(PL)를 직접 업로드한 경우
+            # 사용자가 가로 커버(PL)를 직접 업로드한 경우
             elif pl_image_base64_data:
                 raw_b64 = pl_image_base64_data.split(',', 1)[1] if ',' in pl_image_base64_data else pl_image_base64_data
                 src_img = Image.open(BytesIO(base64.b64decode(raw_b64)))
@@ -125,8 +126,19 @@ class MetaImageUtil:
                         try: os.remove(old_pl)
                         except: pass
 
-            # (Case 3) 소스가 세로 포스터(P)로 선택된 경우
-            elif source_type == 'p':
+            # 직접 입력된 원격 이미지 URL 소스 확인 (이미지 누락 항목 구출)
+            custom_url = None
+            if isinstance(crop_info_tmp, dict):
+                custom_url = crop_info_tmp.get('crop_url') or crop_info_tmp.get('url')
+
+            if src_img is None and custom_url and custom_url.startswith(('http://', 'https://')):
+                from support_site import SiteAvBase
+                src_img = SiteAvBase.imopen(custom_url)
+                if src_img is not None:
+                    logger.debug(f"[MetaImageUtil] 원격 직접 입력 URL에서 크롭 소스 획득 성공: {custom_url}")
+
+            # 소스가 세로 포스터(P)로 선택된 경우 로컬 파일 확인
+            if src_img is None and source_type == 'p':
                 for cand in [f"{stem}_p_user.jpg", f"{stem}_p.jpg", f"{stem}_p.png", f"{stem}_p.webp"]:
                     cp = os.path.join(target_folder, cand)
                     if os.path.exists(cp):
@@ -136,15 +148,15 @@ class MetaImageUtil:
                     from support_site import SiteAvBase
                     src_img = SiteAvBase.imopen(item.poster_url)
 
-            # (Case 4) 소스가 가로 커버(PL)인 경우 (기본값)
-            else:
+            # 소스가 가로 커버(PL)인 경우 로컬 파일 확인
+            elif src_img is None:
                 for cand in [f"{stem}_pl_user.jpg", f"{stem}_pl.jpg", f"{stem}_pl.png", f"{stem}_pl.webp"]:
                     cp = os.path.join(target_folder, cand)
                     if os.path.exists(cp):
                         src_img = Image.open(cp)
                         break
 
-            # (Case 5) 디스크에 없으면 원격 URL에서 로드
+            # 디스크에 없으면 DB에 기록된 메타 미디어 URL에서 로드
             if src_img is None:
                 target_url = None
                 if source_type == 'p':
@@ -232,6 +244,138 @@ class MetaImageUtil:
 
         except Exception as e:
             logger.error(f"[MetaImageUtil] save_user_cropped_poster 오류 ({code}): {e}")
+            logger.error(traceback.format_exc())
+            sess.rollback()
+            return False, str(e)
+        finally:
+            sess.remove()
+
+
+    @classmethod
+    def save_direct_user_image(cls, code, source_path_or_url=None, image_type='pl', category=None, image_base64_data=None):
+        """
+        URL, 로컬 파일 경로, 또는 Base64 데이터를 받아 크롭 없이 직접
+        _pl_user.jpg 또는 _p_user.jpg 파일로 저장하고 DB를 갱신합니다. (외부 툴 API 호환)
+        """
+        if not category:
+            logger.error(f"[MetaImageUtil] save_direct_user_image: category 누락. code='{code}'")
+            return False, '카테고리가 지정되지 않았습니다.'
+
+        from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia
+        from support_site import SiteAvBase
+        from sqlalchemy.orm.attributes import flag_modified
+
+        sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
+        if not sess:
+            return False, f"유효하지 않은 카테고리입니다: '{category}'"
+
+        try:
+            item = sess.query(MetaItem).filter_by(code=code).first()
+            if not item:
+                return False, f"해당 코드의 메타데이터를 찾을 수 없습니다: {code}"
+
+            if std_cat == 'WESTERN':
+                stem = (item.code or item.ui_code or '').lower()
+            else:
+                stem = (item.ui_code or item.originaltitle or item.code or '').lower()
+
+            studio = item.studio or ''
+            year = item.year or 1900
+
+            target_folder, server_url_prefix = cls.get_server_folder_and_prefix(
+                domain, std_cat, stem, studio=studio, year=year
+            )
+            if not target_folder or not server_url_prefix:
+                return False, '이미지 서버 로컬 경로 또는 URL 설정이 비어있습니다.'
+
+            os.makedirs(target_folder, exist_ok=True)
+
+            target_type = 'p' if str(image_type).lower() == 'p' else 'pl'
+            clean_source = str(source_path_or_url or '').strip()
+            src_img = None
+
+            # Base64 데이터 소스 확인
+            if image_base64_data:
+                try:
+                    raw_b64 = image_base64_data.split(',', 1)[1] if ',' in image_base64_data else image_base64_data
+                    src_img = Image.open(BytesIO(base64.b64decode(raw_b64)))
+                    logger.debug(f"[MetaImageUtil] save_direct_user_image: Base64 이미지 디코딩 로드 성공")
+                except Exception as e_b64:
+                    logger.warning(f"[MetaImageUtil] Base64 디코딩 실패: {e_b64}")
+
+            # 로컬 파일 경로 또는 원격 URL 소스 확인
+            if src_img is None and clean_source:
+                if os.path.exists(clean_source):
+                    src_img = Image.open(clean_source)
+                elif clean_source.startswith(('http://', 'https://')):
+                    src_img = SiteAvBase.imopen(clean_source)
+
+            if src_img is None:
+                return False, '저장할 원본 이미지를 로컬 또는 원격지에서 열 수 없습니다.'
+
+            target_filename = f"{stem}_{target_type}_user.jpg"
+            target_filepath = os.path.join(target_folder, target_filename)
+
+            cls.save_normalized_jpeg(src_img, target_filepath)
+            src_img.close()
+
+            # 기존 시스템 파일(_pl.jpg 또는 _p.jpg) 정리
+            for ext_cand in ['jpg', 'jpeg', 'png', 'webp']:
+                old_file = os.path.join(target_folder, f"{stem}_{target_type}.{ext_cand}")
+                if os.path.exists(old_file):
+                    try:
+                        os.remove(old_file)
+                    except Exception:
+                        pass
+
+            new_url = f"{server_url_prefix}/{target_filename}"
+
+            # DB MetaItem 갱신 및 original.thumb 원본 주소 보존
+            orig_dict = copy.deepcopy(item.original) if isinstance(item.original, dict) else {}
+            orig_thumb = orig_dict.get('thumb')
+            if not isinstance(orig_thumb, dict):
+                orig_thumb = {}
+
+            media_type_name = 'poster' if target_type == 'p' else 'landscape'
+
+            if target_type == 'p':
+                item.poster_url = new_url
+                if clean_source and clean_source.startswith(('http://', 'https://')) and not orig_thumb.get('poster'):
+                    orig_thumb['poster'] = clean_source
+            else:
+                if not item.poster_url:
+                    item.poster_url = new_url
+                if clean_source and clean_source.startswith(('http://', 'https://')) and not orig_thumb.get('landscape'):
+                    orig_thumb['landscape'] = clean_source
+
+            orig_dict['thumb'] = orig_thumb
+            item.original = orig_dict
+            flag_modified(item, 'original')
+
+            # MetaMedia 레코드 갱신
+            media_rec = next((m for m in item.media_files if m.media_type == media_type_name), None)
+            if media_rec:
+                media_rec.url = new_url
+                media_rec.is_user = True
+            else:
+                sort_idx = 0 if target_type == 'p' else 1
+                item.media_files.append(MetaMedia(media_type=media_type_name, url=new_url, is_user=True, sort_order=sort_idx))
+
+            item.updated_time = datetime.now()
+            sess.add(item)
+            sess.commit()
+            ModuleMetaDb.checkpoint_wal()
+
+            logger.info(f"[MetaImageUtil] 원본 이미지 직접 저장 및 DB 즉시 반영 완료: [{std_cat}] {item.code} ➔ {target_filename}")
+            return True, {
+                'new_url': new_url,
+                'target_type': target_type,
+                'code': item.code,
+                'poster_url': item.poster_url
+            }
+
+        except Exception as e:
+            logger.error(f"[MetaImageUtil] save_direct_user_image 오류 ({code}): {e}")
             logger.error(traceback.format_exc())
             sess.rollback()
             return False, str(e)
@@ -729,3 +873,43 @@ class MetaResponseUtil:
             res['fanart'] = []
 
         return res
+
+
+class MetaParserUtil:
+    """
+    파일 경로(media_path)로부터 검색용 키워드(품번/제목)를 추출하는 유틸리티
+    YAML 고급 설정의 파싱 룰(SiteAvBase._parse_ui_code)을 단일 소스로 연동하여 동작합니다.
+    """
+
+    @classmethod
+    def extract_keyword_from_path(cls, media_path, category='JAV_CEN'):
+        if not media_path or not isinstance(media_path, str):
+            return ""
+
+        clean_path = media_path.strip().replace('\\', '/')
+        filename = os.path.basename(clean_path)
+        if not filename:
+            return ""
+
+        cat_upper = str(category or 'JAV_CEN').upper()
+
+        # 서양 메타데이터: 원본 파일명 반환 (mod_western._clean_search_keyword의 정규식 규칙으로 정제)
+        if cat_upper in ['WESTERN', 'WEST']:
+            return os.path.splitext(filename)[0]
+
+        from support_site import SiteAvBase
+
+        # 파일명 자체로 YAML 기본 및 특수 파싱 룰 적용
+        ui_code, label, num = SiteAvBase._parse_ui_code(filename, category=cat_upper)
+        if ui_code and (num or '-' in ui_code):
+            return ui_code
+
+        # 접두사가 파일명이 아닌 상위 디렉터리명에 있는 경우 결합 재시도 (예: /1pondo/092121_001.mp4)
+        parent_dir = os.path.basename(os.path.dirname(clean_path))
+        if parent_dir:
+            combined_candidate = f"{parent_dir}-{filename}"
+            ui_code_comb, label_comb, num_comb = SiteAvBase._parse_ui_code(combined_candidate, category=cat_upper)
+            if ui_code_comb and (num_comb or '-' in ui_code_comb):
+                return ui_code_comb
+
+        return ui_code or os.path.splitext(filename)[0]

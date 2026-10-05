@@ -28,7 +28,7 @@ from sqlalchemy import event, inspect
 from .setup import *
 from support import SupportYaml
 from framework import db
-from .util_metadata import MetaImageUtil
+from .util_metadata import MetaImageUtil, MetaResponseUtil
 
 Base = declarative_base()
 
@@ -1277,13 +1277,20 @@ class ModuleMetaDb(PluginModuleBase):
                 final_name_en = (central_person.name_en if central_person else (actor_data.get('name_en') or ''))
                 final_gender = (central_person.extra_info.get('gender') if (central_person and central_person.extra_info) else None) or actor_data.get('gender') or ''
 
+                actor_extra = copy.deepcopy(actor_data.get('extra_info') or {})
+                if central_person and central_person.extra_info:
+                    for k_exp, v_exp in central_person.extra_info.items():
+                        if v_exp and not actor_extra.get(k_exp):
+                            actor_extra[k_exp] = v_exp
+
                 stored_actors.append({
                     'actor_idx': final_idx,
                     'name_org': final_name_org,
                     'name_ko': final_name_ko,
                     'name_en': final_name_en,
                     'gender': final_gender,
-                    'role': a_role
+                    'role': a_role,
+                    'extra_info': actor_extra
                 })
 
             if person_sess:
@@ -1759,6 +1766,107 @@ class ModuleMetaDb(PluginModuleBase):
 
 
     @classmethod
+    def get_metadata_batch(cls, category, codes, options=None):
+        """
+        요청된 복수의 코드(최대 100건)에 대해 단일 SQL 쿼리로 메타데이터를 일괄 조회하여
+        {요청코드: 메타데이터} 딕셔너리로 반환합니다.
+        """
+        if not codes:
+            return {}
+
+        cls.ensure_db_ready()
+
+        # 카테고리 명칭 정규화
+        cat_raw = str(category or '').strip().upper()
+        if cat_raw in ['JAV_CENSORED', 'JAV_CEN', 'CENSORED']:
+            target_cat = 'JAV_CEN'
+        elif cat_raw in ['JAV_UNCENSORED', 'JAV_UNCEN', 'UNCENSORED']:
+            target_cat = 'JAV_UNCEN'
+        elif cat_raw in ['WESTERN', 'WEST']:
+            target_cat = 'WESTERN'
+        elif cat_raw in DOMAIN_MAP:
+            target_cat = cat_raw
+        else:
+            target_cat = 'JAV_CEN'
+
+        sess, domain, std_cat = cls.get_session_and_domain(target_cat)
+        if not sess:
+            return {}
+
+        opts = dict(options or {})
+        max_batch_size = 100
+
+        try:
+            # 입력 코드 리스트 정제 및 최대 배치 크기 제한
+            if isinstance(codes, str):
+                try:
+                    parsed_codes = json.loads(codes)
+                    clean_codes = [str(c).strip() for c in parsed_codes if str(c).strip()] if isinstance(parsed_codes, list) else []
+                except Exception:
+                    clean_codes = [c.strip() for c in re.split(r'[\s,\n]+', codes) if c.strip()]
+            elif isinstance(codes, (list, set, tuple)):
+                clean_codes = [str(c).strip() for c in codes if str(c).strip()]
+            else:
+                clean_codes = []
+
+            if not clean_codes:
+                return {}
+
+            if len(clean_codes) > max_batch_size:
+                logger.debug(f"[MetaDB Batch Info] 요청된 코드 수({len(clean_codes)}건)가 최대 한도({max_batch_size}건)를 초과하여 상위 {max_batch_size}건만 처리합니다.")
+                clean_codes = clean_codes[:max_batch_size]
+
+            raw_code_set = set(clean_codes)
+            lower_code_set = {c.lower() for c in clean_codes}
+
+            # 인덱스 컬럼을 활용한 단일 고속 쿼리 실행
+            items = sess.query(MetaItem).filter(
+                MetaItem.category == std_cat,
+                or_(
+                    MetaItem.code.in_(raw_code_set),
+                    MetaItem.ui_code.in_(raw_code_set),
+                    MetaItem.originaltitle.in_(raw_code_set),
+                    func.lower(MetaItem.code).in_(lower_code_set),
+                    func.lower(MetaItem.ui_code).in_(lower_code_set),
+                    func.lower(MetaItem.originaltitle).in_(lower_code_set),
+                )
+            ).all()
+
+            # 매핑 색인 사전 구축 (대소문자 및 코드 변형 대응)
+            item_lookup = {}
+            for item in items:
+                entity_dict = cls.to_entity_dict(item)
+                final_data = MetaResponseUtil.finalize_info_return(entity_dict, extra_opts=opts, category=std_cat)
+
+                for key_variant in [item.code, item.ui_code, item.originaltitle]:
+                    if key_variant:
+                        item_lookup[key_variant] = final_data
+                        item_lookup[key_variant.lower()] = final_data
+                        item_lookup[key_variant.upper()] = final_data
+
+            # 원본 요청 코드 키를 보존하며 결과 딕셔너리 조립
+            result_dict = {}
+            for req_code in clean_codes:
+                matched_meta = (
+                    item_lookup.get(req_code) or
+                    item_lookup.get(req_code.lower()) or
+                    item_lookup.get(req_code.upper())
+                )
+                if matched_meta:
+                    result_dict[req_code] = matched_meta
+
+            logger.debug(f"[MetaDB Batch Info] [{std_cat}] 대량 조회 완료: 요청 {len(clean_codes)}건 중 {len(result_dict)}건 검색 성공")
+            return result_dict
+
+        except Exception as e:
+            logger.error(f"[MetaDB Batch Info] 오류 발생 ({std_cat}): {e}")
+            logger.error(traceback.format_exc())
+            return {}
+        finally:
+            sess.remove()
+
+
+    @classmethod
     def to_entity_dict(cls, item, for_list=False):
         include_original = P.ModelSetting.get_bool("meta_db_include_original")
 
@@ -1825,31 +1933,34 @@ class ModuleMetaDb(PluginModuleBase):
         p_is_local = False
         pl_is_local = False
 
-        # 목록 렌더링 시에는 과도한 디스크 스캔을 건너뛰고 DB에 저장된 주소를 즉시 활용
-        if not for_list and current_image_mode == 'image_server' and target_folder and server_url_prefix and os.path.exists(target_folder):
-            files_in_folder = {f.lower(): f for f in os.listdir(target_folder)}
-            exts = ['jpg', 'jpeg', 'png', 'webp']
+        # 이미지 서버 모드 시 디스크 파일을 확인하여 서버 포스터, 랜드스케이프, 팬아트 주소 조립
+        if current_image_mode == 'image_server' and target_folder and server_url_prefix and os.path.exists(target_folder):
+            try:
+                files_in_folder = {f.lower(): f for f in os.listdir(target_folder)}
+                exts = ['jpg', 'jpeg', 'png', 'webp']
 
-            user_p = next((files_in_folder[f"{stem}_p_user.{e}"] for e in exts if f"{stem}_p_user.{e}" in files_in_folder), None)
-            sys_p = next((files_in_folder[f"{stem}_p.{e}"] for e in exts if f"{stem}_p.{e}" in files_in_folder), None)
-            if user_p:
-                resolved_p_url = f"{server_url_prefix}/{user_p}"
-                p_is_local = True
-            elif sys_p:
-                resolved_p_url = f"{server_url_prefix}/{sys_p}"
-                p_is_local = True
+                user_p = next((files_in_folder[f"{stem}_p_user.{e}"] for e in exts if f"{stem}_p_user.{e}" in files_in_folder), None)
+                sys_p = next((files_in_folder[f"{stem}_p.{e}"] for e in exts if f"{stem}_p.{e}" in files_in_folder), None)
+                if user_p:
+                    resolved_p_url = f"{server_url_prefix}/{user_p}"
+                    p_is_local = True
+                elif sys_p:
+                    resolved_p_url = f"{server_url_prefix}/{sys_p}"
+                    p_is_local = True
 
-            user_pl = next((files_in_folder[f"{stem}_pl_user.{e}"] for e in exts if f"{stem}_pl_user.{e}" in files_in_folder), None)
-            sys_pl = next((files_in_folder[f"{stem}_pl.{e}"] for e in exts if f"{stem}_pl.{e}" in files_in_folder), None)
-            if user_pl:
-                resolved_pl_url = f"{server_url_prefix}/{user_pl}"
-                pl_is_local = True
-            elif sys_pl:
-                resolved_pl_url = f"{server_url_prefix}/{sys_pl}"
-                pl_is_local = True
+                user_pl = next((files_in_folder[f"{stem}_pl_user.{e}"] for e in exts if f"{stem}_pl_user.{e}" in files_in_folder), None)
+                sys_pl = next((files_in_folder[f"{stem}_pl.{e}"] for e in exts if f"{stem}_pl.{e}" in files_in_folder), None)
+                if user_pl:
+                    resolved_pl_url = f"{server_url_prefix}/{user_pl}"
+                    pl_is_local = True
+                elif sys_pl:
+                    resolved_pl_url = f"{server_url_prefix}/{sys_pl}"
+                    pl_is_local = True
 
-            art_files = sorted([files_in_folder[f] for f in files_in_folder if f.startswith(f"{stem}_art_")])
-            resolved_fanarts = [f"{server_url_prefix}/{af}" for af in art_files]
+                art_files = sorted([files_in_folder[f] for f in files_in_folder if f.startswith(f"{stem}_art_")])
+                resolved_fanarts = [f"{server_url_prefix}/{af}" for af in art_files]
+            except Exception as e_scan:
+                logger.debug(f"[MetaDB] 이미지 서버 디스크 파일 스캔 예외: {e_scan}")
 
         if not resolved_p_url:
             resolved_p_url = item.poster_url or raw_orig_thumb.get('poster') or ""
@@ -1971,7 +2082,8 @@ class ModuleMetaDb(PluginModuleBase):
                         'thumb': a_entry.get('thumb') or '',
                         'actor_idx': a_entry.get('actor_idx') or a_entry.get('person_idx') or '',
                         'gender': a_entry.get('gender') or '',
-                        'role': a_entry.get('role') or '출연'
+                        'role': a_entry.get('role') or '출연',
+                        'extra_info': a_entry.get('extra_info') or {}
                     })
             else:
                 person_sess, _, _ = cls.get_session_and_domain('PERSON')
@@ -1996,6 +2108,12 @@ class ModuleMetaDb(PluginModuleBase):
                             p_gender = (p_rec.extra_info.get('gender') if (p_rec and p_rec.extra_info) else '') or a_entry.get('gender') or ''
                             display_name = (p_rec.name_ko or p_rec.name_org or '') if p_rec else (a_name_ko or a_name_org or '')
 
+                            actor_extra_out = copy.deepcopy(a_entry.get('extra_info') or {})
+                            if p_rec and p_rec.extra_info:
+                                for k_p, v_p in p_rec.extra_info.items():
+                                    if v_p and not actor_extra_out.get(k_p):
+                                        actor_extra_out[k_p] = v_p
+
                             if p_rec:
                                 d['actor'].append({
                                     'name': display_name,
@@ -2005,7 +2123,8 @@ class ModuleMetaDb(PluginModuleBase):
                                     'thumb': cls.resolve_person_active_thumb(p_rec),
                                     'actor_idx': p_rec.person_idx or '',
                                     'gender': p_gender,
-                                    'role': role_name
+                                    'role': role_name,
+                                    'extra_info': actor_extra_out
                                 })
                             else:
                                 d['actor'].append({
@@ -2016,7 +2135,8 @@ class ModuleMetaDb(PluginModuleBase):
                                     'thumb': a_entry.get('thumb') or '',
                                     'actor_idx': a_idx,
                                     'gender': p_gender,
-                                    'role': role_name
+                                    'role': role_name,
+                                    'extra_info': actor_extra_out
                                 })
                     finally:
                         person_sess.remove()
@@ -2245,7 +2365,13 @@ class ModuleMetaDb(PluginModuleBase):
         for cat_k, codes_set in all_work_codes_by_cat.items():
             if not codes_set:
                 continue
-            item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(DOMAIN_MAP[cat_k][0])
+
+            cat_upper = str(cat_k).strip().upper()
+            norm_cat = 'WESTERN' if cat_upper in ['WEST', 'WESTERN'] else ('JAV_UNCEN' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else ('JAV_CEN' if cat_upper in ['JAV_CEN', 'CENSORED'] else cat_upper))
+            if norm_cat not in DOMAIN_MAP:
+                continue
+            dom_name = DOMAIN_MAP[norm_cat][0]
+            item_engine = cls._engines.get('postgres') if cls._is_postgres else cls._engines.get(dom_name)
             if item_engine:
                 work_query_session = sessionmaker(bind=item_engine, autocommit=False, autoflush=False, expire_on_commit=False)()
                 try:
@@ -2258,7 +2384,7 @@ class ModuleMetaDb(PluginModuleBase):
                         MetaItem.year,
                         MetaItem.premiered
                     ).filter(
-                        MetaItem.category == cat_k,
+                        MetaItem.category == norm_cat,
                         or_(
                             MetaItem.code.in_(codes_list),
                             MetaItem.ui_code.in_(codes_list),
@@ -2959,13 +3085,14 @@ class ModuleMetaDb(PluginModuleBase):
             }
 
             img_srv_key = "western_image_server_url" if search_domain == "WESTERN" else "jav_censored_image_server_url"
-            server_url_val = (P.ModelSetting.get(img_srv_key) or P.ModelSetting.get("jav_censored_image_server_url") or "").rstrip('/')
+            master_image_server_url = (P.ModelSetting.get(img_srv_key) or P.ModelSetting.get("jav_censored_image_server_url") or "").rstrip('/')
 
             return {
                 'success': True,
                 'paging': paging,
                 'list': item_list,
-                'image_server_url': server_url_val
+                'meta_db_use_ff_proxy': P.ModelSetting.get_bool("meta_db_use_ff_proxy"),
+                'image_server_url': master_image_server_url
             }
 
         except Exception as e:
@@ -3493,8 +3620,23 @@ class ModuleMetaDb(PluginModuleBase):
                     MetaItem.poster_url.ilike('%_pl.png'),
                     MetaItem.poster_url.ilike('%_pl.webp')
                 ))
+
             elif search_status == 'no_plot':
                 filter_conditions.append(or_(MetaItem.plot == '', MetaItem.plot == None))
+
+            elif search_status == 'no_actor':
+                filter_conditions.append(and_(
+                    ~MetaItem.person_maps.any(),
+                    or_(
+                        MetaItem.extra_info == None,
+                        cast(MetaItem.extra_info, Text) == '{}',
+                        and_(
+                            ~cast(MetaItem.extra_info, Text).ilike('%name_org%'),
+                            ~cast(MetaItem.extra_info, Text).ilike('%name_ko%')
+                        )
+                    )
+                ))
+
             elif search_status == 'complete':
                 filter_conditions.append(and_(
                     MetaItem.poster_url != '',
@@ -4864,6 +5006,77 @@ class ModuleMetaDb(PluginModuleBase):
                 success = self.person_delete(arg1)
                 return jsonify({'ret': 'success' if success else 'error'})
 
+            elif command in ["crop_save", "db_crop_save"]:
+                code = arg1
+                crop_data = arg2
+                upload_payload = arg3
+                pl_base64, p_base64 = None, None
+
+                if upload_payload:
+                    try:
+                        p_json = json.loads(upload_payload)
+                        if isinstance(p_json, dict):
+                            if p_json.get('type') == 'p': p_base64 = p_json.get('data')
+                            elif p_json.get('type') == 'pl': pl_base64 = p_json.get('data')
+                    except Exception:
+                        pl_base64 = upload_payload
+
+                target_cat = req.form.get('category') or getattr(self, 'category', 'JAV_CEN')
+                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=target_cat
+                )
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
+
+            elif command == "crop_url_download":
+                target_url = (arg1 or '').strip()
+                code = (arg2 or '').strip()
+                target_cat = (arg3 or getattr(self, 'category', 'JAV_CEN')).strip().upper()
+                source_type = req.form.get('source_type') or 'pl'
+
+                if not target_url:
+                    return jsonify({'ret': 'error', 'msg': '다운로드할 이미지 URL이 없습니다.'})
+
+                from support_site import SiteAvBase
+                im = SiteAvBase.imopen(target_url)
+                if im is None:
+                    return jsonify({'ret': 'error', 'msg': '원격 서버에서 이미지를 다운로드하지 못했습니다.'})
+
+                tmp_dir = os.path.join(path_data, 'tmp')
+                os.makedirs(tmp_dir, exist_ok=True)
+                clean_code = re.sub(r'[^\w-]', '_', code or 'temp')
+                temp_filename = f"temp_crop_{int(time.time())}_{clean_code}_{source_type}.jpg"
+                temp_filepath = os.path.join(tmp_dir, temp_filename)
+
+                try:
+                    MetaImageUtil.save_normalized_jpeg(im, temp_filepath)
+                    im.close()
+                except Exception as e_save_tmp:
+                    return jsonify({'ret': 'error', 'msg': f'임시 파일 저장 실패: {e_save_tmp}'})
+
+                ddns_host = F.SystemModelSetting.get('ddns') or ''
+                is_uncen = (target_cat == 'JAV_UNCEN')
+                route_path = 'jav_image_un' if is_uncen else 'jav_image'
+                display_url = f"{ddns_host}/metadata/normal/{route_path}?site=system&path={quote(temp_filepath)}"
+
+                logger.info(f"[MetaDB] 크롭용 URL 이미지 임시 다운로드 완료: {temp_filepath}")
+                return jsonify({
+                    'ret': 'success',
+                    'filepath': temp_filepath,
+                    'display_url': display_url,
+                    'url': target_url
+                })
+
+            elif command == "crop_direct_save":
+                code = arg1
+                source_val = arg2
+                target_type = arg3 or 'pl'
+                target_cat = req.form.get('category') or getattr(self, 'category', 'JAV_CEN')
+
+                success, result_msg = MetaImageUtil.save_direct_user_image(
+                    code, source_val, image_type=target_type, category=target_cat
+                )
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
+
             elif command == 'db_delete_selected':
                 target_cat = arg2 or getattr(self, 'category', 'JAV_CEN')
                 success, count = self.delete_records(arg1, category=target_cat)
@@ -5042,6 +5255,18 @@ class ModuleMetaDb(PluginModuleBase):
                 success, count = self.person_clear_db(domain)
                 msg = f"인물 DB 초기화 완료: {count}건 삭제됨 ({domain})" if success else "인물 DB 초기화 실패"
                 return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+
+            elif command in ['info_batch', 'batch_info']:
+                category = arg1 or 'JAV_CEN'
+                raw_codes = arg2
+                options = json.loads(arg3) if (arg3 and str(arg3).startswith('{')) else {}
+                batch_result = self.get_metadata_batch(category, raw_codes, options=options)
+                return jsonify({
+                    'ret': 'success',
+                    'category': category,
+                    'total_found': len(batch_result),
+                    'data': batch_result
+                })
 
             elif command == 'person_sync_jav_actors':
                 success, msg = self.sync_jav_actors_db()
@@ -5407,6 +5632,42 @@ class ModuleMetaDb(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
+            # 대량 메타데이터 일괄 조회 API (info_batch / batch_info)
+            if sub in ["info_batch", "batch_info"]:
+                body_json = req.get_json(silent=True) if req.is_json else {}
+                if not isinstance(body_json, dict):
+                    body_json = {}
+
+                category = (
+                    body_json.get("category") or
+                    req.values.get("category") or
+                    req.values.get("cat") or
+                    "JAV_CEN"
+                )
+
+                raw_codes = (
+                    body_json.get("codes") or
+                    req.values.get("codes") or
+                    body_json.get("code") or
+                    req.values.get("code")
+                )
+
+                if not raw_codes:
+                    return jsonify({'ret': 'error', 'msg': '조회할 코드 목록(codes)이 전달되지 않았습니다.'}), 400
+
+                options = body_json.get("options") or {}
+                batch_result = self.get_metadata_batch(category, raw_codes, options=options)
+
+                req_count = len(raw_codes) if isinstance(raw_codes, list) else len(re.split(r'[\s,\n]+', str(raw_codes).strip()))
+
+                return jsonify({
+                    'ret': 'success',
+                    'category': category,
+                    'total_requested': req_count,
+                    'total_found': len(batch_result),
+                    'data': batch_result
+                }), 200
+
             if sub in ["make_preview_clip", "delete_preview_clip"]:
                 meta_module = P.get_module('meta_db')
                 if not meta_module:
