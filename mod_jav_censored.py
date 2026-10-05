@@ -30,7 +30,7 @@ from .setup import *
 from support import SupportYaml
 
 from .mod_meta_db import ModuleMetaDb
-from .util_metadata import MetaImageUtil, MetaWorkerUtil, MetaResponseUtil
+from .util_metadata import MetaImageUtil, MetaWorkerUtil, MetaResponseUtil, MetaParserUtil
 
 
 class ModuleJavCensored(PluginModuleBase):
@@ -458,6 +458,30 @@ class ModuleJavCensored(PluginModuleBase):
                 success = ModuleMetaDb.vacuum_db()
                 return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB 최적화 완료' if success else '최적화 실패'})
 
+            elif command in ["crop_direct_save", "direct_save"]:
+                code = arg1
+                source_val = arg2 or req.form.get('url')
+                target_type = arg3 or req.form.get('type') or 'pl'
+                b64_data = req.form.get('data')
+
+                success, result_data = MetaImageUtil.save_direct_user_image(
+                    code=code,
+                    source_path_or_url=source_val,
+                    image_type=target_type,
+                    category=self.category,
+                    image_base64_data=b64_data
+                )
+                if success:
+                    new_url = result_data.get('new_url') if isinstance(result_data, dict) else result_data
+                    return jsonify({
+                        'ret': 'success',
+                        'msg': f"[{target_type.upper()}_USER] 이미지가 성공적으로 저장되었습니다.",
+                        'new_url': new_url,
+                        'data': result_data
+                    })
+                else:
+                    return jsonify({'ret': 'error', 'msg': str(result_data)})
+
             # --- 이미지/미디어만 재동기화 (번역 생략, 기존 텍스트 유지, _user 파일 보호) ---
             elif command == 'db_refresh_image_only':
                 code = arg1
@@ -779,11 +803,18 @@ class ModuleJavCensored(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
-            call = req.args.get("call", "")
-            if sub == "search" and call in ["plex", "kodi"]:
-                keyword = req.args.get("keyword").rstrip("-").strip()
-                manual = req.args.get("manual") == "True"
-                return jsonify(self.search(keyword, manual=manual))
+            call = req.values.get("call", "")
+            if sub == "search":
+                raw_keyword = req.values.get("keyword") or req.values.get("q") or ""
+                media_path = req.values.get("media_path") or req.values.get("path") or ""
+                keyword = str(raw_keyword).rstrip("-").strip()
+                if not keyword and media_path:
+                    from .util_metadata import MetaParserUtil
+                    keyword = MetaParserUtil.extract_keyword_from_path(media_path, category=self.category)
+                    logger.debug(f"[{self.name}] media_path 기반 키워드 자동 추출: '{keyword}' (경로: {media_path})")
+
+                manual = str(req.values.get("manual", "")).lower() in ["true", "1"]
+                return jsonify(self.search(keyword, manual=manual, media_path=media_path))
 
             if sub == "info":
                 code = req.args.get("code")
@@ -816,6 +847,34 @@ class ModuleJavCensored(PluginModuleBase):
                     code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
+
+            if sub in ["crop_direct_save", "direct_save"]:
+                if req.is_json:
+                    body_json = req.get_json(silent=True) or {}
+                    code = body_json.get("code")
+                    image_type = body_json.get("type") or body_json.get("image_type") or "pl"
+                    source_val = body_json.get("url") or body_json.get("image_url") or body_json.get("path")
+                    b64_data = body_json.get("data") or body_json.get("image_base64")
+                else:
+                    code = req.form.get("code") or req.args.get("code")
+                    image_type = req.form.get("type") or req.form.get("image_type") or req.args.get("type") or "pl"
+                    source_val = req.form.get("url") or req.form.get("image_url") or req.form.get("path") or req.args.get("url")
+                    b64_data = req.form.get("data") or req.form.get("image_base64") or req.args.get("data")
+
+                if not code:
+                    return jsonify({'ret': 'error', 'msg': 'code 파라미터가 누락되었습니다.'}), 400
+
+                if not source_val and not b64_data:
+                    return jsonify({'ret': 'error', 'msg': '저장할 이미지 소스(url, path 또는 base64 데이터)가 누락되었습니다.'}), 400
+
+                success, result_msg = MetaImageUtil.save_direct_user_image(
+                    code=code,
+                    source_path_or_url=source_val,
+                    image_type=image_type,
+                    category=self.category,
+                    image_base64_data=b64_data
+                )
+                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None}), (200 if success else 500)
 
             return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
 
@@ -962,7 +1021,11 @@ class ModuleJavCensored(PluginModuleBase):
 
         return all_results
 
-    def search(self, keyword, manual=False, use_db=True):
+    def search(self, keyword, manual=False, media_path=None, use_db=True):
+        if (not keyword or not str(keyword).strip()) and media_path:
+            keyword = MetaParserUtil.extract_keyword_from_path(media_path, category=self.category)
+            logger.debug(f"[{self.name}] search() media_path 기반 키워드 보정: '{keyword}'")
+
         logger.info(f"======= jav censored search START - keyword:[{keyword}] manual:[{manual}] use_db:[{use_db}] =======")
         
         if keyword.startswith('http://') or keyword.startswith('https://'):
@@ -1613,7 +1676,7 @@ class ModuleJavCensored(PluginModuleBase):
         clean_actors = []
         for act_it in (ret.get('actor') or []):
             if isinstance(act_it, dict):
-                act_name = act_it.get('name') or act_it.get('name_ko') or act_it.get('name_org', '')
+                act_name = act_it.get('name_ko') or act_it.get('name') or act_it.get('name_org', '')
                 clean_actors.append({
                     'name': act_name,
                     'name_org': act_it.get('name_org', ''),
@@ -1625,7 +1688,7 @@ class ModuleJavCensored(PluginModuleBase):
                     'extra_info': act_it.get('extra_info', {})
                 })
             else:
-                act_name = getattr(act_it, 'name', '') or getattr(act_it, 'name_ko', '') or getattr(act_it, 'name_org', '')
+                act_name = getattr(act_it, 'name_ko', '') or getattr(act_it, 'name', '') or getattr(act_it, 'name_org', '')
                 clean_actors.append({
                     'name': act_name,
                     'name_org': getattr(act_it, 'name_org', ''),
