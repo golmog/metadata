@@ -10,6 +10,7 @@ from datetime import datetime
 from io import BytesIO
 from PIL import Image
 from urllib.parse import urlparse
+from sqlalchemy.orm.attributes import flag_modified
 
 from .setup import *
 
@@ -642,13 +643,19 @@ class MetaImageUtil:
                     is_modified = True
 
                 p_media = next((m for m in meta_record.media_files if m.media_type == 'poster'), None)
-                if p_media:
-                    if p_media.url != new_p_url:
-                        p_media.url = new_p_url
-                        p_media.is_user = bool(user_p_file)
+                if user_p_file:
+                    # 유저 커스텀 포스터가 존재하는 경우에만 MetaMedia 관리
+                    if p_media:
+                        if p_media.url != new_p_url or not p_media.is_user:
+                            p_media.url = new_p_url
+                            p_media.is_user = True
+                            is_modified = True
+                    else:
+                        meta_record.media_files.append(MetaMedia(media_type="poster", url=new_p_url, is_user=True, sort_order=0))
                         is_modified = True
-                else:
-                    meta_record.media_files.append(MetaMedia(media_type="poster", url=new_p_url, is_user=bool(user_p_file), sort_order=0))
+                elif p_media and p_media.is_user:
+                    # 유저 파일이 디스크에서 삭제되어 시스템 파일로 복원된 경우
+                    meta_record.media_files.remove(p_media)
                     is_modified = True
 
             # 랜드스케이프 동기화
@@ -656,13 +663,19 @@ class MetaImageUtil:
             if target_pl:
                 new_pl_url = f"{server_url_prefix}/{target_pl}"
                 pl_media = next((m for m in meta_record.media_files if m.media_type == 'landscape'), None)
-                if pl_media:
-                    if pl_media.url != new_pl_url:
-                        pl_media.url = new_pl_url
-                        pl_media.is_user = bool(user_pl_file)
+                if user_pl_file:
+                    # 유저 커스텀 가로커버가 존재하는 경우에만 MetaMedia 관리
+                    if pl_media:
+                        if pl_media.url != new_pl_url or not pl_media.is_user:
+                            pl_media.url = new_pl_url
+                            pl_media.is_user = True
+                            is_modified = True
+                    else:
+                        meta_record.media_files.append(MetaMedia(media_type="landscape", url=new_pl_url, is_user=True, sort_order=1))
                         is_modified = True
-                else:
-                    meta_record.media_files.append(MetaMedia(media_type="landscape", url=new_pl_url, is_user=bool(user_pl_file), sort_order=1))
+                elif pl_media and pl_media.is_user:
+                    # 유저 파일이 삭제되어 시스템 파일로 복원된 경우
+                    meta_record.media_files.remove(pl_media)
                     is_modified = True
 
             if is_modified:
@@ -873,6 +886,533 @@ class MetaResponseUtil:
             res['fanart'] = []
 
         return res
+
+
+class PersonMemoryIndex:
+    """
+    배우 정보 동기화 시 수만 건의 DB 쿼리 반복을 없애기 위해
+    인물 DB의 핵심 필드를 메모리에 1회 사전 적재하여 O(1) 속도로 대조하는 인덱서
+    """
+
+    def __init__(self, domain='JAV'):
+        from .mod_meta_db import ModuleMetaDb, MetaPerson
+
+        self.domain = str(domain or 'JAV').upper()
+        self.by_site_actor = {}
+        self.by_idx = {}
+        self.by_name_org = {}
+        self.by_name_en = {}
+        self.by_name_ko = {}
+
+        sess, _, _ = ModuleMetaDb.get_session_and_domain('PERSON')
+        if not sess:
+            return
+
+        try:
+            # 필수 경량 컬럼들만 1회의 단일 쿼리로 메모리에 적재
+            persons = sess.query(
+                MetaPerson.id,
+                MetaPerson.person_idx,
+                MetaPerson.name_org,
+                MetaPerson.name_ko,
+                MetaPerson.name_en,
+                MetaPerson.media_src,
+                MetaPerson.extra_info
+            ).filter(MetaPerson.domain == self.domain).all()
+
+            for pid, p_idx, n_org, n_ko, n_en, m_src, e_info in persons:
+                p_extra = e_info if isinstance(e_info, dict) else {}
+                p_media = m_src if isinstance(m_src, dict) else {}
+
+                p_data = {
+                    'id': pid,
+                    'person_idx': p_idx or '',
+                    'name_org': (n_org or '').strip(),
+                    'name_ko': (n_ko or '').strip(),
+                    'name_en': (n_en or '').strip(),
+                    'media_src': p_media,
+                    'thumb': None,
+                    'extra_info': p_extra
+                }
+
+                if p_idx:
+                    self.by_idx[p_idx.strip().upper()] = p_data
+
+                if n_org:
+                    self.by_name_org[n_org.strip().lower()] = p_data
+
+                if n_ko:
+                    self.by_name_ko[n_ko.strip().lower()] = p_data
+
+                if n_en:
+                    self.by_name_en[n_en.strip().lower()] = p_data
+
+                # 사이트 고유 배우 ID (DMM 등) 직결 색인
+                site_actors = p_extra.get('site_actors') or {}
+                if isinstance(site_actors, dict):
+                    for s_site, s_obj in site_actors.items():
+                        if isinstance(s_obj, dict) and s_obj.get('id'):
+                            s_id = str(s_obj['id']).strip()
+                            self.by_site_actor[s_id] = p_data
+        finally:
+            sess.remove()
+
+    def match(self, actor_dict):
+        if not isinstance(actor_dict, dict):
+            return None
+
+        # 사이트 고유 ID 우선 대조
+        extra = actor_dict.get('extra_info') or {}
+        s_id = str(extra.get('site_actor_id') or actor_dict.get('site_actor_id') or '').strip()
+        if s_id and s_id in self.by_site_actor:
+            return self.by_site_actor[s_id]
+
+        # 고유 식별코드 대조
+        a_idx = str(actor_dict.get('actor_idx') or actor_dict.get('person_idx') or '').strip().upper()
+        if a_idx and a_idx in self.by_idx:
+            return self.by_idx[a_idx]
+
+        # 원문 이름 대조
+        n_org = str(actor_dict.get('name_org') or actor_dict.get('name') or '').strip().lower()
+        if n_org and n_org in self.by_name_org:
+            return self.by_name_org[n_org]
+
+        # 영문 이름 대조
+        n_en = str(actor_dict.get('name_en') or '').strip().lower()
+        if n_en and n_en in self.by_name_en:
+            return self.by_name_en[n_en]
+
+        # 한국어 표기명 대조
+        n_ko = str(actor_dict.get('name_ko') or '').strip().lower()
+        if n_ko and n_ko in self.by_name_ko:
+            return self.by_name_ko[n_ko]
+
+        return None
+
+
+class MetaHealingUtil:
+    """
+    기존의 번역본과 유저 커스텀 데이터(_user 이미지, 프리뷰 클립 등)를 보존하면서,
+    누락된 인물 정보, 오리지널 메타, 부가 정보를 출처 사이트로부터 효율적으로 보완/치유하는 유틸리티
+    """
+
+    @classmethod
+    def heal_metadata(cls, module, code, category):
+        from .mod_meta_db import ModuleMetaDb
+        from support_site import SiteUtil
+
+        cached_json = ModuleMetaDb.get_metadata(code, category=category)
+        if not cached_json:
+            return {'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
+
+        ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
+        title_for_log = str(cached_json.get('title') or ui_code).strip()
+        if len(title_for_log) > 40:
+            title_for_log = title_for_log[:37] + '...'
+
+        cat_upper = str(category or '').upper()
+        is_western = (cat_upper in ['WESTERN', 'WEST'])
+
+        # 기존 텍스트 번역 상태 사전 검사
+        existing_title = str(cached_json.get('title') or '').strip()
+        existing_tagline = str(cached_json.get('tagline') or '').strip()
+        existing_plot = str(cached_json.get('plot') or '').strip()
+
+        has_valid_plot = bool(existing_plot)
+        plot_is_korean = SiteUtil.is_include_hangul(existing_plot)
+        tagline_is_korean = SiteUtil.is_include_hangul(existing_tagline)
+
+        # 번역 필요 여부 판단: 한글이 없거나 줄거리가 누락된 경우에만 번역 진행
+        need_trans = False
+        if is_western:
+            trans_enabled = P.ModelSetting.get_bool('western_trans_title')
+            if trans_enabled and has_valid_plot and not plot_is_korean:
+                need_trans = True
+        else:
+            trans_opt = P.ModelSetting.get('jav_censored_trans_option') or 'using'
+            if trans_opt != 'not_using':
+                if has_valid_plot and not plot_is_korean:
+                    need_trans = True
+                elif existing_tagline and not tagline_is_korean:
+                    need_trans = True
+
+        skip_trans = not need_trans
+
+        # 캐시된 썸네일 경로가 있으면 전달하여 불필요한 재탐색 차단
+        ps_url = cached_json.get('original', {}).get('thumb', {}).get('ps_url')
+        info_opts = {'skip_trans': skip_trans}
+        if ps_url:
+            info_opts['ps_url'] = ps_url
+
+        try:
+            module.keyword_cache.set(f"BYPASS_{code}", "1")
+        except Exception:
+            pass
+
+        # 검색 없이 대상 코드의 상세 정보 직접 조회
+        try:
+            if is_western or cat_upper == 'JAV_CEN':
+                fresh_data = module.info(code, keyword=ui_code, extra_opts=info_opts)
+            else:
+                fresh_data = module.info(code, extra_opts=info_opts)
+        except TypeError:
+            fresh_data = module.info(code, extra_opts=info_opts)
+
+        if not fresh_data:
+            return {'ret': 'warning', 'msg': '최신 정보를 가져오지 못했습니다.', 'title_log': title_for_log, 'is_updated': False}
+
+        # 변경 사항 감지 추적
+        changes = []
+
+        # 번역 및 텍스트 필드 비교
+        if skip_trans:
+            if existing_title: fresh_data['title'] = existing_title
+            if existing_tagline: fresh_data['tagline'] = existing_tagline
+            if existing_plot: fresh_data['plot'] = existing_plot
+        else:
+            if not existing_plot and fresh_data.get('plot'):
+                changes.append('줄거리 등록')
+            elif has_valid_plot and not plot_is_korean and SiteUtil.is_include_hangul(str(fresh_data.get('plot') or '')):
+                changes.append('줄거리 번역')
+            elif has_valid_plot and plot_is_korean:
+                fresh_data['plot'] = existing_plot
+
+            if not existing_tagline and fresh_data.get('tagline'):
+                changes.append('부제 등록')
+            elif existing_tagline and not tagline_is_korean and SiteUtil.is_include_hangul(str(fresh_data.get('tagline') or '')):
+                changes.append('부제 번역')
+
+        # 인물 정보 변동 비교
+        cached_actors = cached_json.get('actor') or []
+        fresh_actors = fresh_data.get('actor') or []
+
+        if len(cached_actors) == 0 and len(fresh_actors) > 0:
+            changes.append(f'인물 등록 {len(fresh_actors)}명')
+        elif len(fresh_actors) > len(cached_actors):
+            changes.append(f'인물 추가 {len(fresh_actors) - len(cached_actors)}명')
+        else:
+            # 기존 인물 정보의 실질 변동(한글명/사진 등) 정밀 대조
+            cached_ko_count = sum(1 for a in cached_actors if isinstance(a, dict) and a.get('name_ko'))
+            fresh_ko_count = sum(1 for a in fresh_actors if isinstance(a, dict) and a.get('name_ko'))
+            if fresh_ko_count > cached_ko_count:
+                changes.append(f'인물 정보 업데이트 {fresh_ko_count - cached_ko_count}명')
+
+            cached_has_thumb = any(a.get('thumb') for a in cached_actors if isinstance(a, dict))
+            fresh_has_thumb = any(a.get('thumb') for a in fresh_actors if isinstance(a, dict))
+            if not cached_has_thumb and fresh_has_thumb:
+                changes.append('인물 사진 보완')
+
+        # 오리지널 메타 보완 확인
+        cached_orig = cached_json.get('original') or {}
+        fresh_orig = fresh_data.get('original') or {}
+        if not cached_orig and fresh_orig:
+            changes.append('오리지널 메타 보완')
+        else:
+            if not cached_orig.get('fanart') and fresh_orig.get('fanart'):
+                changes.append('팬아트 보완')
+            if not cached_orig.get('extras') and fresh_orig.get('extras'):
+                changes.append('예고편 보완')
+
+        # 기본 속성값 보완 확인
+        if not cached_json.get('studio') and fresh_data.get('studio'):
+            changes.append('제작사 등록')
+        if not cached_json.get('director') and fresh_data.get('director'):
+            changes.append('감독 등록')
+        if not cached_json.get('series') and fresh_data.get('series'):
+            changes.append('시리즈 등록')
+        if not cached_json.get('premiered') and fresh_data.get('premiered'):
+            changes.append('출시일 등록')
+
+        # 프리뷰 클립 정보 및 영상 소스 경로 보존 (수동 생성 자산)
+        cached_extra = cached_json.get('extra_info') or {}
+        if 'preview_clip' in cached_extra:
+            if 'extra_info' not in fresh_data or not isinstance(fresh_data['extra_info'], dict):
+                fresh_data['extra_info'] = {}
+            fresh_data['extra_info']['preview_clip'] = cached_extra['preview_clip']
+            if 'source_video_path' in cached_extra:
+                fresh_data['extra_info']['source_video_path'] = cached_extra['source_video_path']
+            if not fresh_data.get('extras') and cached_json.get('extras'):
+                preview_extras = [ex for ex in cached_json['extras'] if isinstance(ex, dict) and 'mode=preview_' in str(ex.get('content_url', ''))]
+                if preview_extras:
+                    fresh_data['extras'] = preview_extras
+
+        # 사용자 태그 결합 보존
+        cached_tags = cached_json.get('tag') or []
+        fresh_tags = fresh_data.get('tag') or []
+        for ct in cached_tags:
+            if ct and ct not in fresh_tags:
+                fresh_tags.append(ct)
+        fresh_data['tag'] = fresh_tags
+
+        is_updated = (len(changes) > 0)
+
+        # 실질적 변경이 있을 때만 DB 저장
+        if is_updated:
+            ModuleMetaDb.save_metadata(category, fresh_data)
+
+            sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
+            if sess:
+                try:
+                    from .mod_meta_db import MetaItem
+                    meta_item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+                    if meta_item:
+                        old_p = str(meta_item.poster_url or '').strip()
+                        old_pl_m = next((m for m in meta_item.media_files if m.media_type == 'landscape'), None)
+                        old_pl = str(old_pl_m.url or '').strip() if old_pl_m else ''
+                        old_pl_user = bool(old_pl_m.is_user) if old_pl_m else False
+
+                        sync_res, _ = MetaImageUtil.sync_single_record_disk_images(meta_item)
+                        if sync_res == 'updated':
+                            sess.commit()
+                            new_p = str(meta_item.poster_url or '').strip()
+                            new_pl_m = next((m for m in meta_item.media_files if m.media_type == 'landscape'), None)
+                            new_pl = str(new_pl_m.url or '').strip() if new_pl_m else ''
+                            new_pl_user = bool(new_pl_m.is_user) if new_pl_m else False
+
+                            if '_user.' in new_p and '_user.' not in old_p:
+                                changes.append('유저 포스터 반영')
+                            elif new_p and new_p != old_p:
+                                changes.append('포스터 주소 동기화')
+
+                            if new_pl and ('_user.' in new_pl or new_pl_user) and ('_user.' not in old_pl and not old_pl_user):
+                                changes.append('유저 가로커버 반영')
+                            elif new_pl and new_pl != old_pl:
+                                changes.append('가로 커버 동기화')
+                except Exception as e_disk_sync:
+                    logger.debug(f"[{module.name}] 디스크 이미지 동기화 예외: {e_disk_sync}")
+                finally:
+                    sess.remove()
+
+        detail_msg = ", ".join(changes) if changes else "변경 없음"
+        return {
+            'ret': 'success',
+            'is_updated': is_updated,
+            'title_log': title_for_log,
+            'detail_msg': detail_msg,
+            'msg': f"처리 완료 ({detail_msg})" if is_updated else "변경 없음",
+            'data': fresh_data
+        }
+
+    @classmethod
+    def sync_local_data(cls, module, code, category, memory_index=None):
+        """
+        외부 사이트 접속 없이 로컬 DB(인물 DB)와 이미지 서버 디스크 파일 상태만을 대조하여
+        인물 표기 정보 및 포스터/커버 유저 이미지 수동 교체 내역을 동기화
+
+        배우 썸네일은 런타임에 인물 DB에서 동적으로 구성하므로 작품 캐시에는 저장하지 않는다.
+        """
+        from .mod_meta_db import ModuleMetaDb, MetaItem
+
+        sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
+        if not sess:
+            return {'ret': 'error', 'msg': '세션 획득 실패', 'is_updated': False}
+
+        try:
+            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            if not item:
+                return {'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
+
+            ui_code = item.ui_code or item.originaltitle or item.code
+            title_for_log = str(item.title or ui_code).strip()
+            if len(title_for_log) > 40:
+                title_for_log = title_for_log[:37] + '...'
+
+            changes = []
+            is_modified = False
+
+            # 디스크 이미지 파일 점검 전 상태 스냅샷 수집
+            old_poster_url = str(item.poster_url or '').strip()
+            old_pl_media = next((m for m in item.media_files if m.media_type == 'landscape'), None)
+            old_pl_url = str(old_pl_media.url or '').strip() if old_pl_media else ''
+            old_pl_is_user = bool(old_pl_media.is_user) if old_pl_media else False
+            old_has_p_media = any(m.media_type == 'poster' for m in item.media_files)
+            old_has_pl_media = bool(old_pl_media)
+
+            sync_res, _ = MetaImageUtil.sync_single_record_disk_images(item)
+            if sync_res == 'updated':
+                new_poster_url = str(item.poster_url or '').strip()
+                new_pl_media = next((m for m in item.media_files if m.media_type == 'landscape'), None)
+                new_pl_url = str(new_pl_media.url or '').strip() if new_pl_media else ''
+                new_pl_is_user = bool(new_pl_media.is_user) if new_pl_media else False
+                new_has_p_media = any(m.media_type == 'poster' for m in item.media_files)
+                new_has_pl_media = bool(new_pl_media)
+
+                # 세로 포스터 변동 세분화
+                if '_user.' in new_poster_url and '_user.' not in old_poster_url:
+                    changes.append('유저 포스터 반영')
+                elif '_user.' not in new_poster_url and '_user.' in old_poster_url:
+                    changes.append('시스템 포스터 복원')
+                elif new_poster_url and new_poster_url != old_poster_url:
+                    changes.append('포스터 주소 동기화')
+
+                # 가로 커버 변동 세분화
+                if new_pl_url and ('_user.' in new_pl_url or new_pl_is_user) and ('_user.' not in old_pl_url and not old_pl_is_user):
+                    changes.append('유저 가로커버 반영')
+                elif old_pl_url and ('_user.' not in new_pl_url and not new_pl_is_user) and ('_user.' in old_pl_url or old_pl_is_user):
+                    changes.append('시스템 가로커버 복원')
+                elif new_pl_url and new_pl_url != old_pl_url:
+                    changes.append('가로 커버 동기화')
+
+                # 하위 관계 테이블 에셋 레코드 복원
+                if (not old_has_p_media and new_has_p_media) or (not old_has_pl_media and new_has_pl_media):
+                    changes.append('미디어 테이블 복원')
+
+                if not any(k in changes for k in ['포스터', '가로커버', '미디어']):
+                    changes.append('디스크 파일 동기화')
+
+                is_modified = True
+
+            # 인물 정보 및 프로필 사진 대조
+            extra_info = dict(item.extra_info or {})
+            actors_list = list(extra_info.get('_actors') or extra_info.get('actor_cache') or [])
+
+            if actors_list:
+                idx_engine = memory_index
+                if not idx_engine:
+                    person_dom = ModuleMetaDb._person_domain_from_item_category(category)
+                    idx_engine = PersonMemoryIndex(domain=person_dom)
+
+                updated_ko_count = 0
+                updated_idx_count = 0
+                updated_en_count = 0
+                actor_data_changed = False
+
+                for act in actors_list:
+                    if not isinstance(act, dict):
+                        continue
+
+                    matched = idx_engine.match(act)
+                    if not matched:
+                        continue
+
+                    target_ko = matched.get('name_ko') or ''
+                    target_idx = matched.get('person_idx') or ''
+                    target_en = matched.get('name_en') or ''
+
+                    # 한국어 표기명 반영
+                    curr_ko = act.get('name_ko') or ''
+                    curr_name = act.get('name') or ''
+                    if target_ko and (curr_ko != target_ko or curr_name != target_ko):
+                        act['name_ko'] = target_ko
+                        act['name'] = target_ko
+                        updated_ko_count += 1
+                        actor_data_changed = True
+
+                    # 영문 표기명 보완
+                    curr_en = act.get('name_en') or ''
+                    if target_en and not curr_en:
+                        act['name_en'] = target_en
+                        updated_en_count += 1
+                        actor_data_changed = True
+
+                    # 식별코드 보완
+                    curr_idx = act.get('actor_idx') or act.get('person_idx') or ''
+                    if target_idx and not curr_idx:
+                        act['actor_idx'] = target_idx
+                        updated_idx_count += 1
+                        actor_data_changed = True
+
+                if updated_ko_count > 0:
+                    changes.append(f'인물 한글화 {updated_ko_count}명')
+                if updated_idx_count > 0:
+                    changes.append(f'인물 코드 등록 {updated_idx_count}명')
+                if updated_en_count > 0:
+                    changes.append(f'인물 영문명 보완 {updated_en_count}명')
+                if actor_data_changed:
+                    extra_info['_actors'] = actors_list
+                    item.extra_info = extra_info
+                    flag_modified(item, 'extra_info')
+                    is_modified = True
+
+            # 장르 및 태그 최신 번역 사전(av_tags.json / constants) 대조
+            raw_original = item.original if isinstance(item.original, dict) else {}
+            orig_genres = raw_original.get('genre') or []
+            if isinstance(orig_genres, list) and orig_genres:
+                from support_site import SiteAvBase
+                from .mod_meta_db import MetaTag, MetaItemTagMap
+                try:
+                    from support_site.constants import AV_GENRE_IGNORE_JA, AV_GENRE_IGNORE_KO
+                except Exception:
+                    AV_GENRE_IGNORE_JA, AV_GENRE_IGNORE_KO = [], []
+
+                new_tag_records = []
+                seen_translated_genres = set()
+
+                for g_raw in orig_genres:
+                    if not isinstance(g_raw, str) or not g_raw.strip():
+                        continue
+                    g_clean = g_raw.strip()
+                    if g_clean in AV_GENRE_IGNORE_JA or "％OFF" in g_clean:
+                        continue
+                    g_trans = SiteAvBase.get_translated_tag(g_clean)
+                    if not g_trans or g_trans in AV_GENRE_IGNORE_KO:
+                        continue
+
+                    # 영상 내에서는 동일하게 번역된 장르명이 중복으로 들어가지 않도록 방지
+                    if g_trans in seen_translated_genres:
+                        continue
+                    seen_translated_genres.add(g_trans)
+
+                    # 원문(name_org) 기준으로 태그 마스터 레코드 대조
+                    tag_rec = sess.query(MetaTag).filter_by(domain=item.domain, name_org=g_clean, tag_type="genre").first()
+                    if not tag_rec:
+                        try:
+                            nested = sess.begin_nested()
+                            tag_rec = MetaTag(domain=item.domain, name=g_trans, name_org=g_clean, tag_type="genre")
+                            sess.add(tag_rec)
+                            sess.flush()
+                            nested.commit()
+                        except Exception:
+                            nested.rollback()
+                            tag_rec = sess.query(MetaTag).filter_by(domain=item.domain, name_org=g_clean, tag_type="genre").first()
+                    elif tag_rec.name != g_trans:
+                        tag_rec.name = g_trans
+
+                    if tag_rec:
+                        new_tag_records.append(tag_rec)
+
+                # 현재 영상에 매핑된 태그 ID들과 비교하여 변동 시에만 재매핑
+                current_genre_tag_ids = [tm.tag_id for tm in item.tag_maps if tm.tag and tm.tag.tag_type == 'genre']
+                new_genre_tag_ids = [tr.id for tr in new_tag_records if tr.id]
+
+                if set(current_genre_tag_ids) != set(new_genre_tag_ids):
+                    # 기존 장르 태그 매핑 제거 후 최신 태그로 재매핑
+                    for tm in list(item.tag_maps):
+                        if tm.tag and tm.tag.tag_type == 'genre':
+                            item.tag_maps.remove(tm)
+
+                    for tag_rec in new_tag_records:
+                        item.tag_maps.append(MetaItemTagMap(tag_id=tag_rec.id))
+
+                    changes.append('장르 번역 최신화')
+                    is_modified = True
+
+            # 변동 사항이 발생한 경우에만 DB 커밋
+            if is_modified:
+                item.updated_time = datetime.now()
+                sess.commit()
+                ModuleMetaDb.checkpoint_wal()
+                detail_msg = ", ".join(changes)
+                return {
+                    'ret': 'success',
+                    'is_updated': True,
+                    'title_log': title_for_log,
+                    'detail_msg': detail_msg
+                }
+            else:
+                return {
+                    'ret': 'success',
+                    'is_updated': False,
+                    'title_log': title_for_log,
+                    'detail_msg': '변경 없음'
+                }
+
+        except Exception as e:
+            sess.rollback()
+            logger.error(f"[MetaHealingUtil] sync_local_data 오류 ({code}): {e}")
+            return {'ret': 'error', 'msg': str(e), 'is_updated': False}
+        finally:
+            sess.remove()
 
 
 class MetaParserUtil:

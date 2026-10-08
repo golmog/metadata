@@ -30,6 +30,11 @@ from support import SupportYaml
 from framework import db
 from .util_metadata import MetaImageUtil, MetaResponseUtil
 
+try:
+    from framework import celery
+except Exception:
+    celery = None
+
 Base = declarative_base()
 
 
@@ -151,14 +156,18 @@ class MetaItemPersonMap(Base):
 
 
 class MetaTag(Base):
-    """장르, 태그 마스터 테이블"""
+    """장르, 태그 마스터 테이블 (원문 name_org 기준 복합 고유 키 관리)"""
     __tablename__ = 'meta_tag'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     domain = Column(String(20), nullable=False, default="JAV", index=True)
-    name = Column(String(100), nullable=False, unique=True, index=True)
-    name_org = Column(String(100), index=True)
+    name = Column(String(100), nullable=False, index=True)
+    name_org = Column(String(100), nullable=False, index=True)
     tag_type = Column(String(30), default="genre", index=True)
+
+    __table_args__ = (
+        Index('ix_meta_tag_domain_org_type', 'domain', 'name_org', 'tag_type', unique=True),
+    )
 
 
 class MetaItemTagMap(Base):
@@ -171,6 +180,13 @@ class MetaItemTagMap(Base):
 
     tag = relationship("MetaTag", lazy="joined")
 
+
+if celery:
+    @celery.task(bind=True)
+    def task_meta_db_batch_refresh(self, target_scope, target_codes, search_params, refresh_mode, delay_val, action):
+        meta_module = P.get_module('meta_db')
+        if meta_module:
+            meta_module.run_batch_refresh_worker(target_scope, target_codes, search_params, refresh_mode, delay_val, action)
 
 class MetaMedia(Base):
     """멀티미디어 리소스 에셋 테이블"""
@@ -241,6 +257,27 @@ class ModuleMetaDb(PluginModuleBase):
             'stop_flag': False
         }
         self.import_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'fail': 0, 'current_code': '', 'stop_flag': False}
+
+        self.batch_job_status = {
+            'is_running': False,
+            'status': '대기 중',
+            'mode': 'missing',
+            'category': 'AV_ALL',
+            'total': 0,
+            'current': 0,
+            'success': 0,
+            'fail': 0,
+            'skipped': 0,
+            'current_code': '',
+            'stop_flag': False,
+            'can_resume': False,
+            'resume_index': 0,
+            'target_items': []
+        }
+        self.batch_log_subscribers = []
+        self.batch_log_history = []
+        self._batch_log_lock = threading.Lock()
+        self.batch_state_file = os.path.join(path_data, 'db', f"{P.package_name}_batch_state.json")
 
     @classmethod
     def init_engines(cls):
@@ -348,6 +385,66 @@ class ModuleMetaDb(PluginModuleBase):
             inspector = inspect(target_engine)
             is_pg = (target_engine.dialect.name == 'postgresql')
             with target_engine.connect() as conn:
+                # 구버전 meta_tag 정리, 기존 중복 레코드 병합 및 복합 고유 인덱스 생성
+                if inspector.has_table('meta_tag'):
+                    try:
+                        if is_pg:
+                            conn.execute(text("DROP INDEX IF EXISTS ix_meta_tag_name CASCADE;"))
+                            conn.execute(text("ALTER TABLE meta_tag DROP CONSTRAINT IF EXISTS uq_meta_tag_name CASCADE;"))
+                            conn.execute(text("UPDATE meta_tag SET name_org = name WHERE name_org IS NULL OR trim(name_org) = '';"))
+
+                            # 매핑 테이블의 외래키를 대표 ID로 재지정하여 관계 보존
+                            if inspector.has_table('meta_item_tag_map'):
+                                conn.execute(text("""
+                                    UPDATE meta_item_tag_map m
+                                    SET tag_id = keep.min_id
+                                    FROM (
+                                        SELECT id, MIN(id) OVER (PARTITION BY domain, name_org, tag_type) AS min_id
+                                        FROM meta_tag
+                                    ) keep
+                                    WHERE m.tag_id = keep.id AND keep.id <> keep.min_id;
+                                """))
+                                conn.execute(text("""
+                                    DELETE FROM meta_item_tag_map
+                                    WHERE id NOT IN (
+                                        SELECT MIN(id)
+                                        FROM meta_item_tag_map
+                                        GROUP BY item_id, tag_id
+                                    );
+                                """))
+
+                            # 중복된 meta_tag 행 삭제
+                            conn.execute(text("""
+                                DELETE FROM meta_tag
+                                WHERE id NOT IN (
+                                    SELECT MIN(id)
+                                    FROM meta_tag
+                                    GROUP BY domain, name_org, tag_type
+                                );
+                            """))
+                            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_meta_tag_domain_org_type ON meta_tag (domain, name_org, tag_type);"))
+                        else:
+                            conn.execute(text("DROP INDEX IF EXISTS ix_meta_tag_name;"))
+                            conn.execute(text("UPDATE meta_tag SET name_org = name WHERE name_org IS NULL OR trim(name_org) = '';"))
+                            if inspector.has_table('meta_item_tag_map'):
+                                conn.execute(text("""
+                                    DELETE FROM meta_item_tag_map
+                                    WHERE tag_id NOT IN (
+                                        SELECT MIN(id) FROM meta_tag GROUP BY domain, name_org, tag_type
+                                    );
+                                """))
+                            conn.execute(text("""
+                                DELETE FROM meta_tag
+                                WHERE id NOT IN (
+                                    SELECT MIN(id) FROM meta_tag GROUP BY domain, name_org, tag_type
+                                );
+                            """))
+                            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_meta_tag_domain_org_type ON meta_tag (domain, name_org, tag_type);"))
+                        conn.commit()
+                    except Exception as e_idx_sync:
+                        conn.rollback()
+                        logger.debug(f"[MetaDB Schema Auto-Sync] meta_tag 인덱스 전환 예외: {e_idx_sync}")
+
                 for table_name, table_obj in Base.metadata.tables.items():
                     if inspector.has_table(table_name):
                         existing_cols = {c['name']: c for c in inspector.get_columns(table_name)}
@@ -378,6 +475,12 @@ class ModuleMetaDb(PluginModuleBase):
             return None, None, None
 
         cat_key = str(category).strip().upper()
+
+        if cat_key == 'AV_ALL':
+            if cls._is_postgres:
+                return cls._sessions.get('postgres'), 'postgres', 'AV_ALL'
+            return None, None, 'AV_ALL'
+
         if cat_key not in DOMAIN_MAP:
             logger.error(f"[MetaDB] 유효하지 않은 category 입니다: '{category}'")
             return None, None, None
@@ -924,41 +1027,18 @@ class ModuleMetaDb(PluginModuleBase):
             person_session.flush()
 
         else:
-            if raw_name_org: p_rec.name_org = raw_name_org
-            if raw_name_ko: p_rec.name_ko = raw_name_ko
-            if raw_name_en and not p_rec.name_en: p_rec.name_en = raw_name_en
-
-            merged_media = copy.deepcopy(p_rec.media_src or {})
-            if media_src_data['local_img_path']: merged_media['local_img_path'] = media_src_data['local_img_path']
-            if media_src_data['site_img_url']: merged_media['site_img_url'] = media_src_data['site_img_url']
-            if media_src_data['google_fileid']: merged_media['google_fileid'] = media_src_data['google_fileid']
-            p_rec.media_src = merged_media
-
-            merged_extra = copy.deepcopy(p_rec.extra_info or {})
-            for k, v in extra_data.items():
-                if v and not merged_extra.get(k):
-                    merged_extra[k] = v
-
-            # 스크래핑된 사이트 고유 ID가 있다면 site_actors에 자동 누적 등록
+            # 사이트 고유 식별 ID가 새로 발견된 경우에만 extra_info 내 site_actors에 누적 보존
             if site_actor_id:
+                merged_extra = copy.deepcopy(p_rec.extra_info or {})
                 current_site_actors = merged_extra.get('site_actors', {})
                 infer_site = 'dmm' if 'dmm' in site_actor_url else ('javbus' if 'javbus' in site_actor_url else ('javdb' if 'javdb' in site_actor_url else 'site'))
-                current_site_actors[infer_site] = {
-                    'id': site_actor_id,
-                    'url': site_actor_url
-                }
-                merged_extra['site_actors'] = current_site_actors
-                logger.debug(f"[MetaDB Actor Link Learn] 인물 [{p_rec.name_ko or p_rec.name_org}]에 사이트 고유 ID 자동 영구 누적 ({infer_site}:{site_actor_id})")
-
-            p_rec.extra_info = merged_extra
-
-            if a_idx_val and not p_rec.person_idx:
-                p_rec.person_idx = a_idx_val
-            if alias_list:
-                existing_aliases = set(p_rec.aliases or [])
-                existing_aliases.update(alias_list)
-                p_rec.aliases = list(existing_aliases)
-                p_rec.other_names = ", ".join(p_rec.aliases)
+                if infer_site not in current_site_actors:
+                    current_site_actors[infer_site] = {
+                        'id': site_actor_id,
+                        'url': site_actor_url
+                    }
+                    merged_extra['site_actors'] = current_site_actors
+                    p_rec.extra_info = merged_extra
 
         return p_rec
 
@@ -1285,6 +1365,7 @@ class ModuleMetaDb(PluginModuleBase):
 
                 stored_actors.append({
                     'actor_idx': final_idx,
+                    'name': final_name_ko or final_name_org or final_name_en,
                     'name_org': final_name_org,
                     'name_ko': final_name_ko,
                     'name_en': final_name_en,
@@ -1333,18 +1414,45 @@ class ModuleMetaDb(PluginModuleBase):
             item.extra_info = merged_extra_info
 
             # 장르 및 태그 매핑
-            for g_idx, g_name in enumerate(genres_list):
-                if not g_name or not isinstance(g_name, str): continue
-                g_orig = orig_genres_list[g_idx] if (g_idx < len(orig_genres_list) and isinstance(orig_genres_list[g_idx], str)) else g_name
+            source_genres = orig_genres_list if orig_genres_list else genres_list
+            seen_translated_genres = set()
 
-                tag_rec = s.query(MetaTag).filter_by(name=g_name).first()
+            try:
+                from support_site.constants import AV_GENRE_IGNORE_JA, AV_GENRE_IGNORE_KO
+            except Exception:
+                AV_GENRE_IGNORE_JA, AV_GENRE_IGNORE_KO = [], []
+
+            for g_item in source_genres:
+                if not g_item or not isinstance(g_item, str):
+                    continue
+                g_orig_clean = str(g_item).strip()
+                if g_orig_clean in AV_GENRE_IGNORE_JA or "％OFF" in g_orig_clean:
+                    continue
+
+                from support_site import SiteAvBase
+                g_name_clean = SiteAvBase.get_translated_tag(g_orig_clean)
+                if not g_name_clean or g_name_clean in AV_GENRE_IGNORE_KO:
+                    continue
+
+                # 영상 레벨에서는 최종 번역 장르명이 중복되지 않도록 단일화
+                if g_name_clean in seen_translated_genres:
+                    continue
+                seen_translated_genres.add(g_name_clean)
+
+                # 원문(name_org) 기준으로 태그 레코드 조회 및 신규 등록
+                tag_rec = s.query(MetaTag).filter_by(domain=domain, name_org=g_orig_clean, tag_type="genre").first()
                 if not tag_rec:
                     try:
-                        tag_rec = MetaTag(domain=domain, name=g_name, name_org=g_orig, tag_type="genre")
+                        nested = s.begin_nested()
+                        tag_rec = MetaTag(domain=domain, name=g_name_clean, name_org=g_orig_clean, tag_type="genre")
                         s.add(tag_rec)
                         s.flush()
+                        nested.commit()
                     except Exception:
-                        tag_rec = s.query(MetaTag).filter_by(name=g_name).first()
+                        nested.rollback()
+                        tag_rec = s.query(MetaTag).filter_by(domain=domain, name_org=g_orig_clean, tag_type="genre").first()
+                elif tag_rec.name != g_name_clean:
+                    tag_rec.name = g_name_clean
 
                 if tag_rec:
                     item.tag_maps.append(MetaItemTagMap(tag_id=tag_rec.id))
@@ -1356,7 +1464,7 @@ class ModuleMetaDb(PluginModuleBase):
             incoming_site_fps = {}
             incoming_user_fps = {}
 
-            # 1. 사이트 원본 공식 지문 수집 (StashDB, TPDB 원격 응답)
+            # 사이트 원본 공식 지문 수집 (StashDB, TPDB 원격 응답)
             if isinstance(entity_dict.get('original'), dict):
                 for fp in (entity_dict['original'].get('fingerprints') or []):
                     if not isinstance(fp, dict): continue
@@ -1365,7 +1473,7 @@ class ModuleMetaDb(PluginModuleBase):
                     if algo and h_val:
                         incoming_site_fps[f"{algo}_{h_val}"] = (algo, h_val)
 
-            # 2. 유저 추가 지문 및 extra_info 수집
+            # 유저 추가 지문 및 extra_info 수집
             all_extra_fps = []
             if isinstance(entity_dict.get('extra_info'), dict):
                 all_extra_fps.extend(entity_dict['extra_info'].get('fingerprints') or [])
@@ -1385,14 +1493,14 @@ class ModuleMetaDb(PluginModuleBase):
                 else:
                     incoming_user_fps[key] = (algo, h_val)
 
-            # 3. 기존 DB에 저장되어 있던 유저 지문 보존 (사이트 갱신으로 인한 유실 방지)
+            # 기존 DB에 저장되어 있던 유저 지문 보존 (사이트 갱신으로 인한 유실 방지)
             for existing_fp in item.fingerprints:
                 if existing_fp.source == 'user':
                     key = f"{existing_fp.algorithm}_{existing_fp.hash_value}"
                     if key not in incoming_site_fps:
                         incoming_user_fps[key] = (existing_fp.algorithm, existing_fp.hash_value)
 
-            # 4. 최종 동기화 목록 조립 (사이트 지문 최우선, 중복 유저 지문은 사이트로 승격)
+            # 최종 동기화 목록 조립 (사이트 지문 최우선, 중복 유저 지문은 사이트로 승격)
             final_fps_to_save = []
             for k, (algo, h_val) in incoming_site_fps.items():
                 final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'site'})
@@ -1401,7 +1509,7 @@ class ModuleMetaDb(PluginModuleBase):
                 if k not in incoming_site_fps:
                     final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'user'})
 
-            # 5. 테이블 및 extra_info 일괄 반영
+            # 테이블 및 extra_info 일괄 반영
             if final_fps_to_save or item.fingerprints:
                 item.fingerprints.clear()
                 sync_json_list = []
@@ -1763,6 +1871,53 @@ class ModuleMetaDb(PluginModuleBase):
             return None
         finally:
             sess.remove()
+
+
+    @classmethod
+    def find_item_category(cls, code, hint_category=None):
+        """코드(code)를 기반으로 해당 아이템이 실제로 존재하는 카테고리(JAV_CEN, JAV_UNCEN, WESTERN 등)를 탐색하여 반환"""
+        if not code:
+            return None
+
+        cls.ensure_db_ready()
+
+        candidate_cats = []
+        if hint_category:
+            hint_clean = str(hint_category).strip().upper()
+            if hint_clean in DOMAIN_MAP:
+                candidate_cats.append(hint_clean)
+
+        code_str = str(code).strip()
+        if code_str.startswith(('WS', 'WP')):
+            if 'WESTERN' not in candidate_cats:
+                candidate_cats.append('WESTERN')
+        elif code_str.startswith('E'):
+            if 'JAV_UNCEN' not in candidate_cats:
+                candidate_cats.append('JAV_UNCEN')
+        elif code_str.startswith('C'):
+            if 'JAV_CEN' not in candidate_cats:
+                candidate_cats.append('JAV_CEN')
+
+        for cat_cand in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN', 'MOVIE', 'KTV', 'FTV']:
+            if cat_cand not in candidate_cats and cat_cand in DOMAIN_MAP:
+                candidate_cats.append(cat_cand)
+
+        for cat_to_check in candidate_cats:
+            sess, _, std_cat = cls.get_session_and_domain(cat_to_check)
+            if not sess:
+                continue
+            try:
+                exists = sess.query(MetaItem.id).filter_by(code=code_str, category=std_cat).first()
+                if exists:
+                    return std_cat
+            except Exception as e_find:
+                logger.debug(f"[MetaDB] find_item_category 탐색 예외 ({cat_to_check}, {code_str}): {e_find}")
+            finally:
+                sess.remove()
+
+        if hint_category and str(hint_category).strip().upper() in DOMAIN_MAP:
+            return str(hint_category).strip().upper()
+        return 'JAV_CEN'
 
 
     @classmethod
@@ -3092,6 +3247,7 @@ class ModuleMetaDb(PluginModuleBase):
                 'paging': paging,
                 'list': item_list,
                 'meta_db_use_ff_proxy': P.ModelSetting.get_bool("meta_db_use_ff_proxy"),
+                'meta_db_ddns': F.SystemModelSetting.get('ddns') or '',
                 'image_server_url': master_image_server_url
             }
 
@@ -3592,10 +3748,22 @@ class ModuleMetaDb(PluginModuleBase):
 
         if not target_cat: target_cat = 'JAV_CEN'
 
-        sess, domain, std_cat = cls.get_session_and_domain(target_cat)
-        if not sess:
-            logger.error(f"[MetaDB WebList] 세션 획득 실패: target_cat='{target_cat}'")
-            return {'success': False, 'paging': None, 'list': []}
+        target_cat_upper = str(target_cat).strip().upper()
+        is_all_category = (target_cat_upper == 'AV_ALL')
+
+        sess = None
+        domain = None
+        std_cat = target_cat_upper
+
+        if not is_all_category:
+            sess, domain, std_cat = cls.get_session_and_domain(target_cat_upper)
+            if not sess:
+                logger.error(f"[MetaDB WebList] 세션 획득 실패: target_cat='{target_cat}'")
+                return {'success': False, 'paging': None, 'list': []}
+        elif cls._is_postgres:
+            sess = cls._sessions.get('postgres')
+            domain = 'postgres'
+            std_cat = 'AV_ALL'
 
         try:
             try: page_size = int(params.get('page_size', 10))
@@ -3607,66 +3775,140 @@ class ModuleMetaDb(PluginModuleBase):
             search_order = str(params.get('search_order', 'desc')).strip()
             search_status = str(params.get('search_status', 'all')).strip()
 
-            filter_conditions = [MetaItem.category == std_cat]
+            av_categories = ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']
 
-            if search_site and search_site.lower() not in ['all', '']:
-                filter_conditions.append(func.lower(MetaItem.site) == search_site.lower())
+            # 공통 필터 조건 생성 헬퍼 함수
+            def build_common_filters(cat_condition):
+                conds = [cat_condition]
+                if search_site and search_site.lower() not in ['all', '']:
+                    conds.append(func.lower(MetaItem.site) == search_site.lower())
 
-            if search_status == 'no_poster':
-                filter_conditions.append(or_(
-                    MetaItem.poster_url == '',
-                    MetaItem.poster_url == None,
-                    MetaItem.poster_url.ilike('%_pl.jpg'),
-                    MetaItem.poster_url.ilike('%_pl.png'),
-                    MetaItem.poster_url.ilike('%_pl.webp')
-                ))
-
-            elif search_status == 'no_plot':
-                filter_conditions.append(or_(MetaItem.plot == '', MetaItem.plot == None))
-
-            elif search_status == 'no_actor':
-                filter_conditions.append(and_(
-                    ~MetaItem.person_maps.any(),
-                    or_(
-                        MetaItem.extra_info == None,
-                        cast(MetaItem.extra_info, Text) == '{}',
-                        and_(
-                            ~cast(MetaItem.extra_info, Text).ilike('%name_org%'),
-                            ~cast(MetaItem.extra_info, Text).ilike('%name_ko%')
+                if search_status == 'no_poster':
+                    conds.append(or_(
+                        MetaItem.poster_url == '',
+                        MetaItem.poster_url == None,
+                        MetaItem.poster_url.ilike('%_pl.jpg'),
+                        MetaItem.poster_url.ilike('%_pl.png')
+                    ))
+                elif search_status == 'no_plot':
+                    conds.append(or_(MetaItem.plot == '', MetaItem.plot == None))
+                elif search_status == 'no_actor':
+                    conds.append(and_(
+                        ~MetaItem.person_maps.any(),
+                        or_(
+                            MetaItem.extra_info == None,
+                            cast(MetaItem.extra_info, Text) == '{}',
+                            and_(
+                                ~cast(MetaItem.extra_info, Text).ilike('%name_org%'),
+                                ~cast(MetaItem.extra_info, Text).ilike('%name_ko%')
+                            )
                         )
-                    )
-                ))
+                    ))
+                elif search_status == 'complete':
+                    conds.append(and_(
+                        MetaItem.poster_url != '',
+                        MetaItem.poster_url != None,
+                        MetaItem.plot != '',
+                        MetaItem.plot != None
+                    ))
 
-            elif search_status == 'complete':
-                filter_conditions.append(and_(
-                    MetaItem.poster_url != '',
-                    MetaItem.poster_url != None,
-                    MetaItem.plot != '',
-                    MetaItem.plot != None
-                ))
+                if search_word:
+                    search_like = f"%{search_word.replace('-', '%')}%"
+                    conds.append(or_(
+                        MetaItem.originaltitle.ilike(search_like),
+                        MetaItem.ui_code.ilike(search_like),
+                        MetaItem.code.ilike(search_like),
+                        MetaItem.title.ilike(f'%{search_word}%'),
+                        MetaItem.studio.ilike(f'%{search_word}%'),
+                        MetaItem.director.ilike(f'%{search_word}%')
+                    ))
+                return conds
 
-            # B-Tree 인덱스 컬럼 대상 고속 검색
-            if search_word:
-                search_like = f"%{search_word.replace('-', '%')}%"
-                filter_conditions.append(or_(
-                    MetaItem.originaltitle.ilike(search_like),
-                    MetaItem.ui_code.ilike(search_like),
-                    MetaItem.code.ilike(search_like),
-                    MetaItem.title.ilike(f'%{search_word}%'),
-                    MetaItem.studio.ilike(f'%{search_word}%'),
-                    MetaItem.director.ilike(f'%{search_word}%')
-                ))
+            # SQLite 환경에서 ALL(통합) 조회 시 3개 분산 DB 병합 처리
+            if is_all_category and not cls._is_postgres:
+                total_count = 0
+                all_candidate_items = []
+                max_fetch_count = page * page_size
 
-            # 조인 없는 단일 초고속 카운트 쿼리 실행
-            try:
-                count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
-            except Exception as e_tbl_chk:
-                sess.rollback()
-                target_engine = cls._engines.get('postgres' if cls._is_postgres else domain)
-                if target_engine:
-                    Base.metadata.create_all(bind=target_engine)
-                    cls._auto_sync_table_columns(target_engine)
-                count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
+                for c_cat in av_categories:
+                    c_sess, _, c_std = cls.get_session_and_domain(c_cat)
+                    if not c_sess:
+                        continue
+                    try:
+                        c_conds = build_common_filters(MetaItem.category == c_std)
+                        c_cnt = c_sess.query(func.count(MetaItem.id)).filter(and_(*c_conds)).scalar() or 0
+                        total_count += c_cnt
+
+                        if c_cnt > 0:
+                            c_query = c_sess.query(MetaItem).filter(and_(*c_conds)).options(
+                                lazyload(MetaItem.media_files),
+                                lazyload(MetaItem.person_maps),
+                                lazyload(MetaItem.tag_maps),
+                                lazyload(MetaItem.fingerprints)
+                            )
+                            if search_order == 'asc':
+                                c_query = c_query.order_by(MetaItem.created_time.asc())
+                            elif search_order == 'title_asc':
+                                c_query = c_query.order_by(MetaItem.title.asc())
+                            elif search_order == 'title_desc':
+                                c_query = c_query.order_by(MetaItem.title.desc())
+                            else:
+                                c_query = c_query.order_by(MetaItem.created_time.desc())
+
+                            all_candidate_items.extend(c_query.limit(max_fetch_count).all())
+                    finally:
+                        c_sess.remove()
+
+                # 메모리 통합 정렬 및 페이지 슬라이싱
+                if search_order == 'asc':
+                    all_candidate_items.sort(key=lambda x: x.created_time or datetime.min)
+                elif search_order == 'title_asc':
+                    all_candidate_items.sort(key=lambda x: (x.title or '').lower())
+                elif search_order == 'title_desc':
+                    all_candidate_items.sort(key=lambda x: (x.title or '').lower(), reverse=True)
+                else:
+                    all_candidate_items.sort(key=lambda x: x.created_time or datetime.min, reverse=True)
+
+                count = total_count
+                items = all_candidate_items[(page - 1) * page_size : page * page_size]
+
+            else:
+                # PostgreSQL 환경 또는 단일 카테고리 일반 조회
+                if is_all_category:
+                    filter_conditions = build_common_filters(MetaItem.category.in_(av_categories))
+                else:
+                    filter_conditions = build_common_filters(MetaItem.category == std_cat)
+
+                try:
+                    count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
+                except Exception as e_tbl_chk:
+                    sess.rollback()
+                    target_engine = cls._engines.get('postgres' if cls._is_postgres else domain)
+                    if target_engine:
+                        Base.metadata.create_all(bind=target_engine)
+                        cls._auto_sync_table_columns(target_engine)
+                    count = sess.query(func.count(MetaItem.id)).filter(and_(*filter_conditions)).scalar() or 0
+
+                if count == 0:
+                    return {'success': True, 'paging': None, 'list': []}
+
+                query = sess.query(MetaItem).filter(and_(*filter_conditions)).options(
+                    lazyload(MetaItem.media_files),
+                    lazyload(MetaItem.person_maps),
+                    lazyload(MetaItem.tag_maps),
+                    lazyload(MetaItem.fingerprints)
+                )
+
+                if search_order == 'asc':
+                    query = query.order_by(MetaItem.created_time.asc())
+                elif search_order == 'title_asc':
+                    query = query.order_by(MetaItem.title.asc())
+                elif search_order == 'title_desc':
+                    query = query.order_by(MetaItem.title.desc())
+                else:
+                    query = query.order_by(MetaItem.created_time.desc())
+
+                items = query.offset((page - 1) * page_size).limit(page_size).all()
 
             if count == 0:
                 return {'success': True, 'paging': None, 'list': []}
@@ -3757,6 +3999,7 @@ class ModuleMetaDb(PluginModuleBase):
                 'paging': paging,
                 'list': item_list,
                 'meta_db_use_ff_proxy': P.ModelSetting.get_bool("meta_db_use_ff_proxy"),
+                'meta_db_ddns': F.SystemModelSetting.get('ddns') or '',
                 'image_server_url': master_image_server_url.rstrip('/')
             }
 
@@ -3818,6 +4061,16 @@ class ModuleMetaDb(PluginModuleBase):
             return False, 0
 
         cls.ensure_db_ready()
+        cat_upper = str(category or '').strip().upper()
+        if cat_upper == 'AV_ALL':
+            # 전체 AV 통합 모드에서는 세부 카테고리를 순회하며 일괄 삭제
+            total_deleted = 0
+            for c_cat in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']:
+                succ, cnt = cls.delete_records(codes, category=c_cat)
+                if succ:
+                    total_deleted += cnt
+            return True, total_deleted
+
         sess, domain, std_cat = cls.get_session_and_domain(category)
         if not sess:
             return False, 0
@@ -3893,6 +4146,419 @@ class ModuleMetaDb(PluginModuleBase):
         finally:
             sess.remove()
 
+    def _broadcast_batch_log(self, log_line, event_type="log", is_updated=False):
+        """실시간 SSE 구독자들에게 로그 및 상태를 전송하고 링 버퍼에 보관"""
+        timestamp_str = datetime.now().strftime('%H:%M:%S')
+        formatted_entry = f"[{timestamp_str}] {log_line}"
+
+        with self._batch_log_lock:
+            self.batch_log_history.append(formatted_entry)
+            if len(self.batch_log_history) > 300:
+                self.batch_log_history.pop(0)
+
+            # Celery 프로세스와 웹 프로세스 간 상태 공유를 위해 캐시 동기화
+            try:
+                shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                shared_cache.set('status', json.dumps(self.batch_job_status, ensure_ascii=False))
+                shared_cache.set('logs', json.dumps(self.batch_log_history, ensure_ascii=False))
+            except Exception:
+                pass
+
+            dead_subs = []
+            for sub_queue in self.batch_log_subscribers:
+                try:
+                    payload = json.dumps({
+                        'type': event_type,
+                        'message': formatted_entry,
+                        'status': self.batch_job_status,
+                        'is_updated': is_updated
+                    }, ensure_ascii=False)
+                    sub_queue.put(f"data: {payload}\n\n")
+                except Exception:
+                    dead_subs.append(sub_queue)
+
+            for dead in dead_subs:
+                if dead in self.batch_log_subscribers:
+                    self.batch_log_subscribers.remove(dead)
+
+    def _save_persistent_batch_state(self):
+        """FF 재시작 시에도 작업을 이어갈 수 있도록 현재 진행 상태와 큐를 디스크에 영구 보존"""
+        try:
+            os.makedirs(os.path.dirname(self.batch_state_file), exist_ok=True)
+            with self._batch_log_lock:
+                logs_copy = list(self.batch_log_history[-150:])
+            save_payload = {
+                'status_data': self.batch_job_status,
+                'logs': logs_copy
+            }
+            tmp_path = self.batch_state_file + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(save_payload, f, ensure_ascii=False)
+            if os.path.exists(tmp_path):
+                shutil.move(tmp_path, self.batch_state_file)
+        except Exception as e:
+            logger.debug(f"[{self.name}] 배치 상태 파일 저장 예외: {e}")
+
+    def _load_persistent_batch_state(self):
+        """플러그인 로드 시 디스크에 보관된 배치 작업 상태 복원 및 재시작 중단 보정"""
+        try:
+            if os.path.exists(self.batch_state_file):
+                with open(self.batch_state_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    status = data.get('status_data', {})
+                    logs = data.get('logs', [])
+
+                    # 작업 진행 중 FF가 재시작된 경우 중단 상태로 안전 보정
+                    if status.get('is_running'):
+                        status['is_running'] = False
+                        status['stop_flag'] = False
+                        curr_idx = status.get('resume_index', 0)
+                        tot = status.get('total', 0)
+                        if tot > 0 and curr_idx < tot:
+                            status['can_resume'] = True
+                            status['status'] = f"FF 재시작으로 중단됨 (#{curr_idx + 1}번부터 재개 가능)"
+                            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [시스템] FF 재시작 감지 ➔ 작업이 일시 중단되었습니다 (#{curr_idx + 1}/{tot} 재개 가능)")
+                        else:
+                            status['can_resume'] = False
+                            status['status'] = '완료'
+
+                    self.batch_job_status.update(status)
+                    with self._batch_log_lock:
+                        self.batch_log_history = logs[-300:]
+
+                    self._save_persistent_batch_state()
+                    try:
+                        shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                        shared_cache.set('status', json.dumps(self.batch_job_status, ensure_ascii=False))
+                        shared_cache.set('logs', json.dumps(self.batch_log_history, ensure_ascii=False))
+                        shared_cache.set('stop_flag', 'false')
+                    except Exception:
+                        pass
+
+                    logger.debug(f"[{self.name}] 영구 보관된 배치 작업 상태 복원 완료: {self.batch_job_status.get('status')}")
+
+            else:
+                # 상태 파일이 없으면 이전 잔여 공유 캐시를 깨끗하게 소거
+                try:
+                    shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                    shared_cache.delete('status')
+                    shared_cache.delete('logs')
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"[{self.name}] 배치 상태 파일 복원 예외: {e}")
+
+    def run_batch_refresh_worker(self, target_scope, target_codes=None, search_params=None, refresh_mode='missing', delay=2.0, action='restart'):
+        """선택 항목 또는 하단 검색 조건을 대상으로 배치 작업을 실행하며 중단 시 재개 지점 보존"""
+        from .util_metadata import MetaHealingUtil
+
+        search_params = search_params or {}
+        is_resume = (action == 'resume' and self.batch_job_status.get('can_resume') and self.batch_job_status.get('target_items'))
+
+        if is_resume:
+            target_items = self.batch_job_status['target_items']
+            start_idx = self.batch_job_status.get('resume_index', 0)
+            self.batch_job_status.update({
+                'is_running': True,
+                'status': '작업 재개 중...',
+                'mode': refresh_mode,
+                'stop_flag': False,
+                'can_resume': False
+            })
+            self._broadcast_batch_log(f"배치 작업 재개 ➔ #{start_idx + 1}번 항목부터 이어서 진행합니다. (총 {len(target_items)}건)")
+        else:
+            self.batch_job_status.update({
+                'is_running': True,
+                'status': '대상 항목 수집 중...',
+                'mode': refresh_mode,
+                'total': 0,
+                'current': 0,
+                'success': 0,
+                'fail': 0,
+                'skipped': 0,
+                'current_code': '',
+                'stop_flag': False,
+                'can_resume': False,
+                'resume_index': 0,
+                'target_items': []
+            })
+            with self._batch_log_lock:
+                self.batch_log_history.clear()
+
+            self._broadcast_batch_log(f"배치 작업 세션 초기화 완료 ➔ 대상 수집 및 준비를 시작합니다 (모드: {refresh_mode})")
+            target_items = []
+
+            # 체크박스로 선택된 항목 대상 처리
+            if target_scope in ['selected', 'auto'] and target_codes:
+                clean_codes = target_codes if isinstance(target_codes, list) else json.loads(target_codes)
+                if clean_codes:
+                    self._broadcast_batch_log(f"체크박스 선택 항목 {len(clean_codes)}건을 대상으로 선정합니다.")
+                    for cat in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']:
+                        sess, _, std_cat = self.get_session_and_domain(cat)
+                        if not sess: continue
+                        try:
+                            rows = sess.query(MetaItem.code, MetaItem.ui_code, MetaItem.category).filter(
+                                MetaItem.category == std_cat,
+                                or_(MetaItem.code.in_(clean_codes), MetaItem.ui_code.in_(clean_codes))
+                            ).all()
+                            for r in rows:
+                                target_items.append({'code': r.code, 'ui_code': r.ui_code or r.code, 'category': r.category})
+                        finally:
+                            sess.remove()
+
+            # 하단 검색/필터 조건 대상 처리
+            if not target_items and target_scope in ['search_filter', 'auto']:
+                search_cat = str(search_params.get('search_category') or 'AV_ALL').upper()
+                categories = ['JAV_CEN', 'JAV_UNCEN', 'WESTERN'] if search_cat == 'AV_ALL' else [search_cat]
+
+                s_site = str(search_params.get('search_site') or 'all').strip()
+                s_status = str(search_params.get('search_status') or 'all').strip()
+                s_word = str(search_params.get('search_word') or '').strip()
+                s_order = str(search_params.get('search_order') or 'desc').strip()
+
+                self._broadcast_batch_log(f"하단 검색 조건 대조 수집 시작 ➔ 카테고리: {search_cat}, 상태: {s_status}, 사이트: {s_site}, 검색어: '{s_word}'")
+
+                for cat in categories:
+                    sess, _, std_cat = self.get_session_and_domain(cat)
+                    if not sess: continue
+                    try:
+                        conds = [MetaItem.category == std_cat]
+                        if s_site and s_site.lower() not in ['all', '']:
+                            conds.append(func.lower(MetaItem.site) == s_site.lower())
+
+                        if s_status == 'no_actor':
+                            conds.append(and_(
+                                ~MetaItem.person_maps.any(),
+                                or_(
+                                    MetaItem.extra_info == None,
+                                    cast(MetaItem.extra_info, Text) == '{}',
+                                    and_(
+                                        ~cast(MetaItem.extra_info, Text).ilike('%name_org%'),
+                                        ~cast(MetaItem.extra_info, Text).ilike('%name_ko%')
+                                    )
+                                )
+                            ))
+                        elif s_status == 'no_plot':
+                            conds.append(or_(MetaItem.plot == '', MetaItem.plot == None))
+                        elif s_status == 'no_poster':
+                            conds.append(or_(
+                                MetaItem.poster_url == '',
+                                MetaItem.poster_url == None,
+                                MetaItem.poster_url.ilike('%_pl.jpg'),
+                                MetaItem.poster_url.ilike('%_pl.png')
+                            ))
+                        elif s_status == 'complete':
+                            conds.append(and_(
+                                MetaItem.poster_url != '',
+                                MetaItem.poster_url != None,
+                                MetaItem.plot != '',
+                                MetaItem.plot != None
+                            ))
+
+                        if s_word:
+                            s_like = f"%{s_word.replace('-', '%')}%"
+                            conds.append(or_(
+                                MetaItem.originaltitle.ilike(s_like),
+                                MetaItem.ui_code.ilike(s_like),
+                                MetaItem.code.ilike(s_like),
+                                MetaItem.title.ilike(f'%{s_word}%'),
+                                MetaItem.studio.ilike(f'%{s_word}%')
+                            ))
+
+                        q = sess.query(MetaItem.code, MetaItem.ui_code, MetaItem.category).filter(and_(*conds))
+                        if s_order == 'asc':
+                            q = q.order_by(MetaItem.created_time.asc())
+                        else:
+                            q = q.order_by(MetaItem.created_time.desc())
+
+                        for r in q.all():
+                            target_items.append({'code': r.code, 'ui_code': r.ui_code or r.code, 'category': r.category})
+                    finally:
+                        sess.remove()
+
+            start_idx = 0
+            self.batch_job_status['target_items'] = target_items
+
+        total_len = len(target_items)
+        self.batch_job_status['total'] = total_len
+
+        if total_len == 0:
+            self.batch_job_status.update({'is_running': False, 'status': '완료 (대상 없음)'})
+            self._broadcast_batch_log("처리할 대상 항목이 없습니다. 하단 목록에서 선택하거나 필터 조건을 확인하세요.")
+            self._save_persistent_batch_state()
+            return
+
+        # 로컬 동기화 전용 메모리 색인 사전 구축 (JAV / WESTERN 도메인별 자동 생성)
+        memory_person_indices = {}
+        if refresh_mode == 'local_sync':
+            from .util_metadata import PersonMemoryIndex
+            domains_needed = set('WESTERN' if it['category'] == 'WESTERN' else 'JAV' for it in target_items)
+            for dom in domains_needed:
+                self._broadcast_batch_log(f"인물 DB 메모리 색인 테이블 구축 시작 ({dom})...")
+                memory_person_indices[dom] = PersonMemoryIndex(domain=dom)
+                self._broadcast_batch_log(f"인물 색인 적재 완료 ({dom}: 총 {len(memory_person_indices[dom].by_idx):,}명 색인화)")
+
+        # 로컬 DB 및 디스크 파일만 조회하는 모드는 네트워크 차단 위험이 없으므로 딜레이 무시
+        if refresh_mode == 'local_sync':
+            effective_delay = 0.001
+            delay_desc = "무시(로컬 전용)"
+        else:
+            effective_delay = delay
+            delay_desc = f"{delay}초"
+
+        self.batch_job_status['status'] = f'작업 진행 중 ({total_len}건)'
+        self._broadcast_batch_log(f"작업 준비 완료 ➔ 총 {total_len}건 (적용 딜레이: {delay_desc})")
+        self._save_persistent_batch_state()
+        t_start = time.time()
+
+        for idx in range(start_idx, total_len):
+            # 프로세스 간 공유 캐시의 중단 플래그도 함께 확인
+            stop_requested = self.batch_job_status.get('stop_flag')
+            try:
+                shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                if shared_cache.get('stop_flag') == 'true':
+                    stop_requested = True
+            except Exception:
+                pass
+
+            if stop_requested:
+                self.batch_job_status['resume_index'] = idx
+                self.batch_job_status['can_resume'] = True
+                self.batch_job_status['is_running'] = False
+                self.batch_job_status['status'] = f'중단됨 (#{idx + 1}번부터 재개 가능)'
+                self._broadcast_batch_log(f"작업이 일시 정지되었습니다 ➔ 총 {total_len}건 중 {idx}건 완료 (#{idx + 1}번부터 재개 가능)", event_type="warning")
+                try:
+                    shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                    shared_cache.set('stop_flag', 'false')
+                except Exception:
+                    pass
+
+                self._save_persistent_batch_state()
+                return
+
+            item = target_items[idx]
+            code = item['code']
+            ui_code = item['ui_code']
+            cat = item['category']
+
+            self.batch_job_status['current'] = idx + 1
+            self.batch_job_status['current_code'] = ui_code
+
+            mod_name = 'western' if cat == 'WESTERN' else ('jav_uncensored' if cat == 'JAV_UNCEN' else 'jav_censored')
+            target_mod = P.get_module(mod_name)
+
+            if not target_mod:
+                self.batch_job_status['fail'] += 1
+                self._broadcast_batch_log(f"[{idx + 1}/{total_len}] [{ui_code}] {mod_name} 모듈 탐색 실패", event_type="error")
+                continue
+
+            try:
+                if refresh_mode == 'missing':
+                    res = MetaHealingUtil.heal_metadata(target_mod, code, cat)
+                    title_display = res.get('title_log') or ui_code
+                    detail_str = res.get('detail_msg', '')
+                    is_updated = res.get('is_updated', False)
+
+                    if res.get('ret') == 'success':
+                        if is_updated:
+                            self.batch_job_status['success'] += 1
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 처리 완료 ({detail_str})"
+                            self._broadcast_batch_log(log_line, is_updated=True)
+                        else:
+                            self.batch_job_status['skipped'] += 1
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 변경 없음"
+                            self._broadcast_batch_log(log_line, is_updated=False)
+                    else:
+                        self.batch_job_status['fail'] += 1
+                        log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 실패 ({res.get('msg')})"
+                        self._broadcast_batch_log(log_line, event_type="warning", is_updated=False)
+
+                elif refresh_mode == 'local_sync':
+                    # 로컬 인물 DB 및 디스크 파일 상태를 대조하여 O(1) 초고속 동기화 실행
+                    target_dom = 'WESTERN' if cat == 'WESTERN' else 'JAV'
+                    idx_engine = memory_person_indices.get(target_dom)
+                    res = MetaHealingUtil.sync_local_data(target_mod, code, cat, memory_index=idx_engine)
+                    title_display = res.get('title_log') or ui_code
+                    detail_str = res.get('detail_msg', '')
+                    is_updated = res.get('is_updated', False)
+
+                    if res.get('ret') == 'success':
+                        if is_updated:
+                            self.batch_job_status['success'] += 1
+                            detail_suffix = f" ({detail_str})" if detail_str else ""
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 처리 완료{detail_suffix}"
+                            self._broadcast_batch_log(log_line, is_updated=True)
+                        else:
+                            self.batch_job_status['skipped'] += 1
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 변경 없음"
+                            self._broadcast_batch_log(log_line, is_updated=False)
+                    else:
+                        self.batch_job_status['fail'] += 1
+                        log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 실패 ({res.get('msg')})"
+                        self._broadcast_batch_log(log_line, event_type="warning", is_updated=False)
+
+                elif refresh_mode == 'in_place':
+                    try: target_mod.keyword_cache.set(f"BYPASS_{code}", "1")
+                    except Exception: pass
+                    fresh_data = target_mod.info(code, skip_trans=False)
+                    title_display = str(fresh_data.get('title') or ui_code)[:35] if fresh_data else ui_code
+                    if fresh_data:
+                        ModuleMetaDb.save_metadata(cat, fresh_data)
+                        self.batch_job_status['success'] += 1
+                        log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 제자리 갱신 완료"
+                        self._broadcast_batch_log(log_line, is_updated=True)
+                    else:
+                        self.batch_job_status['fail'] += 1
+                        log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 출처 사이트 정보 획득 실패"
+                        self._broadcast_batch_log(log_line, event_type="warning", is_updated=False)
+
+                elif refresh_mode == 'auto_search':
+                    search_res = target_mod.search(ui_code, manual=False, use_db=False)
+                    best_item = next((s for s in search_res if not s.get('is_db_cached') and s.get('score', 0) >= 90), None) if search_res else None
+                    if best_item:
+                        new_code = best_item['code']
+                        try: target_mod.keyword_cache.set(f"BYPASS_{new_code}", "1")
+                        except Exception: pass
+                        fresh_data = target_mod.info(new_code, skip_trans=False)
+                        title_display = str(fresh_data.get('title') or ui_code)[:35] if fresh_data else ui_code
+                        if fresh_data:
+                            ModuleMetaDb.save_metadata(cat, fresh_data)
+                            self.batch_job_status['success'] += 1
+                            site_tag = best_item.get('site_key', '').upper()
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 자동 재검색 완료 ([{site_tag}] 반영)"
+                            self._broadcast_batch_log(log_line, is_updated=True)
+                        else:
+                            self.batch_job_status['fail'] += 1
+                            log_line = f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': 새 출처 정보 가져오기 실패"
+                            self._broadcast_batch_log(log_line, event_type="warning", is_updated=False)
+                    else:
+                        self.batch_job_status['skipped'] += 1
+                        log_line = f"[{idx + 1}/{total_len}] [{cat}] '{ui_code}': 재검색 결과 없음"
+                        self._broadcast_batch_log(log_line, is_updated=False)
+
+            except Exception as e_proc:
+                self.batch_job_status['fail'] += 1
+                self._broadcast_batch_log(f"[{idx + 1}/{total_len}] [{ui_code}] 오류: {str(e_proc)}", event_type="error")
+
+            time.sleep(effective_delay)
+
+            # 25건 주기 또는 느린 모드일 때 진행 인덱스 실시간 디스크 저장
+            if (idx + 1) % 25 == 0 or effective_delay >= 1.0:
+                self.batch_job_status['resume_index'] = idx + 1
+                self._save_persistent_batch_state()
+
+        elapsed = time.time() - t_start
+        self.batch_job_status.update({
+            'is_running': False,
+            'can_resume': False,
+            'resume_index': 0,
+            'target_items': [],
+            'status': '완료'
+        })
+        self._broadcast_batch_log(f"전체 배치 작업 완료 ➔ 성공: {self.batch_job_status['success']}건, 실패: {self.batch_job_status['fail']}건, 건너뜀: {self.batch_job_status['skipped']}건 (소요시간: {elapsed:.1f}초)")
+        self._save_persistent_batch_state()
+
     @classmethod
     def checkpoint_wal(cls):
         cls.ensure_db_ready()
@@ -3915,23 +4581,25 @@ class ModuleMetaDb(PluginModuleBase):
 
         try:
             if cls._is_postgres:
-                raw_conn = cls._engines['postgres'].raw_connection()
-                raw_conn.set_isolation_level(0)
-                cursor = raw_conn.cursor()
-                cursor.execute("""
-                    VACUUM ANALYZE meta_item;
-                    VACUUM ANALYZE meta_person;
-                    VACUUM ANALYZE meta_tag;
-                    VACUUM ANALYZE meta_media;
-                    VACUUM ANALYZE meta_fingerprint;
-                    VACUUM ANALYZE meta_item_person_map;
-                    VACUUM ANALYZE meta_item_tag_map;
-                """)
-                cursor.close()
-                raw_conn.close()
+                vacuum_tables = (
+                    'meta_item',
+                    'meta_person',
+                    'meta_tag',
+                    'meta_media',
+                    'meta_fingerprint',
+                    'meta_item_person_map',
+                    'meta_item_tag_map',
+                )
+                with cls._engines['postgres'].connect().execution_options(
+                    isolation_level='AUTOCOMMIT'
+                ) as conn:
+                    for table_name in vacuum_tables:
+                        conn.execute(text(f'VACUUM ANALYZE {table_name}'))
             else:
                 for dom, eng in cls._engines.items():
-                    with eng.connect() as conn:
+                    with eng.connect().execution_options(
+                        isolation_level='AUTOCOMMIT'
+                    ) as conn:
                         conn.execute(text('PRAGMA wal_checkpoint(TRUNCATE)'))
                         conn.execute(text('VACUUM'))
 
@@ -4761,6 +5429,7 @@ class ModuleMetaDb(PluginModuleBase):
                 return
 
             self.init_engines()
+            self._load_persistent_batch_state()
             latest_path, latest_ver = self.find_latest_jav_actors_db()
 
             if P.ModelSetting.get_bool(f"{self.name}_person_jav_auto_sync_actors") and latest_path:
@@ -4788,6 +5457,11 @@ class ModuleMetaDb(PluginModuleBase):
             # logger.debug(f"[{self.name}] Universal Metadata DB Infrastructure Loaded.")
         except Exception as e:
             logger.error(f"[{self.name}] plugin_load 에러: {e}")
+
+    def plugin_load_celery(self):
+        """Celery 워커 프로세스 구동 시 DB 엔진 초기화"""
+        self.init_engines()
+        self._load_persistent_batch_state()
 
     def setting_save(self, req):
         try:
@@ -4860,8 +5534,12 @@ class ModuleMetaDb(PluginModuleBase):
 
             if req_command == 'db_transfer_status' or command == 'db_transfer_status':
                 return jsonify({'ret': 'success', 'data': self.transfer_status})
+
             if req_command == 'db_import_status' or command == 'db_import_status':
                 return jsonify({'ret': 'success', 'data': self.import_status})
+
+            if req_command == 'db_batch_refresh_status' or command == 'db_batch_refresh_status':
+                return jsonify({'ret': 'success', 'data': self.batch_job_status, 'logs': self.batch_log_history})
 
             if normalized_cat == 'PERSON':
                 is_list_query = (req_command in ['web_list', 'list', 'person_web_list'] or not req_command)
@@ -5021,7 +5699,7 @@ class ModuleMetaDb(PluginModuleBase):
                     except Exception:
                         pl_base64 = upload_payload
 
-                target_cat = req.form.get('category') or getattr(self, 'category', 'JAV_CEN')
+                target_cat = self.find_item_category(code, hint_category=req.form.get('category'))
                 success, result_msg = MetaImageUtil.save_user_cropped_poster(
                     code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=target_cat
                 )
@@ -5070,7 +5748,7 @@ class ModuleMetaDb(PluginModuleBase):
                 code = arg1
                 source_val = arg2
                 target_type = arg3 or 'pl'
-                target_cat = req.form.get('category') or getattr(self, 'category', 'JAV_CEN')
+                target_cat = self.find_item_category(code, hint_category=req.form.get('category'))
 
                 success, result_msg = MetaImageUtil.save_direct_user_image(
                     code, source_val, image_type=target_type, category=target_cat
@@ -5256,6 +5934,185 @@ class ModuleMetaDb(PluginModuleBase):
                 msg = f"인물 DB 초기화 완료: {count}건 삭제됨 ({domain})" if success else "인물 DB 초기화 실패"
                 return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
 
+            # 모달 폼 기반 메타데이터 직접 수정 저장
+            elif command == 'db_edit_save':
+                code = arg1
+                raw_json_str = arg2
+                if not raw_json_str:
+                    return jsonify({'ret': 'error', 'msg': '수정할 데이터가 없습니다.'})
+                try:
+                    new_json = json.loads(raw_json_str)
+                    target_cat = new_json.get('category') or self.find_item_category(code, hint_category=req.form.get('category'))
+                    success = self.save_metadata(target_cat, new_json)
+                    return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB에 성공적으로 저장되었습니다.' if success else '저장 실패'})
+                except Exception as e:
+                    return jsonify({'ret': 'error', 'msg': str(e)})
+
+            # 단일 레코드 삭제
+            elif command == 'db_delete':
+                code = arg1
+                target_cat = self.find_item_category(code, hint_category=req.form.get('category') or arg2)
+                success = self.delete_record(code, category=target_cat)
+                return jsonify({'ret': 'success' if success else 'error', 'msg': '삭제되었습니다.' if success else '삭제 실패'})
+
+            # 카테고리 DB 전체 초기화
+            elif command == 'db_clear':
+                raw_cat = (arg1 or req.form.get('category') or getattr(self, 'category', 'JAV_CEN')).strip().upper()
+                if raw_cat == 'AV_ALL':
+                    total_cleared = 0
+                    all_success = True
+                    for av_cat in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']:
+                        succ, count = self.clear_db(av_cat)
+                        if succ:
+                            total_cleared += count
+                        else:
+                            all_success = False
+                    return jsonify({
+                        'ret': 'success' if all_success else 'warning',
+                        'msg': f'AV 전체 {total_cleared}건의 데이터가 초기화되었습니다.' if all_success else '일부 카테고리 초기화 실패'
+                    })
+                else:
+                    success, count = self.clear_db(raw_cat)
+                    return jsonify({
+                        'ret': 'success' if success else 'error',
+                        'msg': f"['{raw_cat}'] {count}건의 데이터가 초기화되었습니다." if success else '초기화 실패'
+                    })
+
+            # 통합 배치 갱신 작업 제어 명령
+            elif command == 'db_batch_refresh_start':
+                if self.batch_job_status['is_running']:
+                    return jsonify({'ret': 'warning', 'msg': '이미 진행 중인 배치 작업이 있습니다.'})
+
+                self.batch_job_status['is_running'] = True
+
+                post_params = {}
+                if arg3 and isinstance(arg3, str) and arg3.strip().startswith('{'):
+                    try:
+                        post_params = json.loads(arg3)
+                    except Exception:
+                        pass
+
+                action = post_params.get('action') or req.form.get('action') or arg1 or 'restart'
+                target_scope = post_params.get('target_scope') or req.form.get('target_scope') or 'auto'
+                refresh_mode = post_params.get('mode') or req.form.get('mode') or arg2 or 'missing'
+                delay_val = float(post_params.get('delay') or req.form.get('delay') or 2.0)
+
+                target_codes_raw = post_params.get('codes') or req.form.get('codes')
+                search_params = {
+                    'search_category': post_params.get('search_category') or req.form.get('search_category') or 'ALL',
+                    'search_site': post_params.get('search_site') or req.form.get('search_site') or 'all',
+                    'search_status': post_params.get('search_status') or req.form.get('search_status') or 'all',
+                    'search_word': post_params.get('search_word') or req.form.get('search_word') or '',
+                    'search_order': post_params.get('search_order') or req.form.get('search_order') or 'desc'
+                }
+
+                # Celery 가용 시 Celery 워커 프로세스로 위임, 불가 시 데몬 스레드로 실행
+                use_celery = False
+                try:
+                    use_celery = bool(celery and F.SystemModelSetting.get_bool('use_celery'))
+                except Exception:
+                    use_celery = False
+
+                if use_celery:
+                    logger.info(f"[{self.name}] Celery 워커로 배치 작업 위임 실행 (모드: {refresh_mode})")
+                    task_meta_db_batch_refresh.apply_async(
+                        args=[target_scope, target_codes_raw, search_params, refresh_mode, delay_val, action]
+                    )
+                else:
+                    logger.info(f"[{self.name}] 백그라운드 스레드로 배치 작업 시작 (모드: {refresh_mode})")
+                    t = threading.Thread(
+                        target=self.run_batch_refresh_worker,
+                        args=(target_scope, target_codes_raw, search_params, refresh_mode, delay_val, action),
+                        daemon=True
+                    )
+                    t.start()
+
+                start_msg = "중단된 지점부터 작업을 재개합니다." if action == 'resume' else "배치 작업을 시작했습니다."
+                if use_celery:
+                    start_msg += " (Celery 워커 처리)"
+                return jsonify({'ret': 'success', 'msg': start_msg})
+
+            elif command == 'db_batch_refresh_stop':
+                self.batch_job_status['stop_flag'] = True
+                try:
+                    shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                    shared_cache.set('stop_flag', 'true')
+                except Exception:
+                    pass
+                return jsonify({'ret': 'success', 'msg': '배치 작업 중단을 요청했습니다.'})
+
+            # 배치 작업 실시간 상태 및 로그 조회 명령 (공유 캐시 우선 대조)
+            elif command in ['db_batch_refresh_status', 'batch_status']:
+                # 보존 상태 파일이 없고 실행 중도 아니면 무조건 깨끗한 대기 상태 반환
+                if not os.path.exists(self.batch_state_file) and not self.batch_job_status['is_running']:
+                    self.batch_job_status.update({
+                        'is_running': False,
+                        'can_resume': False,
+                        'status': '대기 중',
+                        'total': 0,
+                        'current': 0,
+                        'success': 0,
+                        'fail': 0,
+                        'skipped': 0,
+                        'current_code': '',
+                        'target_items': []
+                    })
+                    return jsonify({
+                        'ret': 'success',
+                        'data': self.batch_job_status,
+                        'logs': []
+                    })
+
+                status_to_return = self.batch_job_status
+                logs_to_return = self.batch_log_history
+                try:
+                    shared_cache = F.get_cache(f"{P.package_name}_batch_job")
+                    cached_status_str = shared_cache.get('status')
+                    if cached_status_str:
+                        parsed_status = json.loads(cached_status_str)
+                        if not self.batch_job_status.get('is_running'):
+                            parsed_status['is_running'] = False
+                        status_to_return = parsed_status
+                    cached_logs_str = shared_cache.get('logs')
+                    if cached_logs_str:
+                        logs_to_return = json.loads(cached_logs_str)
+                except Exception:
+                    pass
+                return jsonify({
+                    'ret': 'success',
+                    'data': status_to_return,
+                    'logs': logs_to_return
+                })
+
+            elif command == 'db_batch_refresh_reset':
+                self.batch_job_status.update({
+                    'is_running': False,
+                    'status': '대기 중',
+                    'mode': 'missing',
+                    'category': 'AV_ALL',
+                    'total': 0,
+                    'current': 0,
+                    'success': 0,
+                    'fail': 0,
+                    'skipped': 0,
+                    'current_code': '',
+                    'stop_flag': False,
+                    'can_resume': False,
+                    'resume_index': 0,
+                    'target_items': []
+                })
+                with self._batch_log_lock:
+                    self.batch_log_history.clear()
+
+                try:
+                    if os.path.exists(self.batch_state_file):
+                        os.remove(self.batch_state_file)
+                except Exception:
+                    pass
+
+                self._broadcast_batch_log("배치 작업 상태 및 큐가 초기화되었습니다.")
+                return jsonify({'ret': 'success', 'msg': '배치 작업 상태가 초기화되었습니다.'})
+
             elif command in ['info_batch', 'batch_info']:
                 category = arg1 or 'JAV_CEN'
                 raw_codes = arg2
@@ -5267,6 +6124,166 @@ class ModuleMetaDb(PluginModuleBase):
                     'total_found': len(batch_result),
                     'data': batch_result
                 })
+
+            elif command == 'db_refresh_missing_in_place':
+                code = arg1
+                from .util_metadata import MetaHealingUtil
+                target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
+                mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
+                target_mod = P.get_module(mod_name)
+                if target_mod:
+                    return jsonify(MetaHealingUtil.heal_metadata(target_mod, code, target_cat))
+                return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
+
+            # 이미지/미디어만 재동기화 (번역 생략, 기존 텍스트 유지, _user 파일 보호)
+            elif command == 'db_refresh_image_only':
+                code = arg1
+                target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
+                mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
+                target_mod = P.get_module(mod_name)
+                if not target_mod:
+                    return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
+
+                cached_json = self.get_metadata(code, category=target_cat)
+                if not cached_json:
+                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+
+                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
+                logger.info(f"[{self.name}] [{target_cat}] 미디어 전용 재동기화 시작: [{code}] ({ui_code})")
+
+                try:
+                    if hasattr(target_mod, 'keyword_cache') and target_mod.keyword_cache:
+                        target_mod.keyword_cache.set(f"BYPASS_{code}", "1")
+                except Exception:
+                    pass
+
+                try:
+                    fresh_media = target_mod.info(code, keyword=ui_code, skip_trans=True)
+                except TypeError:
+                    fresh_media = target_mod.info(code, skip_trans=True)
+
+                if fresh_media and (fresh_media.get('thumb') or fresh_media.get('original', {}).get('thumb')):
+                    cached_json['thumb'] = fresh_media.get('thumb', [])
+                    cached_json['fanart'] = fresh_media.get('fanart', [])
+
+                    if fresh_media.get('original'):
+                        fresh_orig = fresh_media['original']
+                        if 'original' not in cached_json or not isinstance(cached_json['original'], dict):
+                            cached_json['original'] = {}
+                        if fresh_orig.get('thumb'):
+                            cached_json['original']['thumb'] = fresh_orig['thumb']
+                        if fresh_orig.get('fanart'):
+                            cached_json['original']['fanart'] = fresh_orig['fanart']
+                        if fresh_orig.get('extras'):
+                            cached_json['original']['extras'] = fresh_orig['extras']
+
+                    if fresh_media.get('extras'):
+                        cached_json['extras'] = fresh_media.get('extras', [])
+
+                    self.save_metadata(target_cat, cached_json)
+                    logger.info(f"[{self.name}] [{code}] 이미지 및 팬아트 주소 갱신 완료")
+                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 동기화 완료"})
+                else:
+                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 원격 사이트에서 미디어 정보를 가져오지 못했습니다."})
+
+            # 현재 사이트 정보 제자리 갱신
+            elif command == 'db_refresh_in_place':
+                code = arg1
+                target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
+                mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
+                target_mod = P.get_module(mod_name)
+                if not target_mod:
+                    return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
+
+                cached_json = self.get_metadata(code, category=target_cat)
+                if not cached_json:
+                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+
+                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
+                logger.info(f"[{self.name}] [{target_cat}] 현재 출처 사이트 제자리 갱신 시작: [{code}] ({ui_code})")
+
+                try:
+                    if hasattr(target_mod, 'keyword_cache') and target_mod.keyword_cache:
+                        target_mod.keyword_cache.set(f"BYPASS_{code}", "1")
+                except Exception:
+                    pass
+
+                try:
+                    fresh_data = target_mod.info(code, keyword=ui_code, skip_trans=False)
+                except TypeError:
+                    fresh_data = target_mod.info(code, skip_trans=False)
+
+                if fresh_data:
+                    self.save_metadata(target_cat, fresh_data)
+                    title_log = fresh_data.get('title', '')
+                    logger.info(f"[{self.name}] [{code}] 메타데이터 및 팬아트 갱신 완료: {title_log}")
+                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 현재 사이트 메타데이터 갱신 완료!\n{title_log}"})
+                else:
+                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 출처 사이트에서 정보를 가져오지 못했습니다."})
+
+            # 전체 우선순위 자동 재검색 갱신 (순차 탐색, 1위 항목으로 교체/생성)
+            elif command == 'db_refresh_auto_search':
+                code = arg1
+                target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
+                mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
+                target_mod = P.get_module(mod_name)
+                if not target_mod:
+                    return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
+
+                cached_json = self.get_metadata(code, category=target_cat)
+                if not cached_json:
+                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+
+                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
+                logger.info(f"[{self.name}] [{target_cat}] 전체 우선순위 자동 재검색 갱신 시작: [{code}] ➔ 키워드: '{ui_code}'")
+
+                search_res = target_mod.search(ui_code, manual=False, use_db=False)
+                if not search_res:
+                    return jsonify({'ret': 'warning', 'msg': f"'{ui_code}' 검색 결과가 없습니다."})
+
+                best_item = None
+                if target_cat == 'JAV_CEN':
+                    from support_site import SiteAvBase
+                    _, target_label, target_num = SiteAvBase._parse_ui_code(ui_code)
+                    for item in search_res:
+                        if item.get('is_db_cached'):
+                            continue
+                        cand_ui = str(item.get('ui_code') or '').strip()
+                        _, c_label, c_num = SiteAvBase._parse_ui_code(cand_ui)
+                        cand_score = item.get('original_score', item.get('score', 0))
+                        if cand_score >= 99 and target_label == c_label and target_num == c_num:
+                            best_item = item
+                            break
+
+                if not best_item:
+                    best_item = next((item for item in search_res if not item.get('is_db_cached') and item.get('score', 0) >= 90), None)
+
+                if not best_item:
+                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 일치하는 메타데이터를 찾지 못했습니다."})
+
+                new_code = best_item['code']
+                logger.info(f"[{self.name}] 자동 재검색 채택: [{best_item.get('site_key', '').upper()}] Code: {new_code} (기존: {code})")
+
+                try:
+                    if hasattr(target_mod, 'keyword_cache') and target_mod.keyword_cache:
+                        target_mod.keyword_cache.set(f"BYPASS_{new_code}", "1")
+                        target_mod.keyword_cache.set(f"BYPASS_{code}", "1")
+                except Exception:
+                    pass
+
+                try:
+                    fresh_data = target_mod.info(new_code, keyword=ui_code, skip_trans=False)
+                except TypeError:
+                    fresh_data = target_mod.info(new_code, skip_trans=False)
+
+                if fresh_data:
+                    self.save_metadata(target_cat, fresh_data)
+                    title_log = fresh_data.get('title', '')
+                    site_tag = best_item.get('site_key', '').upper()
+                    msg = f"[{ui_code}] 자동 재검색 갱신 완료! ({site_tag})\n{title_log}"
+                    return jsonify({'ret': 'success', 'msg': msg})
+                else:
+                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 상세 정보(Info)를 가져오지 못했습니다."})
 
             elif command == 'person_sync_jav_actors':
                 success, msg = self.sync_jav_actors_db()
@@ -5620,6 +6637,9 @@ class ModuleMetaDb(PluginModuleBase):
             self.import_status['is_running'] = False
 
     def process_normal(self, sub, req):
+        if sub == "batch_stream":
+            return self.process_api("batch_stream", req)
+
         if sub == "db_download":
             filename = req.args.get('filename')
             if filename:
@@ -5632,6 +6652,45 @@ class ModuleMetaDb(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
+            # SSE 실시간 로그 스트리밍 엔드포인트
+            if sub == "batch_stream":
+                import queue
+                sub_queue = queue.Queue()
+                with self._batch_log_lock:
+                    self.batch_log_subscribers.append(sub_queue)
+
+                def sse_event_stream():
+                    try:
+                        # Nginx 및 역방향 프록시의 초기 버퍼링을 즉시 관통시키는 2KB 패딩 송출
+                        yield f": {' ' * 2048}\n\n"
+
+                        # 초기 연결 시 최근 로그 내역 일괄 전송
+                        with self._batch_log_lock:
+                            init_payload = json.dumps({
+                                'type': 'init',
+                                'logs': self.batch_log_history[-100:],
+                                'status': self.batch_job_status
+                            }, ensure_ascii=False)
+                        yield f"data: {init_payload}\n\n"
+
+                        while True:
+                            try:
+                                msg = sub_queue.get(timeout=15)
+                                yield msg
+                            except queue.Empty:
+                                # 연결 유지용 킵얼라이브 핑
+                                yield ": ping\n\n"
+                    except GeneratorExit:
+                        with self._batch_log_lock:
+                            if sub_queue in self.batch_log_subscribers:
+                                self.batch_log_subscribers.remove(sub_queue)
+
+                return Response(sse_event_stream(), mimetype="text/event-stream", headers={
+                    'Cache-Control': 'no-cache',
+                    'X-Accel-Buffering': 'no',
+                    'Connection': 'keep-alive'
+                })
+
             # 대량 메타데이터 일괄 조회 API (info_batch / batch_info)
             if sub in ["info_batch", "batch_info"]:
                 body_json = req.get_json(silent=True) if req.is_json else {}

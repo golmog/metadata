@@ -79,6 +79,7 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_poster_force_studios": "",
 
             f"{self.name}_image_mode": "image_server",
+            f"{self.name}_image_server_save_format": "/western/{studio_1}/{studio}",
             f"{self.name}_actor_image_mode": "site",
             f"{self.name}_image_server_actor_path": "/western/actors",
             f"{self.name}_actor_img_order": "site_img_url, local_img_path",
@@ -405,6 +406,12 @@ class ModuleWestern(PluginModuleBase):
                     return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 동기화 완료"})
                 else:
                     return jsonify({'ret': 'warning', 'msg': '미디어 정보를 가져오지 못했습니다.'})
+
+            # 현재 사이트 누락 정보 갱신 (지능형 치유 모드)
+            elif command == 'db_refresh_missing_in_place':
+                code = arg1
+                from .util_metadata import MetaHealingUtil
+                return jsonify(MetaHealingUtil.heal_metadata(self, code, self.category))
 
             # 현재 사이트 정보 제자리 갱신
             elif command == 'db_refresh_in_place':

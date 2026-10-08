@@ -521,6 +521,12 @@ class ModuleJavCensored(PluginModuleBase):
                 else:
                     return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 원격 사이트에서 미디어 정보를 가져오지 못했습니다."})
 
+            # 현재 사이트 누락 정보 갱신 (지능형 치유 모드)
+            elif command == 'db_refresh_missing_in_place':
+                code = arg1
+                from .util_metadata import MetaHealingUtil
+                return jsonify(MetaHealingUtil.heal_metadata(self, code, self.category))
+
             # 현재 사이트 정보 제자리 갱신
             elif command == 'db_refresh_in_place':
                 code = arg1
