@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['btn_delete_selected', '선택항목 삭제'], ['btn_db_clear', '현재 카테고리 DB 초기화'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']]) }}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('.static', filename='meta_db.css') }}">
+
+<!-- 상단 접이식 배치 제어 및 실시간 터미널 패널 -->
+<div class="mb-3">
+  <button class="btn btn-sm btn-outline-info btn-block font-weight-bold py-2 text-center collapsed" type="button" data-toggle="collapse" data-target="#batch_collapse_box" aria-expanded="false" aria-controls="batch_collapse_box" id="btn_toggle_batch">
+    <span>
+      ⚡ AV 메타데이터 통합 배치 작업 & 실시간 모니터링 
+      <span class="text-collapsed small text-muted">(펼치기) ▼</span>
+      <span class="text-expanded small text-muted">(접기) ▲</span>
+    </span>
+  </button>
+</div>
+
+<div class="collapse mb-4" id="batch_collapse_box">
+  <div class="card bg-dark border-secondary p-3 shadow-lg">
+    <!-- 1행: 배치 작업 설정 조건 선택 영역 -->
+    <div class="row align-items-center mb-2">
+      <div class="col-md-5 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">작업 대상 범위</label>
+        <select id="batch_target_scope" class="form-control form-control-sm font-weight-bold">
+          <option value="auto" selected>자동 (선택 항목 우선, 없으면 검색결과 전체)</option>
+          <option value="selected" id="opt_batch_selected">체크박스 선택 항목 (0개 선택됨)</option>
+          <option value="search_filter">하단 검색/필터 결과 전체</option>
+        </select>
+      </div>
+
+      <div class="col-md-4 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">배치 작업 모드</label>
+        <select id="batch_mode" class="form-control form-control-sm">
+          <option value="local_sync" selected>📁 로컬 DB/파일 기반 업데이트</option>
+          <option value="missing">🩹 현재 사이트 누락 정보 업데이트</option>
+          <option value="in_place">📌 현재 사이트 제자리 갱신</option>
+          <option value="auto_search">🔍 전체 우선순위 자동 재검색</option>
+        </select>
+      </div>
+
+      <div class="col-md-3 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">작업 간 딜레이 (초)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" id="batch_delay" class="form-control form-control-sm font-weight-bold" min="0.5" step="0.1" value="2.0">
+          <div class="input-group-append">
+            <span class="input-group-text">초</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2행: 배치 작업 제어 버튼 영역 (독립된 단독 행으로 분리) -->
+    <div class="d-flex justify-content-end align-items-center mb-3 pt-2 border-top border-secondary">
+      <!-- 기본 시작 버튼 -->
+      <button type="button" class="btn btn-sm btn-primary font-weight-bold px-3 shadow mr-1" id="btn_batch_start">배치 작업 시작</button>
+
+      <!-- 중단 후 나타나는 분기 버튼 그룹 -->
+      <div id="batch_resume_btn_group" style="display: none;" class="mr-1">
+        <button type="button" class="btn btn-sm btn-success font-weight-bold px-3 mr-1 shadow" id="btn_batch_resume" title="중단된 지점부터 이어서 작업을 계속 진행합니다.">▶ 중단 지점부터 재개</button>
+        <button type="button" class="btn btn-sm btn-outline-warning font-weight-bold px-3 shadow" id="btn_batch_restart" title="대상 항목의 처음부터 다시 시작합니다.">🔄 처음부터 다시 시작</button>
+      </div>
+
+      <!-- 실행 중 버튼 -->
+      <button type="button" class="btn btn-sm btn-danger font-weight-bold px-3 shadow mr-1" id="btn_batch_stop" style="display: none;">작업 중단</button>
+
+      <!-- 패널 상태 초기화 버튼 -->
+      <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_reset_panel" style="background-color: #21262d; border-color: #363b42; white-space: nowrap;" title="배치 작업 대상 및 상태를 초기 상태로 리셋합니다.">패널 초기화</button>
+    </div>
+
+    <!-- 진행 현황 프로그레스 바 -->
+    <div class="mb-3" id="batch_progress_wrapper">
+      <div class="d-flex justify-content-between align-items-center mb-1 small">
+        <div>
+          <span class="badge badge-secondary mr-1" id="batch_badge_status">대기 중</span>
+          <span class="font-weight-bold text-white" id="batch_current_code_text">대기 중</span>
+        </div>
+        <div class="text-muted" id="batch_stats_text">진행: 0 / 0 (성공: 0, 실패: 0, 건너뜀: 0)</div>
+      </div>
+      <div class="progress" style="height: 20px; background-color: #1a1d21;">
+        <div id="batch_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated bg-info font-weight-bold" role="progressbar" style="width: 0%;">0%</div>
+      </div>
+    </div>
+
+    <!-- 실시간 SSE 모니터링 터미널 -->
+    <div class="card border-secondary p-0 overflow-hidden" style="background: #0d1117;">
+      <div class="d-flex justify-content-between align-items-center px-3 py-1 border-bottom border-secondary bg-dark text-white">
+        <span class="small font-weight-bold text-info">🖥️ 실시간 스트리밍 작업 로그</span>
+        <div class="d-flex align-items-center">
+          <div class="custom-control custom-checkbox mr-3">
+            <input type="checkbox" class="custom-control-input" id="batch_log_autoscroll" checked>
+            <label class="custom-control-label small font-weight-bold text-muted" for="batch_log_autoscroll" style="cursor: pointer;">자동 스크롤</label>
+          </div>
+          <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_clear_log" style="background-color: #21262d; border-color: #363b42; font-size: 0.78rem; padding: 2px 10px; white-space: nowrap; line-height: 1.4;" title="터미널 창의 로그를 지웁니다.">로그 비우기</button>
+        </div>
+      </div>
+      <div id="batch_terminal_logs" class="p-2 font-monospace" style="height: 190px; overflow-y: auto; background: #08090a; color: #58a6ff; font-size: 0.82rem; line-height: 1.45; white-space: pre-wrap;">[시스템] 배치 작업 대기 상태입니다. 상단에서 조건을 설정하고 시작 버튼을 누르세요.</div>
+    </div>
+  </div>
+</div>
+
+{{ macros.m_hr() }}
+
+<!-- 하단 검색 및 통합 목록 영역 -->
+<div>
+  <form id="form_search" class="form-inline" style="text-align:left" onsubmit="return false;">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-8">
+          <div class="input-group input-group-sm">
+            <select id="search_category" name="search_category" class="form-control form-control-sm font-weight-bold text-primary">
+              <option value="AV_ALL" selected>전체 AV (통합)</option>
+              <option value="JAV_CEN">JAV Censored</option>
+              <option value="JAV_UNCEN">JAV Uncensored</option>
+              <option value="WESTERN">Western</option>
+            </select>
+            <select id="search_site" name="search_site" class="form-control form-control-sm">
+              <option value="all">전체 사이트</option>
+              <option value="dmm">DMM</option>
+              <option value="mgstage">MGStage</option>
+              <option value="jav321">Jav321</option>
+              <option value="javbus">Javbus</option>
+              <option value="javdb">JavDB</option>
+              <option value="1pondo">1Pondo</option>
+              <option value="10musume">10Musume</option>
+              <option value="paco">Pacopacomama</option>
+              <option value="heyzo">Heyzo</option>
+              <option value="carib">Caribbean</option>
+              <option value="fc2com">FC2</option>
+              <option value="stashdb">StashDB</option>
+              <option value="tpdb">ThePornDB</option>
+            </select>
+            <select id="search_status" name="search_status" class="form-control form-control-sm">
+              <option value="all">전체 상태</option>
+              <option value="no_actor">배우 누락</option>
+              <option value="no_poster">포스터 누락</option>
+              <option value="no_plot">줄거리 누락</option>
+              <option value="complete">정상 완료</option>
+            </select>
+            <select id="search_order" name="search_order" class="form-control form-control-sm">
+              <option value="desc">최근 생성순</option>
+              <option value="asc">과거 생성순</option>
+              <option value="title_asc">제목순 (A-Z/ㄱ-ㅎ)</option>
+              <option value="title_desc">제목 역순 (Z-A/ㅎ-ㄱ)</option>
+            </select>
+            <select id="page_size" name="page_size" class="form-control form-control-sm">
+              <option value="10">10개씩</option>
+              <option value="25">25개씩</option>
+              <option value="50">50개씩</option>
+              <option value="100">100개씩</option>
+            </select>
+          </div>
+        </span>
+        <span class="col-md-4 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="제목, 코드, 스튜디오 검색" aria-label="Search">
+          <button id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+
+  <div id='page1'></div>
+  {{ macros.m_hr_head_top() }}
+  <div class="row align-items-center text-center font-weight-bold py-1 px-1">
+    <div class="col-sm-2 d-flex align-items-center justify-content-center px-1">
+      <input type="checkbox" id="check_all_meta" class="mr-2" style="cursor: pointer; transform: scale(1.4);" title="전체 선택 / 해제">
+      <span>포스터</span>
+    </div>
+    <div class="col-sm-8 pl-1 pr-2 text-center">메타데이터 정보</div>
+    <div class="col-sm-2 pl-1 pr-2 text-center">관리</div>
+  </div>
+  {{ macros.m_hr_head_bottom() }}
+  <div id="list_div" data-list-type="meta" data-list-category="AV_ALL"></div>
+  <div id='page2'></div>
+</div>
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "meta_db";
+</script>
+<script src="{{ url_for('.static', filename='common.js') }}"></script>
+<script src="{{ url_for('.static', filename='common_jav.js') }}"></script>
+<script src="{{ url_for('.static', filename='main_db.js') }}"></script>
+{% endblock %}

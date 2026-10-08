@@ -1,9 +1,13 @@
 /* static/meta_db.css */
 
-#btn_toggle_setting.collapsed .text-expanded { display: none; }
-#btn_toggle_setting.collapsed .text-collapsed { display: inline; }
-#btn_toggle_setting:not(.collapsed) .text-expanded { display: inline; }
-#btn_toggle_setting:not(.collapsed) .text-collapsed { display: none; }
+#btn_toggle_setting.collapsed .text-expanded,
+#btn_toggle_batch.collapsed .text-expanded { display: none; }
+#btn_toggle_setting.collapsed .text-collapsed,
+#btn_toggle_batch.collapsed .text-collapsed { display: inline; }
+#btn_toggle_setting:not(.collapsed) .text-expanded,
+#btn_toggle_batch:not(.collapsed) .text-expanded { display: inline; }
+#btn_toggle_setting:not(.collapsed) .text-collapsed,
+#btn_toggle_batch:not(.collapsed) .text-collapsed { display: none; }
 
 /* 이미지 크롭 모달 기본 다이얼로그 및 레이아웃 */
 #imageCropModal .modal-dialog {
@@ -487,4 +491,19 @@
   object-fit: cover;
   object-position: top;
   display: block;
+}
+
+/* 실시간 스트리밍 배치 터미널 콘솔 스크롤바 */
+#batch_terminal_logs::-webkit-scrollbar {
+  width: 8px;
+}
+#batch_terminal_logs::-webkit-scrollbar-track {
+  background: #08090a;
+}
+#batch_terminal_logs::-webkit-scrollbar-thumb {
+  background: #21262d;
+  border-radius: 4px;
+}
+#batch_terminal_logs::-webkit-scrollbar-thumb:hover {
+  background: #30363d;
 }

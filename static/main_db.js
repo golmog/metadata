@@ -83,7 +83,12 @@ function getDisplayMediaUrl(url, site, mediaType) {
     var clean = url.trim();
     if (!clean) return '';
 
-    if (isLocalServerMediaUrl(clean) || clean.indexOf('/metadata/normal/') !== -1) {
+    if (isLocalServerMediaUrl(clean)) {
+        return clean;
+    }
+    if (clean.indexOf('/metadata/normal/') !== -1) {
+        var existingProxyHost = (typeof window.meta_db_ddns === 'string') ? window.meta_db_ddns.replace(/\/+$/, '') : '';
+        if (existingProxyHost && clean.charAt(0) === '/') return existingProxyHost + clean;
         return clean;
     }
 
@@ -95,7 +100,9 @@ function getDisplayMediaUrl(url, site, mediaType) {
         var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1);
         var routePath = (mediaType === 'video') ? (isUncen ? 'jav_video_un' : 'jav_video') : (isUncen ? 'jav_image_un' : 'jav_image');
         var siteParam = site ? encodeURIComponent(site) : '';
-        return '/' + package_name + '/normal/' + routePath + '?site=' + siteParam + '&url=' + encodeURIComponent(clean);
+        var proxyUrl = '/' + package_name + '/normal/' + routePath + '?site=' + siteParam + '&url=' + encodeURIComponent(clean);
+        var ddnsHost = (typeof window.meta_db_ddns === 'string') ? window.meta_db_ddns.replace(/\/+$/, '') : '';
+        return ddnsHost ? ddnsHost + proxyUrl : proxyUrl;
     }
 
     return clean;
@@ -190,6 +197,8 @@ function get_list_context() {
     var resolved_category = 'JAV_CEN';
     if (is_person_page) {
         resolved_category = 'PERSON';
+    } else if ($('#search_category').length > 0 && $('#search_category').val()) {
+        resolved_category = $('#search_category').val();
     } else if (current_sub && sub_to_cat[current_sub]) {
         resolved_category = sub_to_cat[current_sub];
     } else {
@@ -210,6 +219,70 @@ function get_storage_prefix() {
         : (current_sub + '_dblist_');
 }
 
+function updateSiteOptionsByCategory(cat, preserveSiteVal) {
+    var $siteSelect = $('#search_site');
+    if ($siteSelect.length === 0 || $('#search_category').length === 0) return;
+
+    var siteMapByCat = {
+        'JAV_CEN': [
+            { val: 'all', text: '전체 사이트' },
+            { val: 'dmm', text: 'DMM' },
+            { val: 'mgstage', text: 'MGStage' },
+            { val: 'jav321', text: 'Jav321' },
+            { val: 'javbus', text: 'Javbus' },
+            { val: 'javdb', text: 'JavDB' }
+        ],
+        'JAV_UNCEN': [
+            { val: 'all', text: '전체 사이트' },
+            { val: '1pondo', text: '1Pondo' },
+            { val: '10musume', text: '10Musume' },
+            { val: 'carib', text: 'Caribbean' },
+            { val: 'heyzo', text: 'Heyzo' },
+            { val: 'paco', text: 'Pacopacomama' },
+            { val: 'fc2com', text: 'FC2' }
+        ],
+        'WESTERN': [
+            { val: 'all', text: '전체 사이트' },
+            { val: 'stashdb', text: 'StashDB' },
+            { val: 'tpdb', text: 'ThePornDB' }
+        ],
+        'AV_ALL': [
+            { val: 'all', text: '전체 사이트' },
+            { val: 'dmm', text: 'DMM' },
+            { val: 'mgstage', text: 'MGStage' },
+            { val: 'jav321', text: 'Jav321' },
+            { val: 'javbus', text: 'Javbus' },
+            { val: 'javdb', text: 'JavDB' },
+            { val: '1pondo', text: '1Pondo' },
+            { val: '10musume', text: '10Musume' },
+            { val: 'carib', text: 'Caribbean' },
+            { val: 'heyzo', text: 'Heyzo' },
+            { val: 'paco', text: 'Pacopacomama' },
+            { val: 'fc2com', text: 'FC2' },
+            { val: 'stashdb', text: 'StashDB' },
+            { val: 'tpdb', text: 'ThePornDB' }
+        ]
+    };
+
+    var targetCat = (cat || 'AV_ALL').toUpperCase();
+    var optionsList = siteMapByCat[targetCat] || siteMapByCat['AV_ALL'];
+    var currentVal = preserveSiteVal || $siteSelect.val() || 'all';
+
+    var html = '';
+    var isValidVal = false;
+    for (var i = 0; i < optionsList.length; i++) {
+        var opt = optionsList[i];
+        var isSelected = (opt.val === currentVal);
+        if (isSelected) isValidVal = true;
+        html += '<option value="' + opt.val + '"' + (isSelected ? ' selected' : '') + '>' + opt.text + '</option>';
+    }
+
+    $siteSelect.html(html);
+    if (!isValidVal) {
+        $siteSelect.val('all');
+    }
+}
+
 function triggerInitialSearchOnce() {
     if (is_initial_search_done) return;
     is_initial_search_done = true;
@@ -218,6 +291,12 @@ function triggerInitialSearchOnce() {
     var list_context = get_list_context();
     var is_person_page = list_context.type === 'person';
     var storage_pfx = get_storage_prefix();
+
+    if ($('#search_category').length > 0) {
+        var saved_cat = localStorage.getItem(storage_pfx + 'search_category') || 'AV_ALL';
+        $("#search_category").val(saved_cat);
+        $('#list_div').attr('data-list-category', saved_cat);
+    }
 
     var saved_word = localStorage.getItem(storage_pfx + 'search_word') || '';
     $("#search_word").val(saved_word);
@@ -233,7 +312,11 @@ function triggerInitialSearchOnce() {
 
     if (!is_person_page) {
         var saved_site = localStorage.getItem(storage_pfx + 'search_site') || 'all';
-        $("#search_site").val(saved_site);
+        if ($('#search_category').length > 0) {
+            updateSiteOptionsByCategory($("#search_category").val(), saved_site);
+        } else {
+            $("#search_site").val(saved_site);
+        }
     } else {
         var default_dom = list_context.domain;
         var saved_domain = localStorage.getItem(storage_pfx + 'search_domain') || default_dom;
@@ -298,6 +381,12 @@ window.globalRequestSearch = function(page, preserveScroll) {
     localStorage.setItem(storage_pfx + 'search_word', search_word);
     localStorage.setItem(storage_pfx + 'page_size', page_size);
     localStorage.setItem(storage_pfx + 'current_page', page_val);
+
+    if ($('#search_category').length > 0) {
+        var search_category = $("#search_category").val() || 'AV_ALL';
+        localStorage.setItem(storage_pfx + 'search_category', search_category);
+        $('#list_div').attr('data-list-category', search_category);
+    }
 
     var savedScrollTop = (preserveScroll === true) ? window.scrollY : 0;
 
@@ -392,6 +481,9 @@ window.globalRequestSearch = function(page, preserveScroll) {
             if (ret && ret.success) {
                 if (typeof ret.meta_db_use_ff_proxy !== 'undefined') {
                     window.meta_db_use_ff_proxy = Boolean(ret.meta_db_use_ff_proxy);
+                }
+                if (typeof ret.meta_db_ddns !== 'undefined') {
+                    window.meta_db_ddns = ret.meta_db_ddns || '';
                 }
                 if (ret.image_server_url) {
                     window.image_server_url = ret.image_server_url;
@@ -607,6 +699,7 @@ function injectDbModals() {
                       메타 갱신
                     </button>
                     <div class="dropdown-menu shadow">
+                      <a class="dropdown-item btn_modal_refresh_missing_in_place text-info font-weight-bold" href="#">🩹 현재 사이트 누락 정보 업데이트</a>
                       <a class="dropdown-item btn_modal_refresh_in_place text-light font-weight-bold" href="#">📌 현재 사이트 제자리 갱신</a>
                       <a class="dropdown-item btn_modal_refresh_auto_search text-success font-weight-bold" href="#">🔍 전체 우선순위 자동 재검색</a>
                     </div>
@@ -714,6 +807,7 @@ function injectDbModals() {
               </div>
               <div class="modal-body p-2">
                 <input type="hidden" id="crop_target_code">
+                <input type="hidden" id="crop_target_category">
                 <input type="hidden" id="crop_person_id">
                 <input type="hidden" id="crop_person_domain" value="JAV">
                 <input type="hidden" id="crop_has_user_poster">
@@ -1210,6 +1304,7 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
     var final_pl = $m.find('#edit_landscape_url_final').val().trim();
 
     payload.code = code;
+    payload.category = row.category || payload.category || get_list_context().category || 'JAV_CEN';
     payload.ui_code = $m.find('#edit_ui_code').val().trim() || code;
     payload.site = $m.find('#edit_site').val().trim() || (row.site || '');
     payload.title = $m.find('#edit_title').val().trim() || row.title || code;
@@ -1321,13 +1416,13 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
     return payload;
 }
 
-
 $(document).ready(function(){
     injectDbModals();
     var current_sub = get_current_module_sub();
     var is_person_page = get_list_context().type === 'person';
     var storage_pfx = is_person_page ? ('person_' + current_sub + '_') : (current_sub + '_dblist_');
 
+    // DB 기본 설정 패널 접힘 상태 복원
     if ($('#setting_collapse_box').length > 0) {
         var saved_collapse = localStorage.getItem(storage_pfx + 'setting_collapse');
         if (saved_collapse === 'show') {
@@ -1339,6 +1434,38 @@ $(document).ready(function(){
         }
     }
 
+    // 상단 배치 제어 패널 접힘 상태 및 설정값 복원
+    if ($('#batch_collapse_box').length > 0) {
+        var saved_batch_collapse = localStorage.getItem(storage_pfx + 'batch_collapse');
+        if (saved_batch_collapse === 'show') {
+            $('#batch_collapse_box').addClass('show');
+            $('#btn_toggle_batch').removeClass('collapsed').attr('aria-expanded', 'true');
+        } else {
+            $('#batch_collapse_box').removeClass('show');
+            $('#btn_toggle_batch').addClass('collapsed').attr('aria-expanded', 'false');
+        }
+
+        // 배치 작업 폼 설정값 복원
+        var batchFields = ['batch_target_scope', 'batch_mode', 'batch_delay'];
+        for (var b = 0; b < batchFields.length; b++) {
+            var bFid = batchFields[b];
+            var savedBVal = localStorage.getItem(storage_pfx + bFid);
+            if (savedBVal !== null) {
+                $('#' + bFid).val(savedBVal);
+            }
+        }
+
+        var savedAutoScroll = localStorage.getItem(storage_pfx + 'batch_log_autoscroll');
+        if (savedAutoScroll !== null) {
+            $('#batch_log_autoscroll').prop('checked', savedAutoScroll === 'true');
+        }
+
+        // 페이지 진입 즉시 이전 배치 상태 동기화 및 SSE 연결
+        syncBatchStatus();
+        connectBatchSSE();
+    }
+
+    // 엔진 설정 뷰 또는 초기 검색 실행
     if ($('#meta_db_engine_sqlite_div').length > 0) {
         $('#btn_transfer_stop').hide();
         $('#btn_db_import_stop').hide();
@@ -1358,6 +1485,7 @@ $(document).ready(function(){
     }
 });
 
+// DB 기본 설정 패널 펼침/접힘 토글 시 상태 저장
 $(document).on('click', '#btn_toggle_setting', function(){
     var current_sub = get_current_module_sub();
     var is_person_page = get_list_context().type === 'person';
@@ -1366,6 +1494,179 @@ $(document).on('click', '#btn_toggle_setting', function(){
     localStorage.setItem(storage_pfx + 'setting_collapse', willExpand ? 'show' : 'hide');
 });
 
+// 상단 배치 제어 패널 부트스트랩 이벤트 기반 상태 저장
+$(document).on('shown.bs.collapse', '#batch_collapse_box', function () {
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + 'batch_collapse', 'show');
+    $('#btn_toggle_batch').removeClass('collapsed').attr('aria-expanded', 'true');
+});
+
+$(document).on('hidden.bs.collapse', '#batch_collapse_box', function () {
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + 'batch_collapse', 'hide');
+    $('#btn_toggle_batch').addClass('collapsed').attr('aria-expanded', 'false');
+});
+
+// 배치 작업 폼 설정값 변경 시 저장
+$(document).on('change input', '#batch_target_scope, #batch_mode, #batch_delay', function(){
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + $(this).attr('id'), $(this).val());
+});
+
+// 모드 변경 시 딜레이 입력창 동적 활성/비활성화 처리
+function updateBatchDelayInputState() {
+    var mode = $('#batch_mode').val();
+    var $delayInput = $('#batch_delay');
+    if (mode === 'local_sync') {
+        $delayInput.prop('disabled', true).attr('title', '로컬 DB/파일 전용 모드는 딜레이 없이 초고속으로 처리됩니다.');
+    } else {
+        $delayInput.prop('disabled', false).removeAttr('title');
+    }
+}
+
+$(document).on('change', '#batch_mode', function(){
+    updateBatchDelayInputState();
+});
+
+// 페이지 로드 시 모드에 따른 초기 딜레이 상태 반영
+$(document).ready(function(){
+    if ($('#batch_mode').length > 0) {
+        updateBatchDelayInputState();
+    }
+});
+
+$(document).on('change', '#batch_log_autoscroll', function(){
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + 'batch_log_autoscroll', $(this).is(':checked') ? 'true' : 'false');
+});
+
+// 하단 체크박스 선택 변경 시 배치 대상 수량 실시간 표시
+function triggerBatchRefresh(actionType) {
+    var checkedCodes = [];
+    $('.meta-item-chk:checked').each(function(){
+        var v = $(this).val();
+        if (v) checkedCodes.push(v);
+    });
+
+    var targetScope = $('#batch_target_scope').val() || 'auto';
+    var refreshMode = $('#batch_mode').val() || 'missing';
+    var delayVal = parseFloat($('#batch_delay').val()) || 2.0;
+
+    // 하단 검색 폼의 현재 필터 상태를 정확히 추출
+    var currentContext = get_list_context();
+    var searchCategory = ($('#search_category').length > 0 ? $('#search_category').val() : currentContext.category) || 'AV_ALL';
+    var searchSite = $('#search_site').val() || 'all';
+    var searchStatus = $('#search_status').val() || 'all';
+    var searchWord = $('#search_word').val() || '';
+    var searchOrder = $('#search_order').val() || 'desc';
+
+    if (actionType === 'restart') {
+        var isTargetChecked = (targetScope === 'selected' || (targetScope === 'auto' && checkedCodes.length > 0));
+        var confirmMsg = isTargetChecked
+            ? "선택한 " + checkedCodes.length + "건의 항목을 대상으로 배치 작업을 시작하시겠습니까?"
+            : "하단 검색 조건 [카테고리: " + searchCategory + ", 상태: " + searchStatus + ", 사이트: " + searchSite + "] 일치 항목을 대상으로 배치 작업을 시작하시겠습니까?";
+        if (!confirm(confirmMsg)) return;
+    }
+
+    $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] 배치 작업을 시작합니다. 서버 세션 연결 및 대상 항목 수집 중...</div>');
+    $('#batch_badge_status').removeClass('badge-secondary badge-success badge-warning').addClass('badge-info').text('시작 중');
+    $('#batch_current_code_text').text('대상 수집 중...');
+
+    $('#btn_batch_start').hide();
+    $('#batch_resume_btn_group').hide();
+    $('#btn_batch_stop').show();
+
+    connectBatchSSE();
+
+    var searchPayload = {
+        action: actionType,
+        target_scope: targetScope,
+        codes: checkedCodes,
+        mode: refreshMode,
+        delay: delayVal,
+        search_category: searchCategory,
+        search_site: searchSite,
+        search_status: searchStatus,
+        search_word: searchWord,
+        search_order: searchOrder
+    };
+
+    // arg3에 JSON 문자열을 담아 전송하여 하단 조건 누락을 방지
+    globalSendCommand('db_batch_refresh_start', actionType, refreshMode, JSON.stringify(searchPayload), function(ret){
+        if (typeof notify === 'function') notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
+    }, searchPayload);
+}
+
+// 시작 버튼: 2중 실행 방지를 위한 즉시 전파 차단 적용
+$(document).off('click', '#btn_batch_start').on('click', '#btn_batch_start', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    triggerBatchRefresh('restart');
+});
+
+// 재개 버튼: 중단된 인덱스부터 이어서 시작
+$(document).off('click', '#btn_batch_resume').on('click', '#btn_batch_resume', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    triggerBatchRefresh('resume');
+});
+
+// 재시작 버튼: 처음 항목부터 새로 시작
+$(document).off('click', '#btn_batch_restart').on('click', '#btn_batch_restart', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    triggerBatchRefresh('restart');
+});
+
+// 패널 상태 및 큐 초기화 버튼 핸들러
+$(document).off('click', '#btn_batch_reset_panel').on('click', '#btn_batch_reset_panel', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!confirm("배치 작업 설정 및 큐 상태를 초기화하시겠습니까?")) return;
+
+    globalSendCommand('db_batch_refresh_reset', null, null, null, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || '패널이 초기화되었습니다.', 'success');
+
+        // 상단 패널 입력 요소 초기화
+        $('#batch_target_scope').val('auto');
+        $('#batch_mode').val('missing');
+        $('#batch_delay').val('2.0');
+        $('#opt_batch_selected').text('체크박스 선택 항목 (0개 선택됨)');
+        $('#check_all_meta, .meta-item-chk').prop('checked', false);
+
+        // 버튼 상태를 초기 시작 버튼 단독 상태로 리셋
+        $('#batch_resume_btn_group').hide();
+        $('#btn_batch_stop').hide();
+        $('#btn_batch_start').show();
+
+        // 프로그레스 바 및 상태 텍스트 초기화
+        $('#batch_badge_status').removeClass('badge-info badge-warning badge-success').addClass('badge-secondary').text('대기 중');
+        $('#batch_current_code_text').text('대기 중');
+        $('#batch_stats_text').text('진행: 0 / 0 (성공: 0 | 실패: 0 | 건너뜀: 0)');
+        $('#batch_progress_bar').css('width', '0%').text('0%').removeClass('progress-bar-animated bg-info bg-warning bg-success bg-danger');
+
+        // 터미널 안내문 초기화
+        $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] 배치 작업 대기 상태입니다. 상단에서 조건을 설정하고 시작 버튼을 누르세요.</div>');
+
+        // 스토리지 저장값 리셋
+        var storage_pfx = get_storage_prefix();
+        localStorage.removeItem(storage_pfx + 'batch_target_scope');
+        localStorage.removeItem(storage_pfx + 'batch_mode');
+        localStorage.setItem(storage_pfx + 'batch_delay', '2.0');
+    });
+});
+
+// 딜레이 값 변경 시 로컬 저장
+$(document).off('input change', '#batch_delay').on('input change', '#batch_delay', function(){
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + 'batch_delay', $(this).val());
+});
+
+// 페이징 및 필터 변경 이벤트
 $(document).on('click', '#page, #gloablSearchPageBtn, a[onclick*="request_search"], button[data-page]', function(e){
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -1385,6 +1686,16 @@ $(document).off('click', '.db-page-btn').on('click', '.db-page-btn', function(e)
 });
 
 $(document).on('change', '#search_site, #search_status, #search_order, #page_size, #search_domain', function(e){
+    window.globalRequestSearch('1', false);
+});
+
+$(document).on('change', '#search_category', function(e){
+    var selCat = $(this).val() || 'AV_ALL';
+    $('#list_div').attr('data-list-category', selCat);
+    var storage_pfx = get_storage_prefix();
+    localStorage.setItem(storage_pfx + 'search_category', selCat);
+    updateSiteOptionsByCategory(selCat);
+    localStorage.setItem(storage_pfx + 'search_site', $('#search_site').val());
     window.globalRequestSearch('1', false);
 });
 
@@ -1408,6 +1719,7 @@ $(document).on('submit', '#form_search, #form_search_person', function(e) {
     window.globalRequestSearch('1', false);
 });
 
+// 검색 조건 리셋 버튼
 $(document).on('click', '#reset_btn, #btn_person_search_reset', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -1427,6 +1739,12 @@ $(document).on('click', '#reset_btn, #btn_person_search_reset', function(e) {
         storage_pfx + 'search_site',
         storage_pfx + 'search_domain'
     ];
+    if ($('#search_category').length > 0) {
+        keysToRemove.push(storage_pfx + 'search_category');
+        $("#search_category").val('AV_ALL');
+        $('#list_div').attr('data-list-category', 'AV_ALL');
+        updateSiteOptionsByCategory('AV_ALL', 'all');
+    }
     for (var k = 0; k < keysToRemove.length; k++) {
         localStorage.removeItem(keysToRemove[k]);
     }
@@ -1671,24 +1989,25 @@ function make_item_list(data) {
             str += '        이미지 관리';
             str += '      </button>';
             str += '      <div class="dropdown-menu dropdown-menu-right shadow">';
-            str += '        <a class="dropdown-item btn_crop_modal" href="#" data-idx="' + i + '">✏️ 포스터 크롭 에디터</a>';
-            str += '        <a class="dropdown-item btn_refresh_image_only text-primary font-weight-bold" href="#" data-code="' + row.code + '">🔄 이미지/미디어 재동기화</a>';
+            str += '        <a class="dropdown-item btn_crop_modal" href="#" data-idx="' + i + '" data-category="' + (row.category || '') + '">✏️ 포스터 크롭 에디터</a>';
+            str += '        <a class="dropdown-item btn_refresh_image_only text-primary font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔄 이미지/미디어 재동기화</a>';
             str += '      </div>';
             str += '    </div>';
 
-            str += '    <button class="btn btn-sm btn-outline-info btn-block btn_edit_db mb-2 font-weight-bold py-1 px-1" type="button" data-idx="' + i + '" style="font-size: 0.82rem;">DB 편집</button>';
+            str += '    <button class="btn btn-sm btn-outline-info btn-block btn_edit_db mb-2 font-weight-bold py-1 px-1" type="button" data-idx="' + i + '" data-category="' + (row.category || '') + '" style="font-size: 0.82rem;">DB 편집</button>';
 
             str += '    <div class="dropdown mb-2 w-100">';
             str += '      <button class="btn btn-sm btn-outline-success btn-block custom-dropdown-toggle font-weight-bold py-1 px-1" type="button" style="font-size: 0.82rem;">';
             str += '        메타 갱신';
             str += '      </button>';
             str += '      <div class="dropdown-menu dropdown-menu-right shadow">';
-            str += '        <a class="dropdown-item btn_refresh_in_place font-weight-bold" href="#" data-code="' + row.code + '">📌 현재 사이트 제자리 갱신</a>';
-            str += '        <a class="dropdown-item btn_refresh_auto_search text-success font-weight-bold" href="#" data-code="' + row.code + '">🔍 전체 우선순위 자동 재검색</a>';
+            str += '        <a class="dropdown-item btn_refresh_missing_in_place text-info font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🩹 현재 사이트 누락 정보 업데이트</a>';
+            str += '        <a class="dropdown-item btn_refresh_in_place font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">📌 현재 사이트 제자리 갱신</a>';
+            str += '        <a class="dropdown-item btn_refresh_auto_search text-success font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔍 전체 우선순위 자동 재검색</a>';
             str += '      </div>';
             str += '    </div>';
 
-            str += '    <button class="btn btn-sm btn-outline-danger btn-block btn_delete_db font-weight-bold py-1 px-1" data-code="' + row.code + '" style="font-size: 0.82rem;">데이터 삭제</button>';
+            str += '    <button class="btn btn-sm btn-outline-danger btn-block btn_delete_db font-weight-bold py-1 px-1" data-code="' + row.code + '" data-category="' + (row.category || '') + '" style="font-size: 0.82rem;">데이터 삭제</button>';
             str += '  </div>';
             str += '</div>';
 
@@ -2778,8 +3097,11 @@ $(document).on('click', '#btn_person_db_clear', function(e){
 $(document).on('click', '#btn_db_clear', function(e){
     e.preventDefault();
     var current_sub = get_current_module_sub();
-    var target_label = (current_sub === 'western') ? 'WESTERN' : ((current_sub === 'jav_uncensored') ? 'JAV_UNCEN' : 'JAV_CEN');
-    if (!confirm("⚠️ 주의!\n['" + target_label + "'] 카테고리의 메타 DB를 초기화합니다.\n계속 진행하시겠습니까?")) return;
+    var list_ctx = get_list_context();
+    var target_label = list_ctx.category || ((current_sub === 'western') ? 'WESTERN' : ((current_sub === 'jav_uncensored') ? 'JAV_UNCEN' : 'JAV_CEN'));
+
+    var confirm_label = (target_label === 'AV_ALL') ? '전체 AV (통합)' : target_label;
+    if (!confirm("⚠️ 주의!\n['" + confirm_label + "'] 카테고리의 메타 DB를 초기화합니다.\n계속 진행하시겠습니까?")) return;
 
     globalSendCommand('db_clear', target_label, null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
@@ -3522,9 +3844,10 @@ $(document).off('click', '.btn_refresh_image_only').on('click', '.btn_refresh_im
 
     var code = $(this).attr('data-code') || $(this).data('code');
     if (!code) return;
+    var cat = $(this).attr('data-category') || $(this).data('category') || '';
     if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 동기화를 요청합니다...', 'info');
 
-    globalSendCommand('db_refresh_image_only', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_image_only', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret.ret === 'success') {
             window.globalRequestSearch(null, true);
@@ -3541,14 +3864,61 @@ $(document).on('click', '.btn_modal_refresh_image_only', function(e){
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
+    var row = $modal.data('row_data') || {};
+    var cat = row.category || get_list_context().category || '';
     if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 동기화를 요청합니다...', 'info');
 
     setModalLoadingState($modal, true, '이미지 및 미디어 재동기화 중...', $toggleBtn);
 
-    globalSendCommand('db_refresh_image_only', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_image_only', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal, function(){
+            reloadDbEditModalData(code, cat, $modal, function(){
+                setModalLoadingState($modal, false, '', $toggleBtn);
+            });
+        } else {
+            setModalLoadingState($modal, false, '', $toggleBtn);
+        }
+    });
+});
+
+$(document).off('click', '.btn_refresh_missing_in_place').on('click', '.btn_refresh_missing_in_place', function(e){
+    e.preventDefault();
+    var $dropdown = $(this).closest('.dropdown');
+    $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
+
+    var code = $(this).attr('data-code') || $(this).data('code');
+    if (!code) return;
+    var cat = $(this).attr('data-category') || $(this).data('category') || '';
+    if (typeof notify === 'function') notify('[' + code + '] 누락 정보 갱신을 요청합니다...', 'info');
+
+    globalSendCommand('db_refresh_missing_in_place', String(code), cat, null, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
+        if (ret && ret.ret === 'success') {
+            window.globalRequestSearch(null, true);
+        }
+    });
+});
+
+$(document).on('click', '.btn_modal_refresh_missing_in_place', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var $dropdown = $(this).closest('.dropdown');
+    var $toggleBtn = $dropdown.find('.custom-dropdown-toggle');
+    $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
+
+    var code = $modal.find('#edit_code').val();
+    if (!code) return;
+    var row = $modal.data('row_data') || {};
+    var cat = row.category || get_list_context().category || '';
+    if (typeof notify === 'function') notify('[' + code + '] 누락 정보 갱신을 요청합니다...', 'info');
+
+    setModalLoadingState($modal, true, '누락 정보 치유 갱신 중...', $toggleBtn);
+
+    globalSendCommand('db_refresh_missing_in_place', String(code), cat, null, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
+        if (ret && ret.ret === 'success') {
+            reloadDbEditModalData(code, cat, $modal, function(){
                 setModalLoadingState($modal, false, '', $toggleBtn);
             });
         } else {
@@ -3564,9 +3934,10 @@ $(document).off('click', '.btn_refresh_in_place').on('click', '.btn_refresh_in_p
 
     var code = $(this).attr('data-code') || $(this).data('code');
     if (!code) return;
+    var cat = $(this).attr('data-category') || $(this).data('category') || '';
     if (typeof notify === 'function') notify('[' + code + '] 현재 사이트 메타 갱신을 요청합니다...', 'info');
 
-    globalSendCommand('db_refresh_in_place', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_in_place', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret.ret === 'success') {
             window.globalRequestSearch(null, true);
@@ -3583,14 +3954,16 @@ $(document).on('click', '.btn_modal_refresh_in_place', function(e){
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
+    var row = $modal.data('row_data') || {};
+    var cat = row.category || get_list_context().category || '';
     if (typeof notify === 'function') notify('[' + code + '] 현재 사이트 메타 갱신을 요청합니다...', 'info');
 
     setModalLoadingState($modal, true, '현재 사이트 메타데이터 갱신 중...', $toggleBtn);
 
-    globalSendCommand('db_refresh_in_place', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_in_place', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal, function(){
+            reloadDbEditModalData(code, cat, $modal, function(){
                 setModalLoadingState($modal, false, '', $toggleBtn);
             });
         } else {
@@ -3606,9 +3979,10 @@ $(document).off('click', '.btn_refresh_auto_search').on('click', '.btn_refresh_a
 
     var code = $(this).attr('data-code') || $(this).data('code');
     if (!code) return;
+    var cat = $(this).attr('data-category') || $(this).data('category') || '';
     if (typeof notify === 'function') notify('[' + code + '] 전체 사이트 자동 재검색 갱신을 요청합니다...', 'info');
 
-    globalSendCommand('db_refresh_auto_search', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_auto_search', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '재검색 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret.ret === 'success') {
             window.globalRequestSearch(null, true);
@@ -3625,14 +3999,16 @@ $(document).on('click', '.btn_modal_refresh_auto_search', function(e){
 
     var code = $modal.find('#edit_code').val();
     if (!code) return;
+    var row = $modal.data('row_data') || {};
+    var cat = row.category || get_list_context().category || '';
     if (typeof notify === 'function') notify('[' + code + '] 전체 사이트 자동 재검색 갱신을 요청합니다...', 'info');
 
     setModalLoadingState($modal, true, '전체 우선순위 자동 재검색 갱신 중...', $toggleBtn);
 
-    globalSendCommand('db_refresh_auto_search', String(code), null, null, function(ret){
+    globalSendCommand('db_refresh_auto_search', String(code), cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '재검색 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, null, $modal, function(){
+            reloadDbEditModalData(code, cat, $modal, function(){
                 setModalLoadingState($modal, false, '', $toggleBtn);
             });
         } else {
@@ -3687,7 +4063,8 @@ $(document).off('click', '.btn_delete_db').on('click', '.btn_delete_db', functio
     var code = $(this).data('code');
     if (!code) return;
     if (!confirm("['" + code + "'] 데이터를 정말 삭제하시겠습니까?")) return;
-    globalSendCommand('db_delete', code, null, null, function(ret){
+    var cat = $(this).attr('data-category') || $(this).data('category') || '';
+    globalSendCommand('db_delete', code, cat, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '삭제 요청이 처리되었습니다.', ret.ret === 'success' ? 'success' : 'warning');
         if (ret.ret === 'success') {
             window.globalRequestSearch(null, true);
@@ -3732,6 +4109,7 @@ function openCropModal(opts) {
         $('#lbl_upload_person').hide();
 
         $('#crop_target_code').val(opts.code || '');
+        $('#crop_target_category').val(opts.category || '');
         $('#crop_has_user_poster').val(opts.has_user ? 'true' : 'false');
 
         $('#crop_modal_title').text('[' + (opts.code || '') + '] ' + (opts.title || '') + ' - 포스터 크롭');
@@ -3863,6 +4241,7 @@ $(document).off('click', '.btn_crop_modal').on('click', '.btn_crop_modal', funct
     openCropModal({
         target: 'meta',
         code: row.code,
+        category: row.category || get_list_context().category,
         title: row.title || '',
         has_user: (row.poster_url && row.poster_url.indexOf('_p_user') !== -1),
         pl_url: plUrl,
@@ -3903,6 +4282,7 @@ $(document).on('click', '.btn_modal_crop', function(e){
     openCropModal({
         target: 'meta',
         code: code,
+        category: row.category || get_list_context().category,
         title: $modal.find('#edit_title').val() || '',
         has_user: (raw_p && raw_p.indexOf('_p_user') !== -1),
         pl_url: plUrl,
@@ -4179,12 +4559,13 @@ $(document).on('click', '#btn_direct_save_user', function(e){
     $btn.prop('disabled', true).html('<span>저장 중...</span>');
 
     var context = get_list_context();
+    var targetCategory = $('#crop_target_category').val() || context.category;
     var postData = {
         code: code,
         type: targetType,
         url: sourceVal,
         data: b64Data,
-        category: context.category
+        category: targetCategory
     };
 
     globalSendCommand('crop_direct_save', code, sourceVal, targetType, function(ret){
@@ -4422,6 +4803,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     }
 
     var code = $('#crop_target_code').val();
+    var targetCategory = $('#crop_target_category').val() || get_list_context().category;
     var has_user = $('#crop_has_user_poster').val() === 'true';
     if (has_user && !confirm("⚠️ 이미 수동 설정된 유저 포스터(_p_user)가 존재합니다.\n새로운 이미지로 덮어쓰시겠습니까?")) return;
 
@@ -4431,7 +4813,8 @@ $(document).on('click', '#btn_save_crop_result', function(e){
 
     var metaPayload = {
         type: active_source_type,
-        crop_url: $('#input_crop_url').val().trim()
+        crop_url: $('#input_crop_url').val().trim(),
+        category: targetCategory
     };
 
     if (custom_upload_payload) {
@@ -4458,7 +4841,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
 
             var $dbModal = $('#dbEditModal');
             if ($dbModal.hasClass('show') && ($dbModal.find('#edit_code').val() === code)) {
-                reloadDbEditModalData(code, null, $dbModal);
+                reloadDbEditModalData(code, targetCategory, $dbModal);
             } else {
                 window.globalRequestSearch(null, true);
             }
@@ -4466,7 +4849,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
             var errMsg = (ret && ret.msg) ? ret.msg : '저장에 실패했습니다.';
             if (typeof notify === 'function') notify(errMsg, 'warning');
         }
-    });
+    }, { category: targetCategory });
 });
 
 (function() {
@@ -4619,6 +5002,204 @@ $(document).on('click', '#btn_db_vacuum', function(e){
         btn.prop('disabled', false).text(origText);
         if (typeof notify === 'function') notify(ret.msg, ret.ret == 'success' ? 'success' : 'warning');
     });
+});
+
+// 실시간 SSE 스트림 연결 및 배치 제어 엔진
+var batchEventSource = null;
+var batchStatusTimer = null;
+
+function syncBatchStatus() {
+    globalSendCommand('db_batch_refresh_status', null, null, null, function(ret){
+        if (ret && ret.ret === 'success') {
+            updateBatchProgressUI(ret.data);
+            if (ret.data && ret.data.is_running === false) {
+                if (batchStatusTimer) {
+                    clearInterval(batchStatusTimer);
+                    batchStatusTimer = null;
+                }
+            }
+        }
+    });
+}
+
+// 고속 배치 작업 시 화면 깜빡임 및 네트워크 과부하를 방지하는 목록 갱신 스케줄러
+var batchRefreshThrottleTimer = null;
+var batchHasPendingRefresh = false;
+
+function requestThrottledBatchListRefresh(immediate) {
+    if (immediate) {
+        if (batchRefreshThrottleTimer) {
+            clearTimeout(batchRefreshThrottleTimer);
+            batchRefreshThrottleTimer = null;
+        }
+        batchHasPendingRefresh = false;
+        window.globalRequestSearch(null, true);
+        return;
+    }
+
+    batchHasPendingRefresh = true;
+    if (!batchRefreshThrottleTimer) {
+        batchRefreshThrottleTimer = setTimeout(function() {
+            batchRefreshThrottleTimer = null;
+            if (batchHasPendingRefresh) {
+                batchHasPendingRefresh = false;
+                window.globalRequestSearch(null, true);
+            }
+        }, 3000);
+    }
+}
+
+function appendBatchTerminalLog(message, eventType) {
+    var $terminal = $('#batch_terminal_logs');
+    if ($terminal.length === 0) return;
+
+    var colorClass = '#58a6ff';
+    if (eventType === 'warning') {
+        colorClass = '#e3b341';
+    } else if (eventType === 'error') {
+        colorClass = '#f85149';
+    }
+
+    var lineHtml = '<div style="color: ' + colorClass + ';">' + $('<div>').text(message).html() + '</div>';
+    $terminal.append(lineHtml);
+
+    if ($('#batch_log_autoscroll').is(':checked')) {
+        $terminal.scrollTop($terminal[0].scrollHeight);
+    }
+}
+
+function updateBatchProgressUI(status) {
+    if (!status) return;
+
+    var total = status.total || 0;
+    var current = status.current || 0;
+    var success = status.success || 0;
+    var fail = status.fail || 0;
+    var skipped = status.skipped || 0;
+
+    var percent = total > 0 ? (current / total * 100).toFixed(1) : 0;
+    $('#batch_progress_bar').css('width', percent + '%').text(percent + '%');
+
+    if (status.is_running) {
+        $('#btn_batch_start').hide();
+        $('#batch_resume_btn_group').hide();
+        $('#btn_batch_stop').show();
+        $('#batch_badge_status').removeClass('badge-secondary badge-success badge-warning').addClass('badge-info').text('작업 진행 중');
+        $('#batch_current_code_text').text(status.current_code || '진행 중');
+        $('#batch_progress_bar').addClass('progress-bar-animated bg-info').removeClass('bg-success bg-danger bg-warning');
+    } else {
+        $('#btn_batch_stop').hide();
+        $('#batch_progress_bar').removeClass('progress-bar-animated bg-info');
+
+        if (status.can_resume) {
+            $('#btn_batch_start').hide();
+            $('#batch_resume_btn_group').css('display', 'inline-block');
+            $('#batch_badge_status').removeClass('badge-info badge-secondary badge-success').addClass('badge-warning').text('일시 정지');
+            $('#batch_progress_bar').addClass('bg-warning');
+        } else {
+            $('#batch_resume_btn_group').hide();
+            $('#btn_batch_start').show();
+            if (status.status === '완료') {
+                $('#batch_badge_status').removeClass('badge-info badge-secondary badge-warning').addClass('badge-success').text('완료');
+                $('#batch_progress_bar').addClass('bg-success');
+            } else {
+                $('#batch_badge_status').removeClass('badge-info badge-success badge-warning').addClass('badge-secondary').text(status.status || '대기 중');
+            }
+        }
+        $('#batch_current_code_text').text(status.status || '대기 중');
+    }
+
+    $('#batch_stats_text').text('진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (성공: ' + success.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ')');
+}
+
+function connectBatchSSE() {
+    if (batchEventSource) {
+        batchEventSource.close();
+        batchEventSource = null;
+    }
+
+    if (typeof EventSource === 'undefined') {
+        console.warn('[SSE] 브라우저가 EventSource를 지원하지 않습니다. 폴링으로 전환합니다.');
+        if (!batchStatusTimer) {
+            batchStatusTimer = setInterval(syncBatchStatus, 1500);
+        }
+        return;
+    }
+
+    var sseUrl = '/' + package_name + '/normal/meta_db/batch_stream';
+    batchEventSource = new EventSource(sseUrl);
+
+    batchEventSource.onmessage = function(e) {
+        try {
+            var data = JSON.parse(e.data);
+            if (data.type === 'init') {
+                var $terminal = $('#batch_terminal_logs');
+                $terminal.empty();
+                (data.logs || []).forEach(function(line) {
+                    $terminal.append('<div>' + $('<div>').text(line).html() + '</div>');
+                });
+                if ($('#batch_log_autoscroll').is(':checked')) {
+                    $terminal.scrollTop($terminal[0].scrollHeight);
+                }
+                updateBatchProgressUI(data.status);
+            } else {
+                appendBatchTerminalLog(data.message, data.type);
+                updateBatchProgressUI(data.status);
+
+                // 진행 중에는 3초 주기로 묶어서 갱신하고, 전체 완료 시 즉시 1회 반영
+                if (data.is_updated === true) {
+                    requestThrottledBatchListRefresh(false);
+                }
+
+                if (data.status && data.status.is_running === false && data.status.total > 0) {
+                    requestThrottledBatchListRefresh(true);
+                }
+            }
+        } catch (err) {}
+    };
+
+    batchEventSource.onerror = function() {
+        if (batchEventSource) {
+            batchEventSource.close();
+            batchEventSource = null;
+        }
+        if (!batchStatusTimer) {
+            batchStatusTimer = setInterval(syncBatchStatus, 1500);
+        }
+    };
+}
+
+$(document).on('click', '#btn_batch_stop', function(e){
+    e.preventDefault();
+    if (!confirm("진행 중인 배치 갱신 작업을 중단하시겠습니까?")) return;
+
+    var $btn = $(this);
+    $btn.prop('disabled', true).text('중단 처리 중...');
+
+    globalSendCommand('db_batch_refresh_stop', null, null, null, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || '중단 요청이 전달되었습니다.', 'warning');
+        $btn.prop('disabled', false).text('작업 중단');
+        syncBatchStatus();
+        requestThrottledBatchListRefresh(true);
+    });
+});
+
+$(document).on('click', '#btn_batch_clear_log', function(e){
+    e.preventDefault();
+    $('#batch_terminal_logs').empty();
+});
+
+// AV 통합 페이지 진입 시 SSE 스트림 자동 연결 확인
+$(document).ready(function(){
+    if ($('#batch_terminal_logs').length > 0) {
+        $('#btn_batch_start').show();
+        $('#batch_resume_btn_group').hide();
+        $('#btn_batch_stop').hide();
+
+        // 실시간 서버 상태와 즉시 동기화
+        syncBatchStatus();
+        connectBatchSSE();
+    }
 });
 
 function set_db_engine_view(val) {
