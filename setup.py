@@ -85,7 +85,8 @@ setting = {
                 'name': '메타 DB',
                 'list': [
                     {'uri': 'setting', 'name': '설정'},
-                    {'uri': 'av_list', 'name': '영상 DB: AV'},
+                    {'uri': 'av_meta_list', 'name': '영상 DB: AV'},
+                    {'uri': 'av_person_list', 'name': '인물 DB: AV'},
                 ]
             },
             {

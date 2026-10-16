@@ -47,11 +47,21 @@ function isLocalServerMediaUrl(url) {
         return false;
     }
 
+    if (clean.indexOf('/') === 0) {
+        return true;
+    }
+
     var serverUrl = (typeof window.image_server_url !== 'undefined' && window.image_server_url)
         ? window.image_server_url.trim().replace(/\/+$/, '')
         : '';
+    var ddns = (typeof window.meta_db_ddns !== 'undefined' && window.meta_db_ddns)
+        ? window.meta_db_ddns.trim().replace(/\/+$/, '')
+        : '';
 
     if (serverUrl && clean.indexOf(serverUrl) === 0) {
+        return true;
+    }
+    if (ddns && clean.indexOf(ddns) === 0) {
         return true;
     }
 
@@ -89,6 +99,10 @@ function getDisplayMediaUrl(url, site, mediaType) {
     if (clean.indexOf('/metadata/normal/') !== -1) {
         var existingProxyHost = (typeof window.meta_db_ddns === 'string') ? window.meta_db_ddns.replace(/\/+$/, '') : '';
         if (existingProxyHost && clean.charAt(0) === '/') return existingProxyHost + clean;
+        return clean;
+    }
+
+    if (clean.indexOf('drive.google.com') !== -1 || clean.indexOf('googleusercontent.com') !== -1) {
         return clean;
     }
 
@@ -318,7 +332,7 @@ function triggerInitialSearchOnce() {
             $("#search_site").val(saved_site);
         }
     } else {
-        var default_dom = list_context.domain;
+        var default_dom = 'ALL';
         var saved_domain = localStorage.getItem(storage_pfx + 'search_domain') || default_dom;
         $("#search_domain").val(saved_domain);
     }
@@ -558,7 +572,7 @@ function injectDbModals() {
                 <div class="row mb-2">
                   <div class="col-md-4 d-flex flex-column p-2 rounded justify-content-between" style="background: #14171a; height: 370px;">
                     <div class="d-flex align-items-center justify-content-center shadow-sm rounded overflow-hidden" style="width: 100%; height: 310px; background: #0a0c0e; position: relative;">
-                      <span class="badge shadow-sm font-weight-bold" id="preview_img_type" style="position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 123, 255, 0.75); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px);">Poster</span>
+                      <span class="badge shadow-sm font-weight-bold" id="preview_img_type" style="position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 123, 255, 0.55); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px);">Poster</span>
                       <div id="preview_modal_spinner" class="spinner-border text-info position-absolute modal-image-spinner" role="status" style="width: 2.2rem; height: 2.2rem; z-index: 4; display: none;">
                         <span class="sr-only">Loading...</span>
                       </div>
@@ -574,35 +588,35 @@ function injectDbModals() {
 
                   <div class="col-md-8 pl-3 pr-2">
                     <div class="form-row mb-2">
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">고유 식별코드 (Code)</label><input type="text" class="form-control form-control-sm bg-light" id="edit_code_view" readonly></div>
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">표시 품번 (UI Code)</label><input type="text" class="form-control form-control-sm" id="edit_ui_code"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">고유 식별코드 (Code)</label><input type="text" class="form-control form-control-sm bg-light" id="edit_code_view" readonly placeholder="고유 식별코드 없음"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">표시 품번 (UI Code)</label><input type="text" class="form-control form-control-sm" id="edit_ui_code" placeholder="표시할 품번을 입력하세요"></div>
                     </div>
                     <div class="form-row mb-2">
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출처 사이트 (Site)</label><input type="text" class="form-control form-control-sm bg-light" id="edit_site" readonly></div>
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">평점 (0.0 ~ 5.0)</label><input type="number" step="0.1" class="form-control form-control-sm" id="edit_rating"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출처 사이트 (Site)</label><input type="text" class="form-control form-control-sm bg-light" id="edit_site" readonly placeholder="출처 사이트 없음"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">평점 (0.0 ~ 5.0)</label><input type="number" step="0.1" class="form-control form-control-sm" id="edit_rating" placeholder="평점 미등록 (0.0 ~ 5.0)"></div>
                     </div>
                     <div class="form-row mb-2">
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출시일 (YYYY-MM-DD)</label><input type="text" class="form-control form-control-sm" id="edit_premiered"></div>
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출시년도 (Year)</label><input type="number" class="form-control form-control-sm" id="edit_year"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출시일 (YYYY-MM-DD)</label><input type="text" class="form-control form-control-sm" id="edit_premiered" placeholder="예: 2026-10-16"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">출시년도 (Year)</label><input type="number" class="form-control form-control-sm" id="edit_year" placeholder="예: 2026"></div>
                     </div>
                     <div class="form-row mb-2">
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">제작사 / 스튜디오</label><input type="text" class="form-control form-control-sm" id="edit_studio"></div>
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">시리즈</label><input type="text" class="form-control form-control-sm" id="edit_series"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">제작사 / 스튜디오</label><input type="text" class="form-control form-control-sm" id="edit_studio" placeholder="제작사 / 스튜디오 이름"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">시리즈</label><input type="text" class="form-control form-control-sm" id="edit_series" placeholder="시리즈 미등록"></div>
                     </div>
                     <div class="form-row mb-2">
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">감독</label><input type="text" class="form-control form-control-sm" id="edit_director"></div>
-                      <div class="col-md-6"><label class="small font-weight-bold mb-1">재생시간 (분)</label><input type="number" class="form-control form-control-sm" id="edit_runtime"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">감독</label><input type="text" class="form-control form-control-sm" id="edit_director" placeholder="감독 이름"></div>
+                      <div class="col-md-6"><label class="small font-weight-bold mb-1">재생시간 (분)</label><input type="number" class="form-control form-control-sm" id="edit_runtime" placeholder="재생시간 (분)"></div>
                     </div>
                     <div class="form-row mb-2">
-                      <div class="col-md-12" id="div_edit_genres"><label class="small font-weight-bold mb-1">장르 목록 <span class="text-muted font-weight-normal">(쉼표 구분)</span></label><input type="text" class="form-control form-control-sm" id="edit_genres"></div>
+                      <div class="col-md-12" id="div_edit_genres"><label class="small font-weight-bold mb-1">장르 목록 <span class="text-muted font-weight-normal">(쉼표 구분)</span></label><input type="text" class="form-control form-control-sm" id="edit_genres" placeholder="장르를 쉼표로 구분해 입력하세요"></div>
                       <div class="col-md-6" id="div_edit_mpaa" style="display: none;"><label class="small font-weight-bold mb-1">관람 등급 (MPAA)</label><input type="text" class="form-control form-control-sm" id="edit_mpaa" placeholder="예: 청소년 관람불가"></div>
                     </div>
                   </div>
                 </div>
 
-                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">최종 제목 (Title)</label><input type="text" class="form-control form-control-sm" id="edit_title"></div>
-                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">원문/번역 부제 (Tagline)</label><input type="text" class="form-control form-control-sm" id="edit_tagline"></div>
-                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">줄거리 (Plot)</label><textarea class="form-control form-control-sm" id="edit_plot" rows="3"></textarea></div>
+                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">최종 제목 (Title)</label><input type="text" class="form-control form-control-sm" id="edit_title" placeholder="제목을 입력하세요"></div>
+                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">원문/번역 부제 (Tagline)</label><input type="text" class="form-control form-control-sm" id="edit_tagline" placeholder="부제 미등록"></div>
+                <div class="form-group mb-2"><label class="small font-weight-bold mb-1">줄거리 (Plot)</label><textarea class="form-control form-control-sm" id="edit_plot" rows="3" placeholder="줄거리 미등록"></textarea></div>
 
                 <div class="form-group mb-2 p-2 border rounded bg-light">
                   <div class="d-flex justify-content-between align-items-center mb-1">
@@ -615,13 +629,15 @@ function injectDbModals() {
                 <div class="form-row mb-2">
                   <div class="col-md-6">
                     <label class="small font-weight-bold mb-1">대표 포스터 URL (Poster)</label>
-                    <input type="text" class="form-control form-control-sm" id="edit_poster_url" placeholder="사이트 원본 URL">
-                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_poster_url_final" readonly placeholder="최종 적용 URL (자동 생성)">
+                    <input type="text" class="form-control form-control-sm" id="edit_poster_url" placeholder="포스터 원본 URL 없음 (https://...)">
+                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_poster_relative_path" readonly placeholder="저장된 포스터 상대 경로 없음">
+                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_poster_url_final" readonly placeholder="포스터 최종 URL 없음">
                   </div>
                   <div class="col-md-6">
                     <label class="small font-weight-bold mb-1">랜드스케이프 커버 URL (Landscape)</label>
-                    <input type="text" class="form-control form-control-sm" id="edit_landscape_url" placeholder="사이트 원본 URL">
-                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_landscape_url_final" readonly placeholder="최종 적용 URL (자동 생성)">
+                    <input type="text" class="form-control form-control-sm" id="edit_landscape_url" placeholder="가로 커버 원본 URL 없음 (https://...)">
+                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_landscape_relative_path" readonly placeholder="저장된 가로 커버 상대 경로 없음">
+                    <input type="text" class="form-control form-control-sm bg-light mt-1" id="edit_landscape_url_final" readonly placeholder="가로 커버 최종 URL 없음">
                   </div>
                 </div>
 
@@ -636,28 +652,26 @@ function injectDbModals() {
                   </div>
                   <input type="text" class="form-control form-control-sm" id="edit_trailer_url" placeholder="공식 예고편 스트림 URL이 없습니다. (수동 입력 가능)">
 
-                  <!-- 자체 생성 프리뷰 클립 영역 -->
                   <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top border-secondary">
+                    <span class="small font-weight-bold text-muted">개인 저장소 <span id="badge_preview_status" class="badge badge-secondary">미저장</span></span>
                     <div>
-                      <span class="small font-weight-bold text-muted mr-1">자체 프리뷰 클립 (Preview Clip)</span>
-                      <span id="badge_preview_status" class="badge badge-secondary small font-weight-normal">미생성</span>
-                    </div>
-                    <div class="btn-group btn-group-sm" role="group">
-                      <span class="badge badge-dark border border-success text-success mr-1" id="btn_modal_play_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 재생">▶ 프리뷰 재생</span>
-                      <span class="badge badge-dark border border-primary text-primary mr-1" id="btn_modal_create_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px;" title="원본 영상에서 프리뷰 클립 수동 생성">⚡ 프리뷰 생성</span>
-                      <span class="badge badge-dark border border-danger text-danger" id="btn_modal_delete_preview" style="cursor: pointer; font-size: 0.82rem; padding: 3px 8px; display: none;" title="생성된 프리뷰 클립 및 파일 삭제">🗑️ 프리뷰 삭제</span>
+                      <button type="button" class="btn btn-sm btn-outline-success" id="btn_modal_play_saved_trailer" style="display:none">저장된 트레일러 재생</button>
+                      <button type="button" class="btn btn-sm btn-outline-success" id="btn_modal_play_preview" style="display:none">프리뷰 재생</button>
+                      <button type="button" class="btn btn-sm btn-outline-primary" id="btn_modal_create_preview">프리뷰 수동 생성</button>
                     </div>
                   </div>
-                  <div id="div_preview_clip_box" class="mt-1" style="display: none;">
-                    <div class="input-group input-group-sm">
-                      <input type="text" class="form-control bg-light" id="edit_preview_url" readonly placeholder="등록된 프리뷰 주소가 없습니다.">
-                      <div class="input-group-append">
-                        <button class="btn btn-outline-secondary font-weight-bold" type="button" id="btn_copy_preview_url" title="프리뷰 스트림 주소 클립보드 복사">📋 복사</button>
-                      </div>
-                    </div>
-                    <div id="div_preview_clip_info" class="small text-info mt-1"></div>
+                  <div id="div_saved_trailer_box" class="input-group input-group-sm mt-1" style="display:none">
+                    <div class="input-group-prepend"><span class="input-group-text">트레일러</span></div>
+                    <input class="form-control bg-light" id="edit_saved_trailer_path" readonly placeholder="트레일러 상대 경로 미기록">
+                    <input class="form-control bg-light" id="edit_saved_trailer_url" readonly placeholder="트레일러 FF proxy URL 없음">
+                    <div class="input-group-append"><button type="button" class="btn btn-outline-danger btn-delete-stored-video" data-video-type="trailer">삭제</button></div>
                   </div>
-
+                  <div id="div_preview_clip_box" class="input-group input-group-sm mt-1" style="display:none">
+                    <div class="input-group-prepend"><span class="input-group-text">프리뷰</span></div>
+                    <input class="form-control bg-light" id="edit_preview_path" readonly placeholder="프리뷰 상대 경로 미기록">
+                    <input class="form-control bg-light" id="edit_preview_url" readonly placeholder="프리뷰 FF proxy URL 없음">
+                    <div class="input-group-append"><button type="button" class="btn btn-outline-danger btn-delete-stored-video" data-video-type="preview">삭제</button></div>
+                  </div>
                   <div id="div_preview_source_bar" class="p-2 my-2 rounded bg-dark border border-secondary shadow-sm" style="display: none;">
                     <div class="d-flex align-items-center">
                       <span class="small font-weight-bold text-info mr-2 text-nowrap">🎥 원본 파일:</span>
@@ -667,7 +681,6 @@ function injectDbModals() {
                     </div>
                   </div>
 
-                  <div id="div_preview_clip_info" class="small text-info mt-1" style="display: none;"></div>
                 </div>
 
                 <div class="form-group mb-2">
@@ -900,7 +913,7 @@ function injectDbModals() {
 
                   <div class="col-md-8 pl-3 pr-2">
                     <div class="form-row mb-2">
-                      <div class="col-md-6">
+                      <div class="col-md-4">
                         <label class="small font-weight-bold mb-1">도메인 (Domain)</label>
                         <select class="form-control form-control-sm" id="p_edit_domain">
                           <option value="JAV" selected>JAV</option>
@@ -908,7 +921,15 @@ function injectDbModals() {
                           <option value="GENERAL">GENERAL</option>
                         </select>
                       </div>
-                      <div class="col-md-6">
+                      <div class="col-md-4">
+                        <label class="small font-weight-bold mb-1">성별 (Gender)</label>
+                        <select class="form-control form-control-sm" id="p_edit_gender">
+                          <option value="female" selected>여성 (Female ♀)</option>
+                          <option value="male">남성 (Male ♂)</option>
+                          <option value="trans">트랜스 (Trans)</option>
+                        </select>
+                      </div>
+                      <div class="col-md-4">
                         <label class="small font-weight-bold mb-1">고유 식별코드 (Code/ID)</label>
                         <input type="text" class="form-control form-control-sm bg-light" id="p_edit_idx" readonly placeholder="고유 식별코드">
                       </div>
@@ -948,20 +969,20 @@ function injectDbModals() {
                   </div>
                 </div>
 
-                <div class="form-row mb-2">
-                  <div class="col-md-4" id="div_p_edit_local_path">
-                    <label class="small font-weight-bold text-muted mb-1" id="lbl_p_edit_local_path">로컬 상대 경로 (local_img_path)</label>
-                    <input type="text" class="form-control form-control-sm" id="p_edit_local_img_path" placeholder="초성/이름_PA123.jpg">
-                  </div>
-                  <div class="col-md-4" id="div_p_edit_google_id">
-                    <label class="small font-weight-bold text-muted mb-1" id="lbl_p_edit_google_id">Google FileID (google_fileid)</label>
-                    <input type="text" class="form-control form-control-sm" id="p_edit_google_fileid" placeholder="구글 드라이브 ID">
-                  </div>
-                  <div class="col-md-4" id="div_p_edit_site_url">
-                    <label class="small font-weight-bold text-muted mb-1" id="lbl_p_edit_site_url">사이트 원본 URL (site_img_url)</label>
-                    <input type="text" class="form-control form-control-sm" id="p_edit_site_img_url" placeholder="https://...">
-                  </div>
+                <div class="form-row mb-2" id="p_gds_image_fields">
+                  <div class="col-md-6"><label class="small font-weight-bold text-muted" id="lbl_p_edit_local_path">파일 상대 경로 (GDS)</label><input class="form-control form-control-sm" id="p_edit_local_img_path" placeholder="GDS 파일 상대 경로 없음"></div>
+                  <div class="col-md-6"><label class="small font-weight-bold text-muted" id="lbl_p_gds_thumb_url">GDS 썸네일 URL</label><input class="form-control form-control-sm bg-light" id="p_edit_gdrive_thumb_url" readonly placeholder="GDS 썸네일 URL 없음"></div>
                 </div>
+                <input type="hidden" id="p_edit_google_fileid">
+                <div class="form-row mb-2">
+                  <div class="col-md-6"><label class="small text-muted" id="lbl_p_local_path">파일 상대 경로 (로컬)</label><input class="form-control form-control-sm bg-light" id="p_edit_storage_local_path" readonly placeholder="로컬 이미지 상대 경로 없음"></div>
+                  <div class="col-md-6"><label class="small text-muted" id="lbl_p_official_local_url">이미지 서버 URL</label><input class="form-control form-control-sm bg-light" id="p_edit_official_local_url" readonly placeholder="이미지 서버 URL 없음"></div>
+                </div>
+                <div class="form-row mb-2">
+                  <div class="col-md-6"><label class="small text-muted" id="lbl_p_remote_path">파일 상대 경로 (구글 드라이브)</label><input class="form-control form-control-sm bg-light" id="p_edit_storage_remote_path" readonly placeholder="구글 드라이브 이미지 상대 경로 없음"></div>
+                  <div class="col-md-6"><label class="small text-muted" id="lbl_p_official_gdrive_url">구글 드라이브 썸네일 URL</label><input class="form-control form-control-sm bg-light" id="p_edit_official_gdrive_url" readonly placeholder="구글 드라이브 썸네일 URL 없음"></div>
+                </div>
+                <input type="hidden" id="p_edit_custom_user_google_fileid">
 
                 <div class="form-group mb-2">
                   <label class="small font-weight-bold mb-1">프로필 이미지 URLs <span class="text-muted font-weight-normal">(줄바꿈으로 구분)</span></label>
@@ -1021,6 +1042,16 @@ function injectDbModals() {
                 <div class="d-flex align-items-center flex-wrap mb-1 mb-md-0">
                   <button type="button" class="btn btn-sm btn-outline-info font-weight-bold mr-2" id="btn_view_person_json">JSON 보기</button>
                   <button type="button" class="btn btn-sm btn-outline-success font-weight-bold" id="btn_open_person_crop_modal">사진 편집</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary font-weight-bold mr-2" id="btn_person_refresh_site" style="display: none;" title="원본 사이트(StashDB, TPDB)에서 최신 정보를 다시 조회하여 갱신합니다.">🔄 사이트 정보 갱신</button>
+                  <div class="btn-group ml-2">
+                    <button type="button" class="btn btn-sm btn-outline-warning dropdown-toggle font-weight-bold" data-toggle="dropdown">사용자 데이터 초기화</button>
+                    <div class="dropdown-menu dropdown-menu-right">
+                      <button type="button" class="dropdown-item btn_person_reset_user" data-reset-type="text">텍스트 편집 초기화</button>
+                      <button type="button" class="dropdown-item btn_person_reset_user" data-reset-type="image">사용자 이미지 초기화</button>
+                      <div class="dropdown-divider"></div>
+                      <button type="button" class="dropdown-item text-danger btn_person_reset_user" data-reset-type="all">전체 사용자 데이터 초기화</button>
+                    </div>
+                  </div>
                 </div>
                 <div>
                   <button type="button" class="btn btn-sm btn-secondary" data-dismiss="modal">취소</button>
@@ -1110,7 +1141,7 @@ function update_modal_image_preview($modal) {
         $img.attr('src', '').attr('data-src', '').removeData('src').hide();
         $noImg.show();
         $counter.text('0 / 0');
-        $badge.text('No Image');
+        renderImageOverlayBadge($badge, {type: 'No Image'});
         $btnPrev.prop('disabled', true);
         $btnNext.prop('disabled', true);
     } else {
@@ -1137,14 +1168,10 @@ function update_modal_image_preview($modal) {
             }
         }
 
-        $counter.text((idx + 1) + ' / ' + images.length);
-        $badge.text(cur.type || 'Poster');
+        if (typeof preloadAdjacentModalImages === 'function') preloadAdjacentModalImages(images, idx);
 
-        if (cur.is_final) {
-            $badge.attr('style', 'position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 123, 255, 0.75); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px);');
-        } else {
-            $badge.attr('style', 'position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 0, 0, 0.55); color: #e0e6ed; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px);');
-        }
+        $counter.text((idx + 1) + ' / ' + images.length);
+        renderImageOverlayBadge($badge, cur, 'Poster');
 
         $btnPrev.prop('disabled', images.length <= 1);
         $btnNext.prop('disabled', images.length <= 1);
@@ -1176,7 +1203,7 @@ function update_p_modal_image_preview($modal) {
         $img.attr('src', '').attr('data-src', '').removeData('src').hide();
         $noImg.show();
         $counter.text('0 / 0');
-        $pBadge.text('No Photo');
+        renderImageOverlayBadge($pBadge, {type: 'No Photo'});
         $btnPrev.prop('disabled', true);
         $btnNext.prop('disabled', true);
     } else {
@@ -1203,32 +1230,10 @@ function update_p_modal_image_preview($modal) {
             }
         }
 
+        if (typeof preloadAdjacentModalImages === 'function') preloadAdjacentModalImages(images, idx);
+
         $counter.text((idx + 1) + ' / ' + images.length);
-        $pBadge.text(cur.type || 'Photo');
-
-        var currentPrimaryThumb = ($modal.find('#p_edit_thumb').val() || '').trim();
-        var selectedPrimaryUrl = ($modal.find('#p_edit_selected_primary_url').val() || '').trim();
-        var localImgVal = ($modal.find('#p_edit_local_img_path').val() || '').trim();
-        var localFilename = localImgVal ? localImgVal.split('/').pop() : '';
-
-        var isCurrentPrimary = false;
-        if (selectedPrimaryUrl && cur.url === selectedPrimaryUrl) {
-            isCurrentPrimary = true;
-        } else if (cur.is_primary) {
-            isCurrentPrimary = true;
-        } else if (currentPrimaryThumb) {
-            if (cur.url === currentPrimaryThumb) {
-                isCurrentPrimary = true;
-            } else if (localFilename && cur.type === 'SERVER' && currentPrimaryThumb.indexOf(localFilename) !== -1) {
-                isCurrentPrimary = true;
-            }
-        }
-
-        if (isCurrentPrimary) {
-            $pBadge.attr('style', 'position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 123, 255, 0.85); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.4); backdrop-filter: blur(4px); font-weight: bold;');
-        } else {
-            $pBadge.attr('style', 'position: absolute; top: 10px; left: 10px; z-index: 5; font-size: 0.78rem; padding: 4px 8px; background: rgba(0, 0, 0, 0.55); color: #e0e6ed; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px);');
-        }
+        renderImageOverlayBadge($pBadge, cur, 'Photo');
 
         $btnPrev.prop('disabled', images.length <= 1);
         $btnNext.prop('disabled', images.length <= 1);
@@ -1367,20 +1372,44 @@ function normalizeDbEditPayload(row, srcJson, $modal) {
 
     payload.original.fanart = fanarts_text;
 
-    // 프리뷰 클립이 존재하는 경우 extra_info 및 extras에 실제 스트림 주소 동기화 반영
-    var previewUrlVal = $m.find('#edit_preview_url').val() ? $m.find('#edit_preview_url').val().trim() : '';
-    if (payload.extra_info && payload.extra_info.preview_clip) {
-        if (previewUrlVal) {
-            payload.extra_info.preview_clip.stream_url = previewUrlVal;
+    // 공식 원본 예고편은 원문 백업(original.extras)에 보존
+    if (edited_trailer) {
+        payload.original.extras = [{
+            content_url: edited_trailer,
+            content_type: 'trailer'
+        }];
+    } else {
+        payload.original.extras = [];
+    }
+
+    // 최종 재생용 extras 구성: 저장된 비디오 스트림 주소(프리뷰 또는 저장된 트레일러)를 최우선 적용
+    var activeStreamUrl = $m.find('#edit_preview_url').val() ? $m.find('#edit_preview_url').val().trim() : '';
+
+    if (activeStreamUrl) {
+        var videoTitlePrefix = (payload.extra_info && payload.extra_info.preview_clip) ? '[Preview] ' : '';
+        payload.extras = [{
+            mode: 'mp4',
+            title: videoTitlePrefix + (payload.title || payload.tagline || payload.originaltitle),
+            content_url: activeStreamUrl,
+            content_type: 'trailer'
+        }];
+
+        if (payload.extra_info && payload.extra_info.preview_clip) {
+            payload.extra_info.preview_clip.stream_url = activeStreamUrl;
         }
-        if (!edited_trailer && previewUrlVal) {
-            payload.extras = [{
-                mode: 'mp4',
-                title: '[Preview] ' + (payload.title || payload.tagline || payload.originaltitle),
-                content_url: previewUrlVal,
-                content_type: 'trailer'
-            }];
+        if (payload.extra_info && payload.extra_info.trailer_video) {
+            payload.extra_info.trailer_video.stream_url = activeStreamUrl;
         }
+    } else if (edited_trailer) {
+        // 저장된 영상이 없는 경우에만 원본 트레일러 URL을 폴백으로 적용
+        payload.extras = [{
+            mode: 'mp4',
+            title: payload.title || payload.tagline || payload.originaltitle,
+            content_url: getDisplayMediaUrl(edited_trailer, payload.site, 'video'),
+            content_type: 'trailer'
+        }];
+    } else {
+        payload.extras = [];
     }
 
     var preservedInfoUrl = (srcJson && srcJson.extra_info && srcJson.extra_info.info_url) ||
@@ -1451,7 +1480,12 @@ $(document).ready(function(){
             var bFid = batchFields[b];
             var savedBVal = localStorage.getItem(storage_pfx + bFid);
             if (savedBVal !== null) {
-                $('#' + bFid).val(savedBVal);
+                var $batchField = $('#' + bFid);
+                if ($batchField.is('select') && $batchField.find('option[value="' + savedBVal.replace(/"/g, '\\"') + '"]').length === 0) {
+                    localStorage.removeItem(storage_pfx + bFid);
+                } else {
+                    $batchField.val(savedBVal);
+                }
             }
         }
 
@@ -1482,6 +1516,12 @@ $(document).ready(function(){
             window.globalRequestSearch = window.__mainDbGlobalRequestSearch;
         }
         triggerInitialSearchOnce();
+    }
+
+    // 저장된 모드 적용 이후 현재 선택값과 설명/옵션 패널을 항상 동기화
+    if ($('#batch_mode').length > 0) {
+        updateBatchDelayInputState();
+        renderBatchDynamicOptions();
     }
 });
 
@@ -1517,21 +1557,108 @@ $(document).on('change input', '#batch_target_scope, #batch_mode, #batch_delay',
 function updateBatchDelayInputState() {
     var mode = $('#batch_mode').val();
     var $delayInput = $('#batch_delay');
-    if (mode === 'local_sync') {
-        $delayInput.prop('disabled', true).attr('title', '로컬 DB/파일 전용 모드는 딜레이 없이 초고속으로 처리됩니다.');
+    if (mode === 'local_sync' || mode === 'works_sync') {
+        $delayInput.prop('disabled', true).attr('title', '순수 로컬 DB 전용 모드는 딜레이 없이 초고속으로 처리됩니다.');
     } else {
         $delayInput.prop('disabled', false).removeAttr('title');
     }
 }
 
+// 모드별 설명 및 특화 동적 옵션 렌더러
+function renderBatchDynamicOptions() {
+    var $panel = $('#batch_dynamic_options_panel');
+    if ($panel.length === 0) return;
+
+    var bType = get_batch_type();
+    var mode = $('#batch_mode').val();
+
+    var descText = '';
+    var optionsHtml = '';
+
+    if (bType === 'person') {
+        if (mode === 'person_image_sync') {
+            descText = '💡 배우 프로필 사진을 개인 저장소(구글 드라이브 / 로컬 이미지 서버)로 다운로드하여 영구 보관용 썸네일로 동기화합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_person_skip_existing" data-opt-key="person_skip_existing" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_person_skip_existing" style="cursor: pointer;">기존 이미지 존재 시 처리 생략 (구글 드라이브는 File ID만 갱신)</label>';
+            optionsHtml += '</div>';
+        } else if (mode === 'works_sync') {
+            descText = '💡 소장 중인 전체 작품(JAV 및 Western)의 출연진을 스캔하여 인물 DB와의 연계 누락(works) 및 통계(works_count)를 일괄 재구축합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_works_sync_clean_orphan" data-opt-key="works_sync_clean_orphan" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_works_sync_clean_orphan" style="cursor: pointer;">오매칭 출연작 자동 정제 포함 (출연진에서 빠진 작품은 works에서 자동 제거)</label>';
+            optionsHtml += '</div>';
+        } else if (mode === 'western_person_refresh') {
+            descText = '💡 StashDB / ThePornDB 원본 사이트에 접속하여 서양 인물의 최신 프로필(신체 사이즈, 생년월일, 국적, 별칭, 사진 목록 등)을 일괄 갱신합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_western_protect_manual" data-opt-key="western_protect_manual" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_western_protect_manual" style="cursor: pointer;">수동 편집 데이터 보호 (사용자가 직접 수정한 필드는 덮어쓰지 않음)</label>';
+            optionsHtml += '</div>';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_western_skip_existing" data-opt-key="western_skip_existing" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_western_skip_existing" style="cursor: pointer;">기존 이미지 존재 시 이미지 처리 생략 (구글 드라이브는 File ID만 갱신)</label>';
+            optionsHtml += '</div>';
+        }
+    } else {
+        if (mode === 'local_sync') {
+            descText = '💡 메타 사이트 재검색 없이 로컬 DB와 개인 저장소의 파일을 기준으로 메타 DB를 동기화합니다.';
+        } else if (mode === 'missing') {
+            descText = '💡 출처 사이트에 접속하여 누락된 줄거리, 인물, 출시일, 제작사 등의 정보만 선별적으로 보완합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_missing_include_media" data-opt-key="missing_include_media">';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_missing_include_media" style="cursor: pointer;">이미지/미디어 동기화 포함 (기존 미디어 존재 시 재처리 스킵)</label>';
+            optionsHtml += '</div>';
+        } else if (mode === 'media_sync') {
+            descText = '💡 외부 사이트 재스크래핑 없이 메타 DB에 등록된 원본 URL을 바탕으로 포스터, 랜드스케이프, 팬아트 및 트레일러 영상을 개인 저장소(구글 드라이브 / 로컬 디렉토리)에 일괄 다운로드/업로드하여 동기화합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_skip_existing" data-opt-key="media_sync_skip_existing" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_skip_existing" style="cursor: pointer;">기존 미디어 존재 시 처리 생략 (구글 드라이브는 File ID만 갱신)</label>';
+            optionsHtml += '</div>';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_poster" data-opt-key="media_sync_poster" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_poster" style="cursor: pointer;">포스터 동기화</label>';
+            optionsHtml += '</div>';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_landscape" data-opt-key="media_sync_landscape" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_landscape" style="cursor: pointer;">가로커버 동기화</label>';
+            optionsHtml += '</div>';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_fanart" data-opt-key="media_sync_fanart" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_fanart" style="cursor: pointer;">팬아트 갤러리 동기화</label>';
+            optionsHtml += '</div>';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_trailer" data-opt-key="media_sync_trailer" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_trailer" style="cursor: pointer;">공식 트레일러 영상 동기화</label>';
+            optionsHtml += '</div>';
+        } else if (mode === 'in_place') {
+            descText = '💡 현재 출처 사이트의 최신 웹페이지 정보로 메타데이터 전체를 새로고침합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_in_place_skip_media" data-opt-key="in_place_skip_media">';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_in_place_skip_media" style="cursor: pointer;">이미지/미디어 처리 생략 (텍스트/인물 정보만 고속 갱신)</label>';
+            optionsHtml += '</div>';
+        } else if (mode === 'auto_search') {
+            descText = '💡 사이트 우선순위에 따라 전체 사이트를 다시 검색하여 더 온전한 사이트의 메타데이터로 전면 교체합니다.';
+            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
+            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_auto_search_under_95" data-opt-key="auto_search_under_95" checked>';
+            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_auto_search_under_95" style="cursor: pointer;">현재 점수 95점 미만 항목만 대상 (고득점 항목 유지)</label>';
+            optionsHtml += '</div>';
+        }
+    }
+
+    $('#batch_mode_desc_text').text(descText);
+    $('#batch_mode_options_container').html(optionsHtml);
+}
+
 $(document).on('change', '#batch_mode', function(){
     updateBatchDelayInputState();
+    renderBatchDynamicOptions();
 });
 
-// 페이지 로드 시 모드에 따른 초기 딜레이 상태 반영
+// 페이지 로드 시 모드에 따른 초기 딜레이 상태 및 동적 옵션 반영
 $(document).ready(function(){
     if ($('#batch_mode').length > 0) {
         updateBatchDelayInputState();
+        renderBatchDynamicOptions();
     }
 });
 
@@ -1540,21 +1667,40 @@ $(document).on('change', '#batch_log_autoscroll', function(){
     localStorage.setItem(storage_pfx + 'batch_log_autoscroll', $(this).is(':checked') ? 'true' : 'false');
 });
 
-// 하단 체크박스 선택 변경 시 배치 대상 수량 실시간 표시
+// 현재 페이지에 맞는 배치 트랙('item' vs 'person') 자동 판별 헬퍼
+function get_batch_type() {
+    var ctx = (typeof get_list_context === 'function') ? get_list_context() : null;
+    if (ctx) return ctx.type === 'person' ? 'person' : 'item';
+    return $('#batch_mode').val() === 'person_image_sync' ? 'person' : 'item';
+}
+
+// 하단 체크박스 선택 변경 시 배치 대상 수량 실시간 표시 및 작업 트리거
 function triggerBatchRefresh(actionType) {
+    var bType = get_batch_type();
+    var bLabel = (bType === 'person') ? '인물' : '영상 메타';
+
     var checkedCodes = [];
     $('.meta-item-chk:checked').each(function(){
         var v = $(this).val();
-        if (v) checkedCodes.push(v);
+        var category = ($(this).attr('data-category') || '').toUpperCase();
+        var uiCode = $(this).attr('data-ui-code') || v;
+        if (v) {
+            checkedCodes.push({
+                code: v,
+                ui_code: uiCode,
+                category: category
+            });
+        }
     });
 
     var targetScope = $('#batch_target_scope').val() || 'auto';
-    var refreshMode = $('#batch_mode').val() || 'missing';
-    var delayVal = parseFloat($('#batch_delay').val()) || 2.0;
+    var refreshMode = $('#batch_mode').val() || (bType === 'person' ? 'person_image_sync' : 'missing');
+    var delayVal = parseFloat($('#batch_delay').val()) || (bType === 'person' ? 0.5 : 2.0);
 
-    // 하단 검색 폼의 현재 필터 상태를 정확히 추출
+    // 하단 검색 폼의 현재 필터 상태를 추출
     var currentContext = get_list_context();
     var searchCategory = ($('#search_category').length > 0 ? $('#search_category').val() : currentContext.category) || 'AV_ALL';
+    var searchDomain = $('#search_domain').val() || 'ALL';
     var searchSite = $('#search_site').val() || 'all';
     var searchStatus = $('#search_status').val() || 'all';
     var searchWord = $('#search_word').val() || '';
@@ -1563,12 +1709,12 @@ function triggerBatchRefresh(actionType) {
     if (actionType === 'restart') {
         var isTargetChecked = (targetScope === 'selected' || (targetScope === 'auto' && checkedCodes.length > 0));
         var confirmMsg = isTargetChecked
-            ? "선택한 " + checkedCodes.length + "건의 항목을 대상으로 배치 작업을 시작하시겠습니까?"
-            : "하단 검색 조건 [카테고리: " + searchCategory + ", 상태: " + searchStatus + ", 사이트: " + searchSite + "] 일치 항목을 대상으로 배치 작업을 시작하시겠습니까?";
+            ? "선택한 " + checkedCodes.length + "건의 항목을 대상으로 " + bLabel + " 배치 작업을 시작하시겠습니까?"
+            : "하단 검색 조건 일치 항목을 대상으로 " + bLabel + " 배치 작업을 시작하시겠습니까?";
         if (!confirm(confirmMsg)) return;
     }
 
-    $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] 배치 작업을 시작합니다. 서버 세션 연결 및 대상 항목 수집 중...</div>');
+    $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] ' + bLabel + ' 배치 작업을 시작합니다. 서버 세션 연결 및 대상 항목 수집 중...</div>');
     $('#batch_badge_status').removeClass('badge-secondary badge-success badge-warning').addClass('badge-info').text('시작 중');
     $('#batch_current_code_text').text('대상 수집 중...');
 
@@ -1578,20 +1724,31 @@ function triggerBatchRefresh(actionType) {
 
     connectBatchSSE();
 
+    // 동적 패널에 렌더링된 모드별 옵션값 수집
+    var batchOptions = {};
+    $('#batch_mode_options_container input[type="checkbox"]').each(function(){
+        var optKey = $(this).attr('data-opt-key') || $(this).attr('id');
+        if (optKey) {
+            batchOptions[optKey] = $(this).is(':checked');
+        }
+    });
+
     var searchPayload = {
         action: actionType,
+        batch_type: bType,
         target_scope: targetScope,
         codes: checkedCodes,
         mode: refreshMode,
         delay: delayVal,
+        batch_options: batchOptions,
         search_category: searchCategory,
+        search_domain: searchDomain,
         search_site: searchSite,
         search_status: searchStatus,
         search_word: searchWord,
         search_order: searchOrder
     };
 
-    // arg3에 JSON 문자열을 담아 전송하여 하단 조건 누락을 방지
     globalSendCommand('db_batch_refresh_start', actionType, refreshMode, JSON.stringify(searchPayload), function(ret){
         if (typeof notify === 'function') notify(ret.msg, ret.ret === 'success' ? 'success' : 'warning');
     }, searchPayload);
@@ -1621,20 +1778,31 @@ $(document).off('click', '#btn_batch_restart').on('click', '#btn_batch_restart',
     triggerBatchRefresh('restart');
 });
 
-// 패널 상태 및 큐 초기화 버튼 핸들러
+// 패널 상태 및 큐 초기화 버튼 핸들러 (item/person 트랙별 독립 리셋)
 $(document).off('click', '#btn_batch_reset_panel').on('click', '#btn_batch_reset_panel', function(e){
     e.preventDefault();
     e.stopPropagation();
 
-    if (!confirm("배치 작업 설정 및 큐 상태를 초기화하시겠습니까?")) return;
+    var bType = get_batch_type();
+    var bLabel = (bType === 'person') ? '인물' : '영상 메타';
 
-    globalSendCommand('db_batch_refresh_reset', null, null, null, function(ret){
+    if (!confirm(bLabel + " 배치 작업 설정 및 큐 상태를 초기화하시겠습니까?")) return;
+
+    globalSendCommand('db_batch_refresh_reset', bType, null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '패널이 초기화되었습니다.', 'success');
 
         // 상단 패널 입력 요소 초기화
-        $('#batch_target_scope').val('auto');
-        $('#batch_mode').val('missing');
-        $('#batch_delay').val('2.0');
+        if (bType === 'person') {
+            $('#batch_target_scope').val('search_filter');
+            $('#batch_mode').val('person_image_sync');
+            $('#batch_delay').val('0.5');
+        } else {
+            $('#batch_target_scope').val('auto');
+            $('#batch_mode').val('missing');
+            $('#batch_delay').val('2.0');
+        }
+        updateBatchDelayInputState();
+        renderBatchDynamicOptions();
         $('#opt_batch_selected').text('체크박스 선택 항목 (0개 선택됨)');
         $('#check_all_meta, .meta-item-chk').prop('checked', false);
 
@@ -1650,14 +1818,14 @@ $(document).off('click', '#btn_batch_reset_panel').on('click', '#btn_batch_reset
         $('#batch_progress_bar').css('width', '0%').text('0%').removeClass('progress-bar-animated bg-info bg-warning bg-success bg-danger');
 
         // 터미널 안내문 초기화
-        $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] 배치 작업 대기 상태입니다. 상단에서 조건을 설정하고 시작 버튼을 누르세요.</div>');
+        $('#batch_terminal_logs').html('<div style="color: #58a6ff;">[시스템] ' + bLabel + ' 배치 작업 대기 상태입니다. 상단에서 조건을 설정하고 시작 버튼을 누르세요.</div>');
 
         // 스토리지 저장값 리셋
         var storage_pfx = get_storage_prefix();
         localStorage.removeItem(storage_pfx + 'batch_target_scope');
         localStorage.removeItem(storage_pfx + 'batch_mode');
-        localStorage.setItem(storage_pfx + 'batch_delay', '2.0');
-    });
+        localStorage.setItem(storage_pfx + 'batch_delay', bType === 'person' ? '0.5' : '2.0');
+    }, { batch_type: bType });
 });
 
 // 딜레이 값 변경 시 로컬 저장
@@ -1756,7 +1924,9 @@ $(document).on('click', '#reset_btn, #btn_person_search_reset', function(e) {
     if (!is_person_page) {
         $("#search_site").val('all');
     } else {
-        var default_dom = (current_sub === 'western') ? 'WESTERN' : 'JAV';
+        var default_dom = current_sub === 'western' ? 'WESTERN' : (
+            current_sub === 'meta_db' ? 'ALL' : 'JAV'
+        );
         $("#search_domain").val(default_dom);
     }
 
@@ -1801,30 +1971,51 @@ function make_item_list(data) {
                 ? '&nbsp;<span class="text-muted small font-weight-normal">(' + year_val + ')</span>' : '';
 
             var current_cat = (row.category || get_list_context().category || '').toUpperCase();
-            var is_jav = (current_cat === 'JAV_CEN' || current_cat === 'JAV_UNCEN' || sub === 'jav_censored' || sub === 'jav_uncensored');
+            var is_jav = (current_cat === 'JAV_CEN' || current_cat === 'JAV_UNCEN' || current_cat === 'AV_ALL' || sub === 'jav_censored' || sub === 'jav_uncensored' || sub === 'meta_db');
             var actor_html = '';
 
             if (is_jav && jd.actor && Array.isArray(jd.actor) && jd.actor.length > 0) {
-                var actor_names = [];
+                var actor_items = [];
+                var seen_actor_names = new Set();
                 for (var a_idx = 0; a_idx < jd.actor.length; a_idx++) {
                     var a_item = jd.actor[a_idx];
                     var a_name = '';
+                    var a_target = '';
+                    var a_registered = false;
                     if (typeof a_item === 'object' && a_item !== null) {
                         a_name = (a_item.name_ko || a_item.name_org || a_item.name || '').trim();
+                        a_registered = a_item.is_registered === true && Number(a_item.db_person_id) > 0;
+                        a_target = a_registered ? String(a_item.db_person_id) : '';
                     } else if (typeof a_item === 'string') {
                         a_name = a_item.trim();
+                        a_target = a_name;
                     }
-                    if (a_name && actor_names.indexOf(a_name) === -1) {
-                        actor_names.push(a_name);
+                    if (a_name && !seen_actor_names.has(a_name)) {
+                        seen_actor_names.add(a_name);
+                        actor_items.push({ name: a_name, target: a_target, registered: a_registered });
                     }
                 }
 
-                if (actor_names.length > 0) {
-                    var top_actors = actor_names.slice(0, 3).join(', ');
-                    if (actor_names.length > 3) {
-                        top_actors += ' 외';
+                if (actor_items.length > 0) {
+                    var actor_dom = (current_cat === 'WESTERN') ? 'WESTERN' : 'JAV';
+                    var top_items = actor_items.slice(0, 3);
+                    var actor_links = [];
+                    for (var t_idx = 0; t_idx < top_items.length; t_idx++) {
+                        var it = top_items[t_idx];
+                        var safe_name = it.name.replace(/[&<>"']/g, function(c) {
+                            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+                        });
+                        if (it.registered) {
+                            actor_links.push('<span class="actor-title-link-clickable text-info font-weight-normal" data-db-person-id="' + it.target + '" data-domain="' + actor_dom + '" style="cursor: pointer;" title="[' + safe_name + '] 인물 정보 열기">' + safe_name + '</span>');
+                        } else {
+                            actor_links.push('<span class="font-weight-normal" title="인물 DB 미등록" style="cursor: default;">' + safe_name + '</span>');
+                        }
                     }
-                    actor_html = '&nbsp;<span class="text-muted small font-weight-normal">- ' + top_actors + '</span>';
+                    var top_actors_html = actor_links.join(', ');
+                    if (actor_items.length > 3) {
+                        top_actors_html += ' 외';
+                    }
+                    actor_html = '&nbsp;<span class="text-muted small font-weight-normal">- ' + top_actors_html + '</span>';
                 }
             }
 
@@ -1861,17 +2052,36 @@ function make_item_list(data) {
             }
 
             var orig_thumb = (jd.original && jd.original.thumb) ? jd.original.thumb : {};
-            var raw_site_p = orig_thumb.poster || '';
-            var raw_site_pl = orig_thumb.landscape || '';
+            var raw_site_p = Array.isArray(orig_thumb.poster) ? (orig_thumb.poster[0] || '') : (orig_thumb.poster || '');
+            var raw_site_pl = Array.isArray(orig_thumb.landscape) ? (orig_thumb.landscape[0] || '') : (orig_thumb.landscape || '');
+            var site_photo_urls = [];
+            if (Array.isArray(orig_thumb.poster)) site_photo_urls = site_photo_urls.concat(orig_thumb.poster);
+            if (Array.isArray(orig_thumb.landscape)) site_photo_urls = site_photo_urls.concat(orig_thumb.landscape);
+            [
+                jd.photo_urls,
+                jd.site_img_urls,
+                jd.extra_info && jd.extra_info.photo_urls,
+                jd.extra_info && jd.extra_info.site_img_urls,
+                jd.original && jd.original.photo_urls,
+                jd.original && jd.original.site_img_urls
+            ].forEach(function(photo_list) {
+                if (!Array.isArray(photo_list)) return;
+                photo_list.forEach(function(photo_url) {
+                    if (typeof photo_url === 'string' && photo_url.trim()) {
+                        site_photo_urls.push(photo_url.trim());
+                    }
+                });
+            });
 
             if (list_p_url) {
                 var cleanKeyP = getCleanSourceUrl(list_p_url);
                 var isLocalP = isLocalServerMediaUrl(list_p_url);
+                var isGdriveP = list_p_url.indexOf('drive.google.com') !== -1;
                 if (cleanKeyP && !added_raw_keys.has(cleanKeyP)) {
                     item_gallery.push({
                         url: getDisplayMediaUrl(list_p_url, row.site),
-                        type: isLocalP ? 'Poster' : 'Poster (Site)',
-                        is_final: isLocalP
+                        type: isGdriveP ? 'Poster (GDrive)' : (isLocalP ? 'Poster' : 'Poster (Site)'),
+                        is_final: isLocalP || isGdriveP
                     });
                     added_raw_keys.add(cleanKeyP);
                 }
@@ -1880,11 +2090,12 @@ function make_item_list(data) {
             if (list_pl_url) {
                 var cleanKeyPl = getCleanSourceUrl(list_pl_url);
                 var isLocalPl = isLocalServerMediaUrl(list_pl_url);
+                var isGdrivePl = list_pl_url.indexOf('drive.google.com') !== -1;
                 if (cleanKeyPl && !added_raw_keys.has(cleanKeyPl)) {
                     item_gallery.push({
                         url: getDisplayMediaUrl(list_pl_url, row.site),
-                        type: isLocalPl ? 'Landscape' : 'Landscape (Site)',
-                        is_final: isLocalPl
+                        type: isGdrivePl ? 'Landscape (GDrive)' : (isLocalPl ? 'Landscape' : 'Landscape (Site)'),
+                        is_final: isLocalPl || isGdrivePl
                     });
                     added_raw_keys.add(cleanKeyPl);
                 }
@@ -1895,12 +2106,13 @@ function make_item_list(data) {
                 if (!fa_url) return;
                 var cleanKeyFa = getCleanSourceUrl(fa_url);
                 var isLocalFa = isLocalServerMediaUrl(fa_url);
+                var isGdriveFa = fa_url.indexOf('drive.google.com') !== -1 || fa_url.indexOf('googleusercontent.com') !== -1;
                 if (cleanKeyFa && !added_raw_keys.has(cleanKeyFa)) {
-                    var typeLabel = isLocalFa ? ('Local Art #' + (fa_i + 1)) : ('Art #' + (fa_i + 1));
+                    var typeLabel = isGdriveFa ? ('Art (GDrive) #' + (fa_i + 1)) : (isLocalFa ? ('Local Art #' + (fa_i + 1)) : ('Art #' + (fa_i + 1)));
                     item_gallery.push({
                         url: getDisplayMediaUrl(fa_url, row.site),
                         type: typeLabel,
-                        is_final: isLocalFa
+                        is_final: isLocalFa || isGdriveFa
                     });
                     added_raw_keys.add(cleanKeyFa);
                 }
@@ -1930,6 +2142,18 @@ function make_item_list(data) {
                 }
             }
 
+            site_photo_urls.forEach(function(photo_url, photo_idx) {
+                var cleanSitePhoto = getCleanSourceUrl(photo_url);
+                if (cleanSitePhoto && !added_raw_keys.has(cleanSitePhoto) && !isLocalServerMediaUrl(photo_url)) {
+                    item_gallery.push({
+                        url: getDisplayMediaUrl(photo_url, row.site),
+                        type: 'Site Photo #' + (photo_idx + 1),
+                        is_final: false
+                    });
+                    added_raw_keys.add(cleanSitePhoto);
+                }
+            });
+
             var origFanarts = (jd.original && Array.isArray(jd.original.fanart)) ? jd.original.fanart : [];
             origFanarts.forEach(function(ofa_url, ofa_i){
                 if (!ofa_url) return;
@@ -1957,7 +2181,7 @@ function make_item_list(data) {
             if (plot_text.length > 320) plot_text = plot_text.substring(0, 320) + "...";
 
             var chk_html = '<div class="mr-2 d-flex align-items-center justify-content-center" style="flex-shrink: 0; min-width: 26px;">' +
-                           '  <input type="checkbox" class="meta-item-chk" value="' + (row.code || '') + '" style="cursor: pointer; transform: scale(1.4);" title="항목 선택">' +
+                           '  <input type="checkbox" class="meta-item-chk" value="' + (row.code || '') + '" data-ui-code="' + (row.ui_code || row.code || '') + '" data-category="' + (row.category || '') + '" style="cursor: pointer; transform: scale(1.4);" title="항목 선택">' +
                            '</div>';
 
             str += '<div class="row align-items-start py-3 px-1" style="border-bottom: 1px solid rgba(128, 128, 128, 0.15);">';
@@ -2051,30 +2275,9 @@ function make_person_list(data) {
                 continue;
             }
             
-            var p_media = p.media_src || {};
-            var local_path_v = (p_media.local_img_path || '').trim();
-            var google_id_v = (p_media.google_fileid || '').trim();
-            var site_url_v = (p_media.site_img_url || '').trim();
+            var p_gallery = buildPersonImageGallery(p).images;
 
-            var p_gallery = [];
-
-            if (local_path_v && local_path_v.toLowerCase() !== 'null' && local_path_v.toLowerCase() !== 'none') {
-                var resolved_local = p_media.local_img_url || formatActorLocalUrl(local_path_v, p.domain);
-                if (resolved_local) {
-                    var busted_server_url = resolved_local + (resolved_local.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
-                    p_gallery.push({ url: busted_server_url, type: 'SERVER', is_final: true });
-                }
-            }
-
-            if (google_id_v && google_id_v.toLowerCase() !== 'null' && google_id_v.toLowerCase() !== 'none') {
-                p_gallery.push({ url: 'https://drive.google.com/thumbnail?id=' + google_id_v, type: 'GOOGLE' });
-            }
-            if (site_url_v && site_url_v.startsWith('http')) {
-                var type_label = (p.domain === 'WESTERN' ? 'SITE' : (p.domain === 'GENERAL' ? 'WEB' : 'AVDBS'));
-                p_gallery.push({ url: site_url_v, type: type_label });
-            }
-
-            var active_thumb_url = p.thumb || '';
+            var active_thumb_url = p.thumb_url || p.thumb || '';
             if (active_thumb_url && isLocalServerMediaUrl(active_thumb_url)) {
                 active_thumb_url = active_thumb_url + (active_thumb_url.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
             }
@@ -2096,8 +2299,27 @@ function make_person_list(data) {
 
             var extra_d = p.extra_info || {};
             if (typeof extra_d === 'string') { try { extra_d = JSON.parse(extra_d); } catch(e){} }
-            var sub_count = (extra_d.merged_sub_actors && Array.isArray(extra_d.merged_sub_actors)) ? extra_d.merged_sub_actors.length : ((extra_d.alt_actor_indices && Array.isArray(extra_d.alt_actor_indices)) ? extra_d.alt_actor_indices.length : 0);
+            var sub_count = (p.merged_count && p.merged_count > 1) ? p.merged_count : (
+                (extra_d.merged_sub_actors && Array.isArray(extra_d.merged_sub_actors)) ? extra_d.merged_sub_actors.length : (
+                    (extra_d.alt_actor_indices && Array.isArray(extra_d.alt_actor_indices)) ? extra_d.alt_actor_indices.length : 0
+                )
+            );
             var merged_badge = (sub_count > 1) ? (' <span class="badge badge-primary font-weight-bold" style="font-size: 0.72em;" title="' + sub_count + '개 ID 통합됨">통합 (' + sub_count + ')</span>') : '';
+
+            // 소장작품 수 및 신체 스펙 뱃지 생성 (코드 뒤쪽 배치용)
+            var works_count_val = (p.works_count !== undefined && p.works_count !== null) ? p.works_count : (
+                p.works ? Object.keys(p.works).reduce(function(acc, k){ return acc + (Array.isArray(p.works[k]) ? p.works[k].length : 0); }, 0) : 0
+            );
+            var works_badge = (works_count_val > 0) ? ('<span class="badge badge-success font-weight-normal mr-1 mb-1" style="font-size: 0.75em;" title="소장 출연작 ' + works_count_val + '편">소장 ' + works_count_val + '편</span>') : '';
+
+            var spec_text = '';
+            if (p.height && parseInt(p.height, 10) > 0) spec_text += p.height + 'cm';
+            if (p.cup_size) {
+                var clean_cup = String(p.cup_size).trim();
+                if (spec_text) spec_text += ' ';
+                spec_text += clean_cup + (clean_cup.endsWith('컵') ? '' : '컵');
+            }
+            var spec_badge = spec_text ? ('<span class="badge badge-dark border border-secondary font-weight-normal mr-1 mb-1" style="font-size: 0.75em;">' + spec_text + '</span>') : '';
 
             str += '<div class="col-lg-4 col-md-6 mb-3">';
             str += '  <div class="card h-100 border border-secondary shadow-sm overflow-hidden" style="background: #23272d; border-radius: 6px;">';
@@ -2112,19 +2334,26 @@ function make_person_list(data) {
             if (show_en) {
                 str += '          <div class="text-muted text-truncate" style="font-size: 0.88em;" title="' + show_en + '">' + show_en + '</div>';
             }
+
+            // 식별코드 바로 뒤쪽으로 소장 편수 및 신체 스펙 뱃지 나란히 배치
+            str += '          <div class="mt-1 d-flex align-items-center flex-wrap">';
             if (display_id) {
-                str += '          <div class="mt-1"><span class="badge badge-secondary badge-copy-code text-wrap" data-code="' + display_id + '" style="cursor: pointer; font-size: 0.82em;" title="클릭하여 식별코드 복사">' + display_id + '</span></div>';
+                str += '            <span class="badge badge-secondary badge-copy-code mr-1 mb-1 text-wrap" data-code="' + display_id + '" style="cursor: pointer; font-size: 0.78em;" title="클릭하여 식별코드 복사">' + display_id + '</span>';
             }
+            str += works_badge;
+            str += spec_badge;
+            str += '          </div>';
             str += '        </div>';
-            
+
+            // 하단 라인은 도메인 뱃지와 수정/삭제 버튼만 배치하여 1줄 레이아웃 유지
             str += '        <div class="d-flex justify-content-between align-items-center mt-2 pt-1">';
             str += '          <span class="badge badge-secondary font-weight-normal" style="font-size: 0.75em;">' + (p.domain || 'JAV') + '</span>';
-            str += '          <div>';
+            str += '          <div class="text-nowrap">';
             str += '            <button class="btn btn-sm btn-outline-info py-0 px-2 mr-1 btn_edit_person" data-idx="' + i + '">수정</button>';
             str += '            <button class="btn btn-sm btn-outline-danger py-0 px-2 btn_delete_person" data-id="' + p.id + '">삭제</button>';
             str += '          </div>';
             str += '        </div>';
-            
+
             str += '      </div>';
             str += '    </div>';
             str += '  </div>';
@@ -2140,80 +2369,28 @@ function make_person_list(data) {
 }
 
 // 통합 단일 모달 로더 및 렌더러
-function renderPersonModalContent(p, $modal) {
-    if (!p) return;
-    $modal = $modal || $('#personEditModal');
-    $modal.data('person_data', p);
-
-    var media = p.media_src || {};
-    var extra = p.extra_info || {};
-
-    if (typeof extra === 'string') { try { extra = JSON.parse(extra); } catch (e) { extra = {}; } }
-    if (typeof media === 'string') { try { media = JSON.parse(media); } catch (e) { media = {}; } }
-
-    $modal.find('#p_edit_id').val(p.id || '');
-    $modal.find('#p_edit_domain').val(p.domain || 'JAV');
-    $modal.find('#p_edit_idx').val(p.person_idx || '');
-    $modal.find('#p_edit_name_org').val(p.name_org || p.name || '');
-    $modal.find('#p_edit_name_ko').val(p.name_ko || '');
-    $modal.find('#p_edit_name_en').val(p.name_en || '');
-    $modal.find('#p_edit_aliases').val((p.aliases && p.aliases.length > 0) ? p.aliases.join(', ') : (p.other_names || ''));
-    $modal.find('#p_edit_thumb').val(p.thumb || '');
-    $modal.find('#p_edit_selected_primary_url').val('');
-
-    $modal.find('#p_edit_birth').val(extra.birth || '');
-    var display_height = (extra.height && parseInt(extra.height, 10) > 0) ? String(extra.height) : '';
-    $modal.find('#p_edit_height').val(display_height);
-    $modal.find('#p_edit_agency').val(extra.agency || '');
-    $modal.find('#p_edit_blood').val(extra.blood || '');
-    $modal.find('#p_edit_hobby').val(extra.hobby || extra.specialty || '');
-
-    $modal.find('#p_edit_body_size').val(extra.body_size || '');
-    $modal.find('#p_edit_bra_size').val(extra.bra_size || '');
-    $modal.find('#p_edit_debut').val(extra.debut || '');
-
-    var local_val = (media.local_img_path || '').trim();
-    var google_val = (media.google_fileid || '').trim();
-    var site_val = (media.site_img_url || '').trim();
-
-    $modal.find('#p_edit_local_img_path').val(local_val);
-    $modal.find('#p_edit_google_fileid').val(google_val);
-    $modal.find('#p_edit_site_img_url').val(site_val);
-
-    var site_photos = Array.isArray(media.site_img_urls) ? media.site_img_urls.filter(function(u){
-        return u && typeof u === 'string' && u.trim().startsWith('http') && !isLocalServerMediaUrl(u);
-    }) : [];
-
-    if (site_val && site_val.startsWith('http') && !isLocalServerMediaUrl(site_val) && site_photos.indexOf(site_val) === -1) {
-        site_photos.unshift(site_val);
-    }
-    $modal.find('#p_edit_site_img_urls').val(site_photos.join('\n'));
-
-    var info_url_val = (extra.info_url || p.info_url || '').trim();
-    $modal.find('#p_edit_info_url').val(info_url_val);
-
+// The list lightbox and person editor share source labels, assets and primary ordering.
+function buildPersonImageGallery(p, mediaPayload) {
+    var media = mediaPayload || p.media_src || {};
+    if (typeof media === 'string') { try { media = JSON.parse(media); } catch (err) { media = {}; } }
+    var official_media = media.official || media;
+    var custom_media = media.custom || {};
     var dom = (p.domain || 'JAV').toUpperCase();
-
-    if (dom === 'JAV' || dom === 'WESTERN') {
-        $modal.find('#p_edit_av_spec_div').show();
-    } else {
-        $modal.find('#p_edit_av_spec_div').hide();
-    }
-
-    if (dom === 'WESTERN') {
-        $modal.find('#div_p_edit_local_path').removeClass('col-md-4').addClass('col-md-6').show();
-        $modal.find('#div_p_edit_google_id').hide();
-        $modal.find('#div_p_edit_site_url').removeClass('col-md-4').addClass('col-md-6').show();
-    } else if (dom === 'GENERAL') {
-        $modal.find('#div_p_edit_local_path').hide();
-        $modal.find('#div_p_edit_google_id').hide();
-        $modal.find('#div_p_edit_site_url').removeClass('col-md-4 col-md-6').addClass('col-md-12').show();
-    } else {
-        $modal.find('#div_p_edit_local_path').removeClass('col-md-6 col-md-12').addClass('col-md-4').show();
-        $modal.find('#div_p_edit_google_id').removeClass('col-md-6 col-md-12').addClass('col-md-4').show();
-        $modal.find('#div_p_edit_site_url').removeClass('col-md-6 col-md-12').addClass('col-md-4').show();
-    }
-
+    var local_val = dom === 'JAV' ? (official_media.local_img_path || '').trim() : '';
+    var google_val = dom === 'JAV' ? (official_media.google_fileid || '').trim() : '';
+    var cached_local_val = (official_media.cached_local_img_path || '').trim();
+    var cached_google_val = (official_media.official_cached_google_fileid || (!media.official ? media.user_google_fileid : '') || p.official_cached_gdrive_fileid || '').trim();
+    var custom_local_val = (custom_media.local_img_path || '').trim();
+    var custom_local_url = custom_local_val ? formatActorLocalUrl(custom_local_val, dom) : '';
+    var user_google_val = String(Object.prototype.hasOwnProperty.call(custom_media, 'custom_user_google_fileid')
+        ? custom_media.custom_user_google_fileid || '' : (media.custom_user_google_fileid || p.custom_gdrive_fileid || '')).trim();
+    var customGdriveThumbUrl = user_google_val ? 'https://drive.google.com/thumbnail?id=' + user_google_val + '&sz=s0' : '';
+    var site_val = (official_media.site_img_url || '').trim();
+    var raw_site_photos = p.photo_urls && p.photo_urls.length > 0 ? p.photo_urls : (official_media.site_img_urls || []);
+    var site_photos = Array.isArray(raw_site_photos) ? raw_site_photos.filter(function(url) {
+        return url && typeof url === 'string' && url.trim().startsWith('http') && !isLocalServerMediaUrl(url);
+    }) : [];
+    if (site_val && site_val.startsWith('http') && !isLocalServerMediaUrl(site_val) && site_photos.indexOf(site_val) === -1) site_photos.unshift(site_val);
     var is_invalid = function(val) {
         if (!val) return true;
         var low = val.toLowerCase();
@@ -2221,15 +2398,23 @@ function renderPersonModalContent(p, $modal) {
     };
 
     var sources_map = {};
-    if (!is_invalid(local_val)) {
-        var resolved_local_url = media.local_img_url || extra.local_img_url || formatActorLocalUrl(local_val, dom);
-        if (resolved_local_url) {
-            var cache_busted_local = resolved_local_url + (resolved_local_url.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now();
-            sources_map['local_img_path'] = { url: cache_busted_local, type: 'SERVER', is_final: true };
-        }
+    if (dom === 'JAV' && !is_invalid(local_val)) {
+        sources_map['local_img_path'] = {url: formatActorLocalUrl(local_val, dom), type: 'GDS LOCAL', is_final: true};
     }
-    if (!is_invalid(google_val)) {
-        sources_map['google_fileid'] = { url: 'https://drive.google.com/thumbnail?id=' + google_val, type: 'GOOGLE', is_final: false };
+    if (dom === 'JAV' && !is_invalid(google_val)) {
+        sources_map['google_fileid'] = {url: 'https://drive.google.com/thumbnail?id=' + google_val + '&sz=s0', type: 'GDS', is_final: true};
+    }
+    if (!is_invalid(cached_local_val)) {
+        sources_map['cached_local_img_path'] = {url: formatActorLocalUrl(cached_local_val, dom), type: 'CACHE SERVER', is_final: true};
+    }
+    if (!is_invalid(cached_google_val)) {
+        sources_map['official_cached_google_fileid'] = {url: 'https://drive.google.com/thumbnail?id=' + cached_google_val + '&sz=s0', type: 'CACHE GDRIVE', is_final: true};
+    }
+    if (!is_invalid(custom_local_val)) {
+        sources_map['custom_local_img_path'] = {url: custom_local_url, type: 'USER SERVER', is_final: true};
+    }
+    if (!is_invalid(user_google_val)) {
+        sources_map['custom_user_google_fileid'] = {url: customGdriveThumbUrl, type: 'USER GDRIVE', is_final: true};
     }
 
     if (site_photos.length > 0) {
@@ -2243,29 +2428,22 @@ function renderPersonModalContent(p, $modal) {
     }
 
     var active_primary_source_key = null;
-    var current_thumb = (p.thumb || '').trim();
-
-    if (local_val && local_val.toLowerCase().indexOf('_user.') !== -1 && sources_map['local_img_path']) {
-        active_primary_source_key = 'local_img_path';
-    } else if (current_thumb) {
-        if (sources_map['local_img_path'] && (current_thumb === sources_map['local_img_path'].url || (local_val && current_thumb.indexOf(local_val.split('/').pop()) !== -1))) {
-            active_primary_source_key = 'local_img_path';
-        } else if (sources_map['google_fileid'] && (current_thumb === sources_map['google_fileid'].url || current_thumb.indexOf('drive.google.com') !== -1)) {
-            active_primary_source_key = 'google_fileid';
-        } else {
-            for (var sk in sources_map) {
-                if (sources_map[sk].url === current_thumb) {
-                    active_primary_source_key = sk;
-                    break;
-                }
-            }
+    var current_thumb = (p.thumb_url || p.thumb || '').trim();
+    var currentMatch = current_thumb.match(/[?&]id=([^&]+)/);
+    Object.keys(sources_map).some(function(key) {
+        var sourceUrl = sources_map[key].url || '';
+        var sourceMatch = sourceUrl.match(/[?&]id=([^&]+)/);
+        if (current_thumb === sourceUrl || (currentMatch && sourceMatch && currentMatch[1] === sourceMatch[1])) {
+            active_primary_source_key = key;
+            return true;
         }
+        return false;
+    });
+    if (!active_primary_source_key && current_thumb.startsWith('http')) {
+        sources_map['active_thumb'] = {url: current_thumb, type: 'ACTIVE', is_final: true};
+        active_primary_source_key = 'active_thumb';
     }
-
-    if (!active_primary_source_key) {
-        var available_keys = Object.keys(sources_map);
-        if (available_keys.length > 0) active_primary_source_key = available_keys[0];
-    }
+    if (!active_primary_source_key) active_primary_source_key = Object.keys(sources_map)[0];
 
     var preview_images = [];
     if (active_primary_source_key && sources_map[active_primary_source_key]) {
@@ -2277,24 +2455,131 @@ function renderPersonModalContent(p, $modal) {
         }
     });
 
-    $modal.find('#lbl_p_edit_local_path .badge-primary-source').remove();
-    $modal.find('#lbl_p_edit_google_id .badge-primary-source').remove();
-    $modal.find('#lbl_p_edit_site_url .badge-primary-source').remove();
+    return {sources: sources_map, primaryKey: active_primary_source_key, images: preview_images};
+}
 
-    if (active_primary_source_key === 'local_img_path') {
-        $modal.find('#lbl_p_edit_local_path').append(' <span class="badge badge-success small px-1 badge-primary-source">대표</span>');
-    } else if (active_primary_source_key === 'google_fileid') {
-        $modal.find('#lbl_p_edit_google_id').append(' <span class="badge badge-success small px-1 badge-primary-source">대표</span>');
-    } else if (active_primary_source_key === 'site_img_url') {
-        $modal.find('#lbl_p_edit_site_url').append(' <span class="badge badge-success small px-1 badge-primary-source">대표</span>');
+function renderPersonModalContent(p, $modal) {
+    if (!p) return;
+    $modal = $modal || $('#personEditModal');
+    $modal.data('person_data', p);
+
+    var media = p.media_src || {};
+    var extra = p.extra_info || {};
+
+    if (typeof extra === 'string') { try { extra = JSON.parse(extra); } catch (e) { extra = {}; } }
+    if (typeof media === 'string') { try { media = JSON.parse(media); } catch (e) { media = {}; } }
+
+    $modal.find('#p_edit_id').val(p.id || '');
+    $modal.find('#p_edit_domain').val(p.domain || 'JAV');
+    var current_gender = String(p.gender || (extra && extra.gender) || 'female').toLowerCase().trim();
+    if (current_gender === 'm' || current_gender === '남' || current_gender === '남성') current_gender = 'male';
+    else if (current_gender === 'f' || current_gender === '여' || current_gender === '여성') current_gender = 'female';
+    $modal.find('#p_edit_gender').val(current_gender || 'female');
+
+    $modal.find('#p_edit_idx').val(p.person_idx || '');
+    $modal.find('#p_edit_name_org').val(p.name_org || p.name || '');
+    $modal.find('#p_edit_name_ko').val(p.name_ko || '');
+    $modal.find('#p_edit_name_en').val(p.name_en || '');
+    $modal.find('#p_edit_aliases').val((p.aliases && p.aliases.length > 0) ? p.aliases.join(', ') : (p.other_names || ''));
+    $modal.find('#p_edit_thumb').val(p.thumb_url || p.thumb || '');
+    $modal.find('#p_edit_selected_primary_url').val('');
+
+    $modal.find('#p_edit_birth').val(p.birth_date || (extra && extra.birth) || '');
+    var display_height = (p.height && parseInt(p.height, 10) > 0) ? String(p.height) : (
+        (extra && extra.height && parseInt(extra.height, 10) > 0) ? String(extra.height) : ''
+    );
+    $modal.find('#p_edit_height').val(display_height);
+    $modal.find('#p_edit_agency').val(p.agency || (extra && extra.agency) || '');
+    $modal.find('#p_edit_blood').val(p.blood_type || (extra && extra.blood) || '');
+    $modal.find('#p_edit_hobby').val((extra && (extra.hobby || extra.specialty)) || '');
+
+    $modal.find('#p_edit_body_size').val(p.body_size || (extra && extra.body_size) || '');
+    $modal.find('#p_edit_bra_size').val(p.cup_size || (extra && (extra.bra_size || extra.cup_size)) || '');
+    $modal.find('#p_edit_debut').val(p.debut_date || (extra && extra.debut) || '');
+
+    var official_media = media.official || media;
+    var custom_media = media.custom || {};
+    var dom = (p.domain || 'JAV').toUpperCase();
+    $modal.find('#btn_person_refresh_site').toggle(dom !== 'JAV');
+    var local_val = dom === 'JAV' ? (official_media.local_img_path || '').trim() : '';
+    var cached_local_val = (official_media.cached_local_img_path || '').trim();
+    var google_val = dom === 'JAV' ? (official_media.google_fileid || '').trim() : '';
+    var cached_google_val = (official_media.official_cached_google_fileid || (!media.official ? media.user_google_fileid : '') || p.official_cached_gdrive_fileid || '').trim();
+    var site_val = (official_media.site_img_url || '').trim();
+
+    var user_google_val = String(Object.prototype.hasOwnProperty.call(custom_media, 'custom_user_google_fileid')
+        ? custom_media.custom_user_google_fileid || ''
+        : (media.custom_user_google_fileid || p.custom_gdrive_fileid || '')).trim();
+    $modal.find('#p_gds_image_fields').toggle(dom === 'JAV');
+    $modal.find('#p_edit_local_img_path').val(local_val);
+    $modal.find('#p_edit_google_fileid').val(google_val);
+    $modal.find('#p_edit_gdrive_thumb_url').val(google_val ? 'https://drive.google.com/thumbnail?id=' + google_val + '&sz=s0' : '');
+    var custom_local_val = (custom_media.local_img_path || '').trim();
+    var custom_local_url = custom_local_val ? formatActorLocalUrl(custom_local_val, dom) : '';
+    var customGdriveThumbUrl = user_google_val ? 'https://drive.google.com/thumbnail?id=' + user_google_val + '&sz=s0' : '';
+    // Keep official and custom assets separate; choose a complete pair per storage.
+    $modal.find('#p_edit_custom_user_google_fileid').val(user_google_val).data('managed-google-fileid', false);
+    var officialRemotePath = (official_media.remote_img_path || '').trim();
+    var customRemotePath = (custom_media.remote_img_path || '').trim();
+    var usesCustomLocal = !!custom_local_val;
+    var usesCustomRemote = !!(customRemotePath || user_google_val);
+    $modal.find('#p_edit_storage_local_path').val(usesCustomLocal ? custom_local_val : cached_local_val);
+    $modal.find('#p_edit_official_local_url').val(usesCustomLocal ? custom_local_url :
+        (cached_local_val ? formatActorLocalUrl(cached_local_val, dom) : ''));
+    $modal.find('#p_edit_storage_remote_path').val(usesCustomRemote ? customRemotePath : officialRemotePath);
+    $modal.find('#p_edit_official_gdrive_url').val(usesCustomRemote ? customGdriveThumbUrl :
+        (cached_google_val ? 'https://drive.google.com/thumbnail?id=' + cached_google_val + '&sz=s0' : ''));
+    $modal.find('#lbl_p_local_path').text('파일 상대 경로 (로컬)' + (usesCustomLocal ? ' · 사용자 이미지' : ''));
+    $modal.find('#lbl_p_official_local_url').text('이미지 서버 URL' + (usesCustomLocal ? ' · 사용자 이미지' : ''));
+    $modal.find('#lbl_p_remote_path').text('파일 상대 경로 (구글 드라이브)' + (usesCustomRemote ? ' · 사용자 이미지' : ''));
+    $modal.find('#lbl_p_official_gdrive_url').text('구글 드라이브 썸네일 URL' + (usesCustomRemote ? ' · 사용자 이미지' : ''));
+
+    var raw_site_photos = (p.photo_urls && p.photo_urls.length > 0) ? p.photo_urls : (official_media.site_img_urls || []);
+    var site_photos = Array.isArray(raw_site_photos) ? raw_site_photos.filter(function(u){
+        return u && typeof u === 'string' && u.trim().startsWith('http') && !isLocalServerMediaUrl(u);
+    }) : [];
+
+    if (site_val && site_val.startsWith('http') && !isLocalServerMediaUrl(site_val) && site_photos.indexOf(site_val) === -1) {
+        site_photos.unshift(site_val);
     }
+    $modal.find('#p_edit_site_img_urls').val(site_photos.join('\n'));
+
+    var info_url_val = (p.info_url || (extra && extra.info_url) || '').trim();
+    $modal.find('#p_edit_info_url').val(info_url_val);
+
+    if (dom === 'JAV' || dom === 'WESTERN') {
+        $modal.find('#p_edit_av_spec_div').show();
+    } else {
+        $modal.find('#p_edit_av_spec_div').hide();
+    }
+
+    var person_gallery = buildPersonImageGallery(p, media);
+    var sources_map = person_gallery.sources;
+    var active_primary_source_key = person_gallery.primaryKey;
+    var preview_images = person_gallery.images;
+
+    $modal.find('.badge-primary-source').remove();
+    var primaryLabel = {local_img_path: 'lbl_p_edit_local_path', google_fileid: 'lbl_p_gds_thumb_url',
+        cached_local_img_path: usesCustomLocal ? null : 'lbl_p_official_local_url',
+        official_cached_google_fileid: usesCustomRemote ? null : 'lbl_p_official_gdrive_url',
+        custom_local_img_path: usesCustomLocal ? 'lbl_p_official_local_url' : null,
+        custom_user_google_fileid: usesCustomRemote ? 'lbl_p_official_gdrive_url' : null}[active_primary_source_key];
+    if (!primaryLabel && String(active_primary_source_key || '').indexOf('site_img_url_') === 0) primaryLabel = 'lbl_p_edit_site_url';
+    if (primaryLabel) $modal.find('#' + primaryLabel).append(' <span class="badge badge-success badge-primary-source">대표</span>');
+
 
     $modal.data('p_preview_images', preview_images);
     $modal.data('p_preview_idx', 0);
     update_p_modal_image_preview($modal);
 
-    var mergedSubList = (extra.merged_sub_actors && Array.isArray(extra.merged_sub_actors)) ? extra.merged_sub_actors : [];
-    if (mergedSubList.length === 0 && extra.alt_actor_indices && Array.isArray(extra.alt_actor_indices) && extra.alt_actor_indices.length > 1) {
+    var mergedSubList = (p.merged_details && Array.isArray(p.merged_details) && p.merged_details.length > 0) ? p.merged_details : (
+        (extra && extra.merged_sub_actors && Array.isArray(extra.merged_sub_actors)) ? extra.merged_sub_actors : []
+    );
+    if (mergedSubList.length === 0 && p.alt_indices && Array.isArray(p.alt_indices) && p.alt_indices.length > 1) {
+        mergedSubList = p.alt_indices.map(function(altId){
+            return { actor_id: altId, name_org: p.name_org || '', name_ko: p.name_ko || '', site_img_url: p.thumb || '', info_url: p.info_url || '' };
+        });
+    } else if (mergedSubList.length === 0 && extra && extra.alt_actor_indices && Array.isArray(extra.alt_actor_indices) && extra.alt_actor_indices.length > 1) {
         mergedSubList = extra.alt_actor_indices.map(function(altId){
             return { actor_id: altId, name_org: p.name_org || '', name_ko: p.name_ko || '', site_img_url: p.thumb || '', info_url: '' };
         });
@@ -2407,7 +2692,35 @@ function renderPersonModalContent(p, $modal) {
     $modal.find('#p_modal_works_container').html(worksHtml);
 
     var modal_display_name = p.name_ko || p.name_org || p.name || p.name_en || '인물';
-    $modal.find('#person_modal_title').text('[' + modal_display_name + '] 인물 상세 정보 편집');
+
+    if (!p.id) {
+        $modal.find('#person_modal_title').text('[' + modal_display_name + '] 인물 상세 정보 (DB 미등록 - 조회 전용)');
+        $modal.find('#btn_person_save')
+            .prop('disabled', true)
+            .addClass('disabled')
+            .text('저장 불가 (DB 미등록)')
+            .attr('title', '크롤링 DB에 등록되지 않은 배우는 수동 추가 및 저장이 제한됩니다.');
+        $modal.find('#btn_open_person_crop_modal')
+            .prop('disabled', true)
+            .addClass('disabled')
+            .attr('title', 'DB에 등록되지 않은 배우는 사진 편집을 사용할 수 없습니다.');
+        $modal.find('.btn_person_reset_user').prop('disabled', true).addClass('disabled');
+        if (totalWorks === 0) {
+            $modal.find('#p_modal_works_container').html('<span class="text-warning small py-1">⚠️ 크롤링 DB에 등록되지 않은 배우입니다. (신규 수동 추가 및 저장 불가)</span>');
+        }
+    } else {
+        $modal.find('#person_modal_title').text('[' + modal_display_name + '] 인물 상세 정보 편집');
+        $modal.find('#btn_person_save')
+            .prop('disabled', false)
+            .removeClass('disabled')
+            .text('저장')
+            .attr('title', '인물 정보 저장');
+        $modal.find('#btn_open_person_crop_modal')
+            .prop('disabled', false)
+            .removeClass('disabled')
+            .removeAttr('title');
+        $modal.find('.btn_person_reset_user').prop('disabled', false).removeClass('disabled');
+    }
 }
 
 // 인물 모달 단일 공용 로더
@@ -2479,11 +2792,12 @@ function renderDbEditModalContent(row, $modal) {
     if (final_p_url) {
         var cleanFinalP = getCleanSourceUrl(final_p_url);
         var isLocalP = isLocalServerMediaUrl(final_p_url);
+        var isGdriveP = final_p_url.indexOf('drive.google.com') !== -1;
         if (cleanFinalP && !addedRawKeys.has(cleanFinalP)) {
             previewList.push({
                 url: getDisplayMediaUrl(final_p_url, row.site),
-                type: isLocalP ? 'Poster' : 'Poster (Site)',
-                is_final: isLocalP
+                type: isGdriveP ? 'Poster (GDrive)' : (isLocalP ? 'Poster' : 'Poster (Site)'),
+                is_final: isLocalP || isGdriveP
             });
             addedRawKeys.add(cleanFinalP);
         }
@@ -2492,11 +2806,12 @@ function renderDbEditModalContent(row, $modal) {
     if (final_pl_url) {
         var cleanFinalPl = getCleanSourceUrl(final_pl_url);
         var isLocalPl = isLocalServerMediaUrl(final_pl_url);
+        var isGdrivePl = final_pl_url.indexOf('drive.google.com') !== -1;
         if (cleanFinalPl && !addedRawKeys.has(cleanFinalPl)) {
             previewList.push({
                 url: getDisplayMediaUrl(final_pl_url, row.site),
-                type: isLocalPl ? 'Landscape' : 'Landscape (Site)',
-                is_final: isLocalPl
+                type: isGdrivePl ? 'Landscape (GDrive)' : (isLocalPl ? 'Landscape' : 'Landscape (Site)'),
+                is_final: isLocalPl || isGdrivePl
             });
             addedRawKeys.add(cleanFinalPl);
         }
@@ -2507,12 +2822,13 @@ function renderDbEditModalContent(row, $modal) {
             if (!f_url) return;
             var cleanFa = getCleanSourceUrl(f_url);
             var isLocalFa = isLocalServerMediaUrl(f_url);
+            var isGdriveFa = f_url.indexOf('drive.google.com') !== -1 || f_url.indexOf('googleusercontent.com') !== -1;
             if (cleanFa && !addedRawKeys.has(cleanFa)) {
-                var typeLabel = isLocalFa ? ('Local Art #' + (a_i + 1)) : ('Art #' + (a_i + 1));
+                var typeLabel = isGdriveFa ? ('Art (GDrive) #' + (a_i + 1)) : (isLocalFa ? ('Local Art #' + (a_i + 1)) : ('Art #' + (a_i + 1)));
                 previewList.push({
                     url: getDisplayMediaUrl(f_url, row.site),
                     type: typeLabel,
-                    is_final: isLocalFa
+                    is_final: isLocalFa || isGdriveFa
                 });
                 addedRawKeys.add(cleanFa);
             }
@@ -2616,6 +2932,30 @@ function renderDbEditModalContent(row, $modal) {
     $modal.find('#edit_landscape_url').val(raw_pl_url);
     $modal.find('#edit_landscape_url_final').val(final_pl_url).css('cursor', final_pl_url ? 'pointer' : 'default').attr('title', final_pl_url ? '클릭하여 이미지 크게 보기' : '');
 
+    var storedMedia = (Array.isArray(jd.media) ? jd.media : []).concat(
+        Array.isArray(row.media) ? row.media : [],
+        jd.extra_info && Array.isArray(jd.extra_info._storage_media) ? jd.extra_info._storage_media : []
+    );
+    function imageFileId(value) {
+        var clean = typeof getCleanSourceUrl === 'function' ? getCleanSourceUrl(value || '') : String(value || '');
+        if (!/^https?:\/\/(?:drive\.google\.com|(?:[^/]+\.)?googleusercontent\.com)\//i.test(clean)) return '';
+        var match = clean.match(/[?&]id=([^&#]+)/) || clean.match(/\/d\/([^/?#]+)/);
+        if (!match) return '';
+        try { return decodeURIComponent(match[1]); } catch (err) { return match[1]; }
+    }
+    ['poster', 'landscape'].forEach(function(kind) {
+        var url = kind === 'poster' ? final_p_url : final_pl_url;
+        var id = imageFileId(url);
+        var candidates = storedMedia.filter(function(asset) {
+            return asset && asset.media_type === kind && url && (asset.url === url ||
+                (id && (asset.gdrive_fileid || imageFileId(asset.url)) === id));
+        });
+        var matched = candidates.find(function(asset) { return Boolean(asset.relative_path); }) || candidates[0];
+        $modal.find('#edit_' + kind + '_relative_path').val(matched ? matched.relative_path || '' : '')
+            .attr('placeholder', url ? '저장 경로 미기록 (미디어 재동기화 시 등록)' : '저장된 이미지 경로 없음');
+        $modal.find('#edit_' + kind + '_url_final').attr('placeholder', /drive\.google\.com|googleusercontent\.com/.test(url || '') ? '구글 썸네일 URL 없음' : '이미지 서버 / 최종 URL 없음');
+    });
+
     // 프리뷰 클립을 배제한 순수 공식 예고편 URL 추출
     var official_trailer_url = raw_trailer_url || '';
     if (!official_trailer_url && final_trailer_url && final_trailer_url.indexOf('mode=preview_') === -1) {
@@ -2631,49 +2971,38 @@ function renderDbEditModalContent(row, $modal) {
         $modal.find('#btn_modal_play_trailer').hide();
     }
 
-    // 자체 생성 프리뷰 클립 상태 바인딩
+    // 아카이빙된 트레일러 및 프리뷰 클립 상태 바인딩 (프리뷰 클립 우선)
     var extraData = (jd.extra_info && typeof jd.extra_info === 'object') ? jd.extra_info : (row.extra_info || {});
     var previewClip = extraData.preview_clip;
+    var trailerVideo = extraData.trailer_video;
 
-    // 프리뷰 클립 스트림 주소 산출
-    var previewStreamUrl = '';
-    if (previewClip) {
-        var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1) || (row.category === 'JAV_UNCEN');
-        var videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
-        var hostOrigin = window.location.origin;
+    var isUncen = (window.location.pathname.indexOf('jav_uncensored') !== -1) || (row.category === 'JAV_UNCEN');
+    var videoEndpoint = isUncen ? 'jav_video_un' : 'jav_video';
+    var hostOrigin = window.location.origin;
 
-        if (previewClip.storage_type === 'gdrive' && previewClip.google_fileid) {
-            previewStreamUrl = hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_gdrive&fileid=' + previewClip.google_fileid + '&cat=' + (row.category || get_list_context().category);
-        } else if (previewClip.local_path) {
-            previewStreamUrl = hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_local&path=' + encodeURIComponent(previewClip.local_path);
+    var getVideoUrl = function(clipObj) {
+        if (!clipObj) return '';
+        if (clipObj.storage_type === 'gdrive' && clipObj.google_fileid) {
+            return hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_gdrive&fileid=' + clipObj.google_fileid + '&cat=' + (row.category || get_list_context().category);
+        } else if (clipObj.local_path) {
+            return hostOrigin + '/' + package_name + '/normal/' + videoEndpoint + '?mode=preview_local&path=' + encodeURIComponent(clipObj.local_path);
         }
-    }
+        return '';
+    };
 
+    var previewStreamUrl = getVideoUrl(previewClip);
+    var trailerStreamUrl = getVideoUrl(trailerVideo);
+
+    var hasPreview = Boolean(previewClip && (previewClip.google_fileid || previewClip.local_path));
+    var hasSavedTrailer = Boolean(trailerVideo && (trailerVideo.google_fileid || trailerVideo.local_path));
     $modal.find('#edit_preview_url').val(previewStreamUrl);
-
-    if (previewClip && (previewClip.google_fileid || previewClip.local_path)) {
-        $modal.find('#btn_modal_play_preview').show();
-        $modal.find('#btn_modal_delete_preview').show();
-        $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 재생성');
-        $modal.find('#badge_preview_status').removeClass('badge-secondary').addClass('badge-success').text('등록됨');
-        $modal.find('#div_preview_clip_box').show();
-
-        var storageLabel = (previewClip.storage_type === 'gdrive') ? '구글 드라이브' : '로컬 디스크';
-        var clipDetailText = '🎞️ 프리뷰 클립 등록됨: [' + storageLabel + '] ' + (previewClip.duration || 60) + '초 (' + (previewClip.created_time || '') + ')';
-        if (previewClip.local_path) {
-            clipDetailText += ' | 파일: ' + previewClip.local_path;
-        } else if (previewClip.google_fileid) {
-            clipDetailText += ' | FileID: ' + previewClip.google_fileid;
-        }
-        $modal.find('#div_preview_clip_info').text(clipDetailText);
-    } else {
-        $modal.find('#btn_modal_play_preview').hide();
-        $modal.find('#btn_modal_delete_preview').hide();
-        $modal.find('#btn_modal_create_preview').text('⚡ 프리뷰 생성');
-        $modal.find('#badge_preview_status').removeClass('badge-success').addClass('badge-secondary').text('미생성');
-        $modal.find('#div_preview_clip_box').hide();
-        $modal.find('#div_preview_clip_info').text('');
-    }
+    $modal.find('#edit_saved_trailer_url').val(trailerStreamUrl);
+    $modal.find('#edit_preview_path').val(previewClip ? previewClip.relative_path || '' : '');
+    $modal.find('#edit_saved_trailer_path').val(trailerVideo ? trailerVideo.relative_path || '' : '');
+    $modal.find('#div_preview_clip_box, #btn_modal_play_preview').toggle(hasPreview);
+    $modal.find('#div_saved_trailer_box, #btn_modal_play_saved_trailer').toggle(hasSavedTrailer);
+    $modal.find('#btn_modal_create_preview').text(hasPreview ? '프리뷰 재생성' : '프리뷰 수동 생성');
+    $modal.find('#badge_preview_status').text(hasPreview && hasSavedTrailer ? '트레일러 · 프리뷰 저장됨' : hasPreview ? '프리뷰 저장됨' : hasSavedTrailer ? '트레일러 저장됨' : '미저장');
 
     $modal.find('#div_preview_source_bar').hide();
     $modal.find('#input_preview_source_path').val(extraData.source_video_path || '');
@@ -2787,8 +3116,21 @@ function loadAndOpenPersonModal(targetIdentifier, targetDomain, $targetModal) {
                 if (sRet && sRet.ret === 'success' && sRet.data && sRet.data.length > 0) {
                     renderPersonModalContent(sRet.data[0], $modal);
                 } else {
-                    $modal.find('#p_modal_works_container').html('<span class="text-muted small py-1">출연작 정보를 불러오지 못했습니다.</span>');
-                    notify('[' + targetIdentifier + '] 인물 정보를 조회하지 못했습니다.', 'warning');
+                    var dummyUnregPerson = {
+                        id: null,
+                        domain: domain,
+                        person_idx: '',
+                        name_org: targetIdentifier,
+                        name_ko: targetIdentifier,
+                        name_en: '',
+                        thumb: '',
+                        media_src: {},
+                        works: {},
+                        works_detailed: {},
+                        extra_info: {}
+                    };
+                    renderPersonModalContent(dummyUnregPerson, $modal);
+                    if (typeof notify === 'function') notify('[' + targetIdentifier + '] DB에 등록되지 않은 배우입니다. (수동 추가 불가)', 'warning');
                 }
             });
         }
@@ -2812,6 +3154,17 @@ $(document).on('click', '.person-name-clickable', function(e){
     if (p) {
         loadAndOpenPersonModal(p.person_idx || p.name_org || p.name_ko || p.id, p.domain || 'JAV');
     }
+});
+
+$(document).on('click', '.actor-title-link-clickable', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+
+    var target = Number($(this).attr('data-db-person-id'));
+    var domain = $(this).attr('data-domain') || $(this).data('domain') || 'JAV';
+    if (!Number.isInteger(target) || target <= 0) return;
+
+    loadAndOpenPersonModal(String(target), domain, null);
 });
 
 var isActorBadgeRequesting = false;
@@ -2927,6 +3280,39 @@ $(document).on('click', '#btn_sync_actor_works', function(e){
     });
 });
 
+$(document).on('click', '#btn_person_refresh_site', function(e){
+    e.preventDefault();
+    e.stopPropagation();
+
+    var $modal = $(this).closest('.modal');
+    var pData = $modal.data('person_data') || {};
+    var targetId = $modal.find('#p_edit_idx').val() || pData.person_idx || $modal.find('#p_edit_id').val() || pData.id;
+    var domain = $modal.find('#p_edit_domain').val() || pData.domain || 'WESTERN';
+
+    if (!targetId) {
+        if (typeof notify === 'function') notify('조회할 인물 식별자가 없습니다.', 'warning');
+        return;
+    }
+
+    var $btn = $(this);
+    var origHtml = $btn.html();
+    $btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm mr-1" role="status"></span>갱신 중...');
+
+    globalSendCommand('person_refresh_from_site', String(targetId), String(domain), null, function(ret){
+        $btn.prop('disabled', false).html(origHtml);
+        if (ret && ret.ret === 'success') {
+            if (typeof notify === 'function') notify(ret.msg, 'success');
+            if (ret.data) {
+                renderPersonModalContent(ret.data, $modal);
+            }
+            window.globalRequestSearch(null, true);
+        } else {
+            var errMsg = (ret && ret.msg) ? ret.msg : '정보 갱신에 실패했습니다.';
+            if (typeof notify === 'function') notify(errMsg, 'warning');
+        }
+    });
+});
+
 $(document).on('click', '#btn_open_person_info_url', function(e) {
     e.preventDefault();
     var $modal = $(this).closest('.modal');
@@ -3011,12 +3397,18 @@ $(document).on('input change', '#p_edit_thumb', function(){
 $(document).on('click', '#btn_person_save, #btn_save_person', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
+    var personId = $modal.find('#p_edit_id').val();
+    if (!personId) {
+        if (typeof notify === 'function') notify('크롤링 DB에 등록되지 않은 배우는 수동으로 추가하거나 저장할 수 없습니다.', 'warning');
+        return;
+    }
     var heightVal = parseInt($modal.find('#p_edit_height').val(), 10);
     var site_img_urls_text = $modal.find('#p_edit_site_img_urls').val().split(/\r?\n/).map(function(v){ return v.trim(); }).filter(Boolean);
 
     var payload = {
         id: $modal.find('#p_edit_id').val() ? parseInt($modal.find('#p_edit_id').val(), 10) : null,
         domain: $modal.find('#p_edit_domain').val(),
+        gender: $modal.find('#p_edit_gender').val() || 'female',
         person_idx: $modal.find('#p_edit_idx').val().trim(),
         name_org: $modal.find('#p_edit_name_org').val().trim(),
         name_ko: $modal.find('#p_edit_name_ko').val().trim(),
@@ -3035,10 +3427,15 @@ $(document).on('click', '#btn_person_save, #btn_save_person', function(e){
         hobby: $modal.find('#p_edit_hobby').val().trim(),
         local_img_path: $modal.find('#p_edit_local_img_path').val().trim(),
         google_fileid: $modal.find('#p_edit_google_fileid').val().trim(),
-        site_img_url: $modal.find('#p_edit_site_img_url').val().trim(),
+        custom_user_google_fileid: $modal.find('#p_edit_custom_user_google_fileid').data('managed-google-fileid')
+            ? ''
+            : (($modal.find('#p_edit_custom_user_google_fileid').val() || '').trim()),
+        site_img_url: ($modal.find('#p_edit_site_img_url').val() || '').trim(),
         site_img_urls: site_img_urls_text,
         person_type: 'actor'
     };
+
+    if (payload.domain === 'WESTERN') { delete payload.local_img_path; delete payload.google_fileid; }
 
     if (payload.domain === 'JAV' && !payload.name_ko) {
         if (typeof notify === 'function') notify('JAV 인물은 한국어 표기명(name_ko)이 필수입니다.', 'warning');
@@ -3057,6 +3454,36 @@ $(document).on('click', '#btn_person_save, #btn_save_person', function(e){
             window.globalRequestSearch(null, true);
         } else {
             if (typeof notify === 'function') notify('저장 실패: ' + ret.msg, 'warning');
+        }
+    });
+
+});
+
+$(document).on('click', '.btn_person_reset_user', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var personId = $modal.find('#p_edit_id').val();
+    var resetType = $(this).data('reset-type');
+    if (!personId) return;
+
+    var labels = {
+        text: '수동 텍스트 편집',
+        image: '사용자 이미지 파일',
+        all: '모든 사용자 데이터와 사용자 이미지 파일'
+    };
+    var label = labels[resetType] || '사용자 데이터';
+    if (!confirm('[' + label + ']을 초기화합니다.\n사용자 이미지 초기화가 포함된 경우 실제 파일도 삭제됩니다.\n계속하시겠습니까?')) return;
+
+    var $button = $(this);
+    $button.prop('disabled', true);
+    globalSendCommand('person_reset_user_data', String(personId), JSON.stringify({reset_type: resetType}), function(ret){
+        $button.prop('disabled', false);
+        if (ret && ret.ret === 'success') {
+            notify(ret.msg || '초기화 완료', 'success');
+            $modal.modal('hide');
+            window.globalRequestSearch(null, true);
+        } else {
+            notify('초기화 실패: ' + ((ret && ret.msg) || '알 수 없는 오류'), 'warning');
         }
     });
 });
@@ -3477,18 +3904,26 @@ $(document).off('click', '#btn_modal_play_preview').on('click', '#btn_modal_play
     openVideoPlayerModal(streamUrl, '[프리뷰] ' + currentTitle);
 });
 
-$(document).off('click', '#btn_modal_delete_preview').on('click', '#btn_modal_delete_preview', function(e){
+$(document).on('click', '#btn_modal_play_saved_trailer', function(e){
+    e.preventDefault();
+    var $modal = $(this).closest('.modal');
+    var url = $modal.find('#edit_saved_trailer_url').val();
+    if (url) openVideoPlayerModal(url, '저장된 트레일러');
+});
+
+$(document).off('click', '.btn-delete-stored-video').on('click', '.btn-delete-stored-video', function(e){
     e.preventDefault();
     var $modal = $(this).closest('.modal');
     var code = $modal.find('#edit_code').val();
     var row = $modal.data('row_data') || {};
 
-    if (!confirm("⚠️ 등록된 프리뷰 영상 파일(구글 드라이브 또는 로컬 파일)과 메타 정보를 완전히 삭제하시겠습니까?")) {
+    var videoType = $(this).data('video-type');
+    if (!confirm('선택한 ' + (videoType === 'trailer' ? '트레일러' : '프리뷰') + ' 영상 파일과 메타 정보를 삭제하시겠습니까?')) {
         return;
     }
 
     var currentCat = row.category || get_list_context().category;
-    globalSendCommand('delete_preview_clip', code, currentCat, null, function(ret){
+    globalSendCommand('delete_preview_clip', code, currentCat, videoType, function(ret){
         if (ret && ret.ret === 'success') {
             if (typeof notify === 'function') notify(ret.msg, 'success');
             reloadDbEditModalData(code, currentCat, $modal);
@@ -4357,45 +4792,9 @@ $(document).on('click', '#btn_view_person_json', function(e){
     var $pModal = $(this).closest('.modal');
     var pData = $pModal.data('person_data') || {};
 
-    var fullJson = JSON.parse(JSON.stringify(pData));
-
-    fullJson.id = $pModal.find('#p_edit_id').val() ? parseInt($pModal.find('#p_edit_id').val(), 10) : fullJson.id;
-    fullJson.domain = $pModal.find('#p_edit_domain').val() || fullJson.domain;
-    fullJson.person_idx = $pModal.find('#p_edit_idx').val().trim() || fullJson.person_idx;
-    fullJson.name_org = $pModal.find('#p_edit_name_org').val().trim() || fullJson.name_org;
-    fullJson.name_ko = $pModal.find('#p_edit_name_ko').val().trim() || fullJson.name_ko;
-    fullJson.name_en = $pModal.find('#p_edit_name_en').val().trim() || fullJson.name_en;
-    fullJson.thumb = $pModal.find('#p_edit_thumb').val().trim() || fullJson.thumb;
-
-    var aliasesText = $pModal.find('#p_edit_aliases').val().trim();
-    if (aliasesText) {
-        fullJson.aliases = aliasesText.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
-        fullJson.other_names = fullJson.aliases.join(', ');
-    }
-
-    if (!fullJson.media_src) fullJson.media_src = {};
-    fullJson.media_src.local_img_path = $pModal.find('#p_edit_local_img_path').val().trim();
-    fullJson.media_src.google_fileid = $pModal.find('#p_edit_google_fileid').val().trim();
-    fullJson.media_src.site_img_url = $pModal.find('#p_edit_site_img_url').val().trim();
-
-    var sitePhotosText = $pModal.find('#p_edit_site_img_urls').val().split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean);
-    fullJson.media_src.site_img_urls = sitePhotosText;
-
-    if (!fullJson.extra_info) fullJson.extra_info = {};
-    fullJson.extra_info.birth = $pModal.find('#p_edit_birth').val().trim();
-    var heightVal = parseInt($pModal.find('#p_edit_height').val(), 10);
-    fullJson.extra_info.height = (heightVal > 0) ? heightVal : null;
-    fullJson.extra_info.body_size = $pModal.find('#p_edit_body_size').val().trim();
-    fullJson.extra_info.bra_size = $pModal.find('#p_edit_bra_size').val().trim();
-    fullJson.extra_info.debut = $pModal.find('#p_edit_debut').val().trim();
-    fullJson.extra_info.info_url = $pModal.find('#p_edit_info_url').val().trim();
-    fullJson.extra_info.agency = $pModal.find('#p_edit_agency').val().trim();
-    fullJson.extra_info.blood = $pModal.find('#p_edit_blood').val().trim();
-    fullJson.extra_info.hobby = $pModal.find('#p_edit_hobby').val().trim();
-
-    var displayName = fullJson.name_ko || fullJson.name_org || fullJson.name_en || '인물';
-    $('#db_json_modal_title').text('[' + displayName + '] 인물 데이터 JSON 원본 (전체 DB 데이터)');
-    $('#db_json_modal_textarea').val(JSON.stringify(fullJson, null, 2));
+    var displayName = pData.name_ko || pData.name_org || pData.name_en || '인물';
+    $('#db_json_modal_title').text('[' + displayName + '] 인물 데이터 DB JSON 원본');
+    $('#db_json_modal_textarea').val(JSON.stringify(pData, null, 2));
     $('#dbJsonViewModal').modal('show');
 });
 
@@ -5008,21 +5407,45 @@ $(document).on('click', '#btn_db_vacuum', function(e){
 var batchEventSource = null;
 var batchStatusTimer = null;
 
-function syncBatchStatus() {
-    globalSendCommand('db_batch_refresh_status', null, null, null, function(ret){
-        if (ret && ret.ret === 'success') {
-            updateBatchProgressUI(ret.data);
-            if (ret.data && ret.data.is_running === false) {
-                if (batchStatusTimer) {
-                    clearInterval(batchStatusTimer);
-                    batchStatusTimer = null;
-                }
-            }
+var batchSnapshotLogs = null;
+var batchSnapshotStatus = {};
+
+function applyBatchSnapshot(status, logs) {
+    var bType = get_batch_type();
+    var signature = JSON.stringify([bType, logs]);
+    if (signature !== batchSnapshotLogs) {
+        var $terminal = $('#batch_terminal_logs');
+        $terminal.empty();
+        logs.forEach(function(line) {
+            $terminal.append('<div>' + $('<div>').text(line).html() + '</div>');
+        });
+        if ($terminal.length && $('#batch_log_autoscroll').is(':checked')) {
+            $terminal.scrollTop($terminal[0].scrollHeight);
         }
-    });
+        batchSnapshotLogs = signature;
+    }
+    var previous = batchSnapshotStatus[bType];
+    if (previous && status) {
+        if ((status.success || 0) > (previous.success || 0)) {
+            requestThrottledBatchListRefresh(false);
+        }
+        if (previous.is_running && status.is_running === false && status.total > 0) {
+            requestThrottledBatchListRefresh(true);
+        }
+    }
+    batchSnapshotStatus[bType] = status;
+    updateBatchProgressUI(status);
 }
 
-// 고속 배치 작업 시 화면 깜빡임 및 네트워크 과부하를 방지하는 목록 갱신 스케줄러
+function syncBatchStatus() {
+    var bType = get_batch_type();
+    globalSendCommand('db_batch_refresh_status', bType, null, null, function(ret){
+        if (ret && ret.ret === 'success') {
+            applyBatchSnapshot(ret.data, ret.logs || []);
+        }
+    }, { batch_type: bType });
+}
+
 var batchRefreshThrottleTimer = null;
 var batchHasPendingRefresh = false;
 
@@ -5109,7 +5532,20 @@ function updateBatchProgressUI(status) {
         $('#batch_current_code_text').text(status.status || '대기 중');
     }
 
-    $('#batch_stats_text').text('진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (성공: ' + success.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ')');
+    var statsStr = '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() + ' (성공: ' + success.toLocaleString() + ' | 실패: ' + fail.toLocaleString() + ' | 건너뜀: ' + skipped.toLocaleString() + ')';
+    var elapsedStr = status.elapsed_str || '';
+    var etaStr = status.eta_str || '';
+
+    if (status.is_running) {
+        if (elapsedStr) statsStr += ' | 소요: ' + elapsedStr;
+        if (etaStr && etaStr !== '00:00') statsStr += ' | 남은시간: ' + etaStr;
+    } else if (status.status === '완료') {
+        if (elapsedStr) statsStr += ' | 총 소요: ' + elapsedStr;
+    } else if (status.can_resume) {
+        if (elapsedStr) statsStr += ' | 소요: ' + elapsedStr;
+    }
+
+    $('#batch_stats_text').text(statsStr);
 }
 
 function connectBatchSSE() {
@@ -5126,27 +5562,19 @@ function connectBatchSSE() {
         return;
     }
 
-    var sseUrl = '/' + package_name + '/normal/meta_db/batch_stream';
+    var bType = get_batch_type();
+    var sseUrl = '/' + package_name + '/normal/meta_db/batch_stream?type=' + encodeURIComponent(bType);
     batchEventSource = new EventSource(sseUrl);
 
     batchEventSource.onmessage = function(e) {
         try {
             var data = JSON.parse(e.data);
-            if (data.type === 'init') {
-                var $terminal = $('#batch_terminal_logs');
-                $terminal.empty();
-                (data.logs || []).forEach(function(line) {
-                    $terminal.append('<div>' + $('<div>').text(line).html() + '</div>');
-                });
-                if ($('#batch_log_autoscroll').is(':checked')) {
-                    $terminal.scrollTop($terminal[0].scrollHeight);
-                }
-                updateBatchProgressUI(data.status);
+            if (data.type === 'init' || data.type === 'sync') {
+                applyBatchSnapshot(data.status, data.logs || []);
             } else {
                 appendBatchTerminalLog(data.message, data.type);
                 updateBatchProgressUI(data.status);
 
-                // 진행 중에는 3초 주기로 묶어서 갱신하고, 전체 완료 시 즉시 1회 반영
                 if (data.is_updated === true) {
                     requestThrottledBatchListRefresh(false);
                 }
@@ -5171,17 +5599,20 @@ function connectBatchSSE() {
 
 $(document).on('click', '#btn_batch_stop', function(e){
     e.preventDefault();
-    if (!confirm("진행 중인 배치 갱신 작업을 중단하시겠습니까?")) return;
+    var bType = get_batch_type();
+    var bLabel = (bType === 'person') ? '인물' : '영상 메타';
+
+    if (!confirm("진행 중인 " + bLabel + " 배치 갱신 작업을 중단하시겠습니까?")) return;
 
     var $btn = $(this);
     $btn.prop('disabled', true).text('중단 처리 중...');
 
-    globalSendCommand('db_batch_refresh_stop', null, null, null, function(ret){
+    globalSendCommand('db_batch_refresh_stop', bType, null, null, function(ret){
         if (typeof notify === 'function') notify(ret.msg || '중단 요청이 전달되었습니다.', 'warning');
         $btn.prop('disabled', false).text('작업 중단');
         syncBatchStatus();
         requestThrottledBatchListRefresh(true);
-    });
+    }, { batch_type: bType });
 });
 
 $(document).on('click', '#btn_batch_clear_log', function(e){
@@ -5481,8 +5912,32 @@ $(document).on('click', '#btn_transfer_start', function(e){
         mode: mode
     };
 
-    globalSendCommand('db_transfer_start', src, tgt, JSON.stringify(transferPayload), function(ret){
-        if (!ret || ret.ret !== 'success') {
+    $.ajax({
+        url: '/' + package_name + '/meta_api',
+        type: 'POST',
+        cache: false,
+        global: false,
+        data: {
+            command: 'db_transfer_start',
+            arg1: src,
+            arg2: tgt,
+            arg3: JSON.stringify(transferPayload)
+        },
+        dataType: 'json',
+        success: function(ret){
+            if (!ret || ret.ret !== 'success') {
+                if (transfer_timer) {
+                    clearInterval(transfer_timer);
+                    transfer_timer = null;
+                }
+                $('#btn_transfer_start').prop('disabled', false).show();
+                $('#btn_transfer_stop').hide();
+                if (typeof notify === 'function') {
+                    notify('전송 요청 실패: ' + (ret ? ret.msg : '응답 없음'), 'warning');
+                }
+            }
+        },
+        error: function(xhr, status, error){
             if (transfer_timer) {
                 clearInterval(transfer_timer);
                 transfer_timer = null;
@@ -5490,7 +5945,7 @@ $(document).on('click', '#btn_transfer_start', function(e){
             $('#btn_transfer_start').prop('disabled', false).show();
             $('#btn_transfer_stop').hide();
             if (typeof notify === 'function') {
-                notify('전송 요청 실패: ' + (ret ? ret.msg : '응답 없음'), 'warning');
+                notify('전송 통신 에러: ' + error, 'warning');
             }
         }
     });
@@ -5560,15 +6015,14 @@ $(document).on('click', '#btn_db_import_merge, #btn_db_import_missing', function
     });
 });
 
-$(document).on('click', '#btn_db_export_full_all, #btn_db_export_clean', function(e){
+$(document).on('click', '#btn_db_export_clean', function(e){
     e.preventDefault();
-    var is_clean = ($(this).attr('id') === 'btn_db_export_clean');
 
     var btn = $(this);
     var origText = btn.text();
     btn.prop('disabled', true).text('생성 중...');
 
-    globalSendCommand('db_export', 'all', is_clean ? 'true' : 'false', null, function(ret){
+    globalSendCommand('db_export', 'all', 'true', null, function(ret){
         btn.prop('disabled', false).text(origText);
         if (ret.ret === 'success') {
             notify(ret.msg, 'success');
@@ -5576,44 +6030,6 @@ $(document).on('click', '#btn_db_export_full_all, #btn_db_export_clean', functio
             notify('Export 실패: ' + (ret.msg || '알 수 없는 오류'), 'warning');
         }
     });
-});
-
-$(document).on('click', '.enlarge-img, .enlarge-person-photo', function(e){
-    var $modal = $(this).closest('.modal');
-
-    if ($(this).attr('id') === 'preview_modal_img') {
-        var gallery = ($modal.length ? $modal.data('preview_images') : null) || modal_preview_images || [];
-        var idx = ($modal.length ? $modal.data('preview_idx') : null) || modal_preview_idx || 0;
-        if (gallery.length > 0) {
-            window.openImageEnlargeModal(gallery, idx);
-            return;
-        }
-    }
-
-    if ($(this).attr('id') === 'p_modal_preview_img') {
-        var pGallery = ($modal.length ? $modal.data('p_preview_images') : null) || p_modal_preview_images || [];
-        var pIdx = ($modal.length ? $modal.data('p_preview_idx') : null) || p_modal_preview_idx || 0;
-        if (pGallery.length > 0) {
-            window.openImageEnlargeModal(pGallery, pIdx);
-            return;
-        }
-    }
-
-    var galleryRaw = $(this).attr('data-gallery');
-    if (galleryRaw) {
-        try {
-            var galleryList = JSON.parse(decodeURIComponent(galleryRaw));
-            if (Array.isArray(galleryList) && galleryList.length > 0) {
-                window.openImageEnlargeModal(galleryList, 0);
-                return;
-            }
-        } catch (err) {}
-    }
-
-    var imgSrc = $(this).attr('data-src') || $(this).attr('src');
-    if (imgSrc) {
-        window.openImageEnlargeModal(imgSrc, 0);
-    }
 });
 
 $(document).on('click', '.btn_open_sub_person_modal', function(e){

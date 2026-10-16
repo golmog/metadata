@@ -4,6 +4,54 @@
 window.enlarge_image_gallery = [];
 window.enlarge_image_idx = 0;
 
+// Share a small prefetch cache across previews and the lightbox.
+var modalImagePreloadCache = new Map();
+function preloadAdjacentModalImages(images, index) {
+    if (!Array.isArray(images) || images.length < 2) return;
+    var current = images[index];
+    var currentUrl = typeof current === 'string' ? current : (current && (current.url || current.src));
+    [(index + 1) % images.length, (index - 1 + images.length) % images.length].forEach(function(nextIndex) {
+        var item = images[nextIndex];
+        var url = typeof item === 'string' ? item : (item && (item.url || item.src));
+        if (!url || url === currentUrl) return;
+        if (modalImagePreloadCache.has(url)) {
+            var cached = modalImagePreloadCache.get(url);
+            modalImagePreloadCache.delete(url);
+            modalImagePreloadCache.set(url, cached);
+            return;
+        }
+        var image = new Image();
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        image.onerror = function() {
+            if (modalImagePreloadCache.get(url) === image) modalImagePreloadCache.delete(url);
+        };
+        modalImagePreloadCache.set(url, image);
+        while (modalImagePreloadCache.size > 8) {
+            modalImagePreloadCache.delete(modalImagePreloadCache.keys().next().value);
+        }
+        image.src = url;
+    });
+}
+
+// Use the person preview's badge rules and appearance in every image modal.
+function renderImageOverlayBadge($badge, image, fallbackType) {
+    var type = String(image.type || fallbackType || 'Photo');
+    var typeUpper = type.toUpperCase();
+    var url = image.url || '';
+    var isGDrive = typeUpper.indexOf('GDRIVE') !== -1 || typeUpper.indexOf('GDS') !== -1 ||
+        url.indexOf('drive.google.com') !== -1 || url.indexOf('googleusercontent.com') !== -1;
+    var isLocal = !isGDrive && (typeUpper.indexOf('SERVER') !== -1 || typeUpper.indexOf('LOCAL') !== -1 ||
+        (typeof isLocalServerMediaUrl === 'function' && isLocalServerMediaUrl(url)));
+    $badge.text(type).css({
+        'font-size': '0.78rem', 'padding': '4px 8px', 'font-weight': 'bold',
+        'background': isGDrive ? 'rgba(15, 157, 88, 0.55)' : isLocal ? 'rgba(0, 123, 255, 0.55)' : 'rgba(0, 0, 0, 0.55)',
+        'color': isGDrive || isLocal ? '#ffffff' : '#e0e6ed',
+        'border': '1px solid ' + (isGDrive || isLocal ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.15)'),
+        'backdrop-filter': 'blur(4px)'
+    });
+}
+
 // 이미지 갤러리 열기 및 렌더링 함수
 window.openImageEnlargeModal = function(images, startIdx) {
     if (!images) return;
@@ -56,17 +104,13 @@ function renderEnlargeModalCurrent() {
         }
     }
 
+    preloadAdjacentModalImages(window.enlarge_image_gallery, window.enlarge_image_idx);
+
     // Poster, Landscape, Fanart 등 명확한 속성이 있을 때만 뱃지 표시
     var imgType = (cur.type || '').trim();
     if (imgType && imgType.toLowerCase() !== 'image') {
-        var $enlargeBadge = $('#enlarge_img_type');
-        $enlargeBadge.text(imgType).show();
-
-        if (cur.is_final) {
-            $enlargeBadge.attr('style', 'background: rgba(0, 123, 255, 0.75); color: #ffffff; font-size: 0.82rem; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px);');
-        } else {
-            $enlargeBadge.attr('style', 'background: rgba(0, 0, 0, 0.55); color: #e0e6ed; font-size: 0.82rem; border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(4px);');
-        }
+        renderImageOverlayBadge($('#enlarge_img_type'), cur);
+        $('#enlarge_img_type').show();
     } else {
         $('#enlarge_img_type').text('').hide();
     }
@@ -128,8 +172,8 @@ $(document).ready(function(){
                 <!-- 중앙 이미지 래퍼 -->
                 <div class="d-flex flex-column align-items-center justify-content-center position-relative" style="min-width: 140px; min-height: 140px;">
                   <!-- 상단 정보 뱃지 및 카운터 -->
-                  <div id="enlarge_header_bar" class="d-flex justify-content-between align-items-center position-absolute w-100 px-3" style="top: 12px; left: 0; z-index: 20; pointer-events: none;">
-                    <span class="badge shadow-sm px-3 py-1 font-weight-bold" id="enlarge_img_type" style="background: rgba(0, 0, 0, 0.55); color: #e0e6ed; font-size: 0.82rem; border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(4px);">Poster</span>
+                  <div id="enlarge_header_bar" class="d-flex justify-content-between align-items-center position-absolute w-100" style="top: 10px; left: 0; padding: 0 10px; z-index: 20; pointer-events: none;">
+                    <span class="badge shadow-sm font-weight-bold" id="enlarge_img_type" style="background: rgba(0, 0, 0, 0.55); color: #e0e6ed; font-size: 0.78rem; padding: 4px 8px; border: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(4px);">Poster</span>
                     <span class="badge shadow-sm px-3 py-1 font-weight-bold" id="enlarge_counter" style="background: rgba(0, 0, 0, 0.55); color: #e0e6ed; font-size: 0.82rem; border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(4px);">1 / 1</span>
                   </div>
 
@@ -172,24 +216,45 @@ $(document).on('click', '#btn_enlarge_next', function(e) {
     renderEnlargeModalCurrent();
 });
 
-// 이미지 클릭 시 확대 팝업 이벤트 (DB 편집 및 배우 편집 모달의 전체 갤러리 목록 연동)
-$("body").on('click', '.enlarge-img, .enlarge-person-photo', function(){
-    // DB 편집 모달의 미리보기 이미지 클릭 시 전체 갤러리 연동
-    if ($(this).attr('id') === 'preview_modal_img' && typeof modal_preview_images !== 'undefined' && modal_preview_images.length > 0) {
-        window.openImageEnlargeModal(modal_preview_images, typeof modal_preview_idx !== 'undefined' ? modal_preview_idx : 0);
-        return;
+// Read the clicked modal's gallery, including index zero, instead of another modal's global state.
+function openImageLightboxFromElement(element) {
+    var $image = $(element);
+    var $modal = $image.closest('.modal');
+    var id = $image.attr('id');
+    if (id === 'preview_modal_img' || id === 'p_modal_preview_img') {
+        var person = id === 'p_modal_preview_img';
+        var images = $modal.length ? $modal.data(person ? 'p_preview_images' : 'preview_images') : null;
+        var index = 0;
+        if (Array.isArray(images)) {
+            index = parseInt($modal.data(person ? 'p_preview_idx' : 'preview_idx'), 10) || 0;
+        } else if (person) {
+            images = typeof p_modal_preview_images !== 'undefined' ? p_modal_preview_images : [];
+            index = typeof p_modal_preview_idx !== 'undefined' ? p_modal_preview_idx : 0;
+        } else {
+            images = typeof modal_preview_images !== 'undefined' ? modal_preview_images : [];
+            index = typeof modal_preview_idx !== 'undefined' ? modal_preview_idx : 0;
+        }
+        if (images.length > 0) {
+            window.openImageEnlargeModal(images, index);
+            return;
+        }
     }
+    var galleryRaw = $image.attr('data-gallery');
+    if (galleryRaw) {
+        try {
+            var gallery = JSON.parse(decodeURIComponent(galleryRaw));
+            if (Array.isArray(gallery) && gallery.length > 0) {
+                window.openImageEnlargeModal(gallery, 0);
+                return;
+            }
+        } catch (err) {}
+    }
+    var url = $image.attr('data-src') || $image.attr('src');
+    if (url) window.openImageEnlargeModal(url, 0);
+}
 
-    // 배우 편집 모달의 미리보기 이미지 클릭 시 다중 이미지(LOCAL/GOOGLE/AVDBS) 갤러리 연동
-    if ($(this).attr('id') === 'p_modal_preview_img' && typeof p_modal_preview_images !== 'undefined' && p_modal_preview_images.length > 0) {
-        window.openImageEnlargeModal(p_modal_preview_images, typeof p_modal_preview_idx !== 'undefined' ? p_modal_preview_idx : 0);
-        return;
-    }
-
-    var img_src = $(this).attr('data-src') || $(this).attr('src');
-    if (img_src) {
-        window.openImageEnlargeModal(img_src);
-    }
+$('body').on('click', '.enlarge-img, .enlarge-person-photo', function() {
+    openImageLightboxFromElement(this);
 });
 
 // 다중 모달 활성 스택 (실제 화면에 열린 순서를 추적하는 LIFO 스택)
