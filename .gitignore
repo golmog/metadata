@@ -3,8 +3,8 @@ __pycache__/
 *.pyc
 *.log
 tmp/
-jav_actors2.db-shm
-jav_actors2.db-wal
+jav_actors*.db-shm
+jav_actors*.db-wal
 
 # Agent-generated local tests, reports and temporary artifacts (not for distribution)
 /tests/
