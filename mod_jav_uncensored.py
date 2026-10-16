@@ -29,7 +29,7 @@ from support_site.entity_av import EntityAVSearch
 
 from .setup import *
 from .mod_meta_db import ModuleMetaDb
-from .util_metadata import MetaImageUtil, MetaWorkerUtil, MetaResponseUtil, MetaParserUtil
+from .util_metadata import MetaUtil
 
 
 class ModuleJavUncensored(PluginModuleBase):
@@ -76,6 +76,8 @@ class ModuleJavUncensored(PluginModuleBase):
 
             f"{self.name}_image_mode": "image_server",
             f"{self.name}_image_server_save_format": "/jav/uncen/{label}",
+            f"{self.name}_image_gdrive_remote_path": "",
+            f"{self.name}_image_gdrive_folder_id": "",
 
             f'{self.name}_1pondo_use_proxy': 'False',
             f'{self.name}_1pondo_proxy_url': '',
@@ -109,6 +111,8 @@ class ModuleJavUncensored(PluginModuleBase):
 
             f"{self.name}_use_preview_clip": "False",
             f"{self.name}_preview_auto_create": "False",
+            f"{self.name}_video_auto_download_trailer": "False",
+            f"{self.name}_video_delete_on_metadata_delete": "False",
         }
 
         # 백그라운드 작업 상태 관리
@@ -261,9 +265,9 @@ class ModuleJavUncensored(PluginModuleBase):
 
             # 백그라운드 상태 폴링
             if command == 'db_enrich_status':
-                return jsonify({'ret': 'success', 'data': self.enrich_status})
+                return jsonify({'ret': 'success', 'data': MetaUtil.legacy_batch_status(self.category, 'enrich', self.enrich_status)})
             if command == 'db_sync_status':
-                return jsonify({'ret': 'success', 'data': self.sync_status})
+                return jsonify({'ret': 'success', 'data': MetaUtil.legacy_batch_status(self.category, 'sync', self.sync_status)})
 
             # 모듈 커맨드 우선 처리
             if command:
@@ -303,7 +307,7 @@ class ModuleJavUncensored(PluginModuleBase):
                     except Exception:
                         pl_base64 = upload_payload
 
-                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                success, result_msg = MetaUtil.save_user_cropped_poster(
                     code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
@@ -377,7 +381,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 target_type = arg3 or req.form.get('type') or 'pl'
                 b64_data = req.form.get('data')
 
-                success, result_data = MetaImageUtil.save_direct_user_image(
+                success, result_data = MetaUtil.save_direct_user_image(
                     code=code,
                     source_path_or_url=source_val,
                     image_type=target_type,
@@ -397,147 +401,31 @@ class ModuleJavUncensored(PluginModuleBase):
 
             # --- 미디어 일괄 채우기 (공용 워커 호출) ---
             elif command == 'db_enrich_start':
-                if self.enrich_status['is_running']:
-                    return jsonify({'ret': 'warning', 'msg': '이미 미디어 채우기 작업이 진행 중입니다.'})
-                delay = float(arg1) if arg1 else 2.0
-                t = threading.Thread(
-                    target=MetaWorkerUtil.run_enrichment_worker,
-                    args=(self.category, self.enrich_status, self.info, delay)
-                )
-                t.daemon = True
-                t.start()
-                return jsonify({'ret': 'success', 'msg': '일괄 미디어 채우기 작업을 시작했습니다.'})
+                return jsonify(MetaUtil.start_legacy_batch(self.category, 'enrich', delay=float(arg1) if arg1 else 2.0))
 
             elif command == 'db_enrich_stop':
-                self.enrich_status['stop_flag'] = True
+                MetaUtil.legacy_batch_status(self.category, 'enrich', stop=True)
                 return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다.'})
 
-            # --- 로컬 이미지 동기화 & 잔여 파일 정리 (공용 워커 호출) ---
             elif command == 'db_sync_local_start':
-                if self.sync_status['is_running']:
-                    return jsonify({'ret': 'warning', 'msg': '이미 로컬 동기화 작업이 진행 중입니다.'})
-                custom_root = arg1.strip() if arg1 else None
-                auto_rescue = (arg2 == 'true')
-                t = threading.Thread(
-                    target=MetaWorkerUtil.run_sync_worker,
-                    args=(self.category, self.sync_status, self.info, custom_root, auto_rescue)
-                )
-                t.daemon = True
-                t.start()
-                return jsonify({'ret': 'success', 'msg': '로컬 이미지 동기화 및 정리 작업을 시작했습니다.'})
+                return jsonify(MetaUtil.start_legacy_batch(self.category, 'sync',
+                    custom_root=arg1.strip() if arg1 else None, auto_rescue=(arg2 == 'true')))
 
             elif command == 'db_sync_local_stop':
-                self.sync_status['stop_flag'] = True
+                MetaUtil.legacy_batch_status(self.category, 'sync', stop=True)
                 return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다.'})
 
-            # --- 이미지/미디어만 재동기화 ---
             elif command == 'db_refresh_image_only':
-                code = arg1
-                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
-                if not cached_json:
-                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+                return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category))
 
-                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
-                logger.info(f"[{self.name}] 미디어 전용 재동기화 시작: [{code}] ({ui_code})")
-
-                try: self.keyword_cache.set(f"BYPASS_{code}", "1")
-                except: pass
-
-                fresh_media = self.info(code, skip_trans=True)
-                if fresh_media and (fresh_media.get('thumb') or fresh_media.get('original', {}).get('thumb')):
-                    cached_json['thumb'] = fresh_media.get('thumb', [])
-                    cached_json['fanart'] = fresh_media.get('fanart', [])
-
-                    # 원본 썸네일 및 팬아트 원천 주소 전체 최신화
-                    if fresh_media.get('original'):
-                        fresh_orig = fresh_media['original']
-                        if 'original' not in cached_json or not isinstance(cached_json['original'], dict):
-                            cached_json['original'] = {}
-                        if fresh_orig.get('thumb'):
-                            cached_json['original']['thumb'] = fresh_orig['thumb']
-                        if fresh_orig.get('fanart'):
-                            cached_json['original']['fanart'] = fresh_orig['fanart']
-                        if fresh_orig.get('extras'):
-                            cached_json['original']['extras'] = fresh_orig['extras']
-
-                    if fresh_media.get('extras'):
-                        cached_json['extras'] = fresh_media.get('extras', [])
-
-                    ModuleMetaDb.save_metadata(self.category, cached_json)
-                    logger.info(f"[{self.name}] [{code}] 이미지 및 팬아트 주소 갱신 완료 (Arts: {len(cached_json.get('fanart', []))}개, OrigArts: {len(cached_json.get('original', {}).get('fanart', []))}개)")
-                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 동기화 완료"})
-                else:
-                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 미디어 정보를 가져오지 못했습니다."})
-
-            # 현재 사이트 누락 정보 갱신 (지능형 치유 모드)
             elif command == 'db_refresh_missing_in_place':
-                code = arg1
-                from .util_metadata import MetaHealingUtil
-                return jsonify(MetaHealingUtil.heal_metadata(self, code, self.category))
+                return jsonify(MetaUtil.heal_metadata(self, arg1, self.category))
 
-            # 현재 사이트 정보 제자리 갱신
             elif command == 'db_refresh_in_place':
-                code = arg1
-                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
-                if not cached_json:
-                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
+                return jsonify(MetaUtil.refresh_in_place(self, arg1, self.category))
 
-                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
-                logger.info(f"[{self.name}] 현재 사이트 제자리 갱신 시작: [{code}] ({ui_code})")
-
-                try: self.keyword_cache.set(f"BYPASS_{code}", "1")
-                except: pass
-
-                fresh_data = self.info(code, skip_trans=False)
-                if fresh_data:
-                    # 사용자 명시적 갱신 요청이므로 설정과 무관하게 강제 DB 저장
-                    ModuleMetaDb.save_metadata(self.category, fresh_data)
-                    title_log = fresh_data.get('title', '')
-                    logger.info(f"[{self.name}] [{code}] 메타데이터 및 팬아트 갱신 완료: {title_log}")
-                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 메타데이터 갱신 완료!\n{title_log}"})
-                else:
-                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 최신 정보를 가져오지 못했습니다."})
-
-            # --- 자동 재검색 갱신 ---
             elif command == 'db_refresh_auto_search':
-                code = arg1
-                cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
-                if not cached_json:
-                    return jsonify({'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.'})
-
-                ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
-                logger.info(f"[{self.name}] 전체 우선순위 자동 재검색 갱신 시작: [{code}] ➔ 키워드: '{ui_code}'")
-
-                search_res = self.search(ui_code, manual=False, use_db=False)
-                if not search_res:
-                    return jsonify({'ret': 'warning', 'msg': f"'{ui_code}' 검색 결과가 없습니다."})
-
-                best_item = next((item for item in search_res if not item.get('is_db_cached') and item.get('score', 0) >= 90), None)
-                if not best_item:
-                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 일치하는 메타데이터를 찾지 못했습니다."})
-
-                new_code = best_item['code']
-                logger.info(f"[{self.name}] 자동 재검색 채택: [{best_item.get('site_key', '').upper()}] Code: {new_code} (기존: {code})")
-
-                try:
-                    self.keyword_cache.set(f"BYPASS_{new_code}", "1")
-                    self.keyword_cache.set(f"BYPASS_{code}", "1")
-                except: pass
-
-                fresh_data = self.info(new_code, skip_trans=False)
-                if fresh_data:
-                    # 기존 출처 데이터는 보존하고, 신규/갱신 메타데이터를 DB에 확정 저장
-                    ModuleMetaDb.save_metadata(self.category, fresh_data)
-
-                    title_log = fresh_data.get('title', '')
-                    if new_code != code:
-                        logger.info(f"[{self.name}] 자동 재검색 신규 출처 메타 저장 완료 ({code} ➔ {new_code}): {title_log}")
-                    else:
-                        logger.info(f"[{self.name}] [{new_code}] 자동 재검색 기존 메타 갱신 완료: {title_log}")
-
-                    return jsonify({'ret': 'success', 'msg': f"[{ui_code}] 자동 재검색 갱신 완료!\n{title_log}"})
-                else:
-                    return jsonify({'ret': 'warning', 'msg': f"[{ui_code}] 최신 정보를 가져오지 못했습니다."})
+                return jsonify(MetaUtil.refresh_auto_search(self, arg1, self.category))
 
             # --- 배우 검색/선택 명령 ---
             elif command == 'person_search':
@@ -616,8 +504,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 media_path = req.values.get("media_path") or req.values.get("path") or ""
                 keyword = str(raw_keyword).rstrip("-").strip()
                 if not keyword and media_path:
-                    from .util_metadata import MetaParserUtil
-                    keyword = MetaParserUtil.extract_keyword_from_path(media_path, category=self.category)
+                    keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
                     logger.debug(f"[{self.name}] media_path 기반 키워드 자동 추출: '{keyword}' (경로: {media_path})")
 
                 manual = str(req.values.get("manual", "")).lower() in ["true", "1"]
@@ -650,7 +537,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 if not code or (not crop_data and not p_base64):
                     return jsonify({'ret': 'error', 'msg': 'code 또는 크롭 데이터 누락'}), 400
 
-                success, result_msg = MetaImageUtil.save_user_cropped_poster(
+                success, result_msg = MetaUtil.save_user_cropped_poster(
                     code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
@@ -674,13 +561,14 @@ class ModuleJavUncensored(PluginModuleBase):
                 if not source_val and not b64_data:
                     return jsonify({'ret': 'error', 'msg': '저장할 이미지 소스(url, path 또는 base64 데이터)가 누락되었습니다.'}), 400
 
-                success, result_msg = MetaImageUtil.save_direct_user_image(
+                success, result_msg = MetaUtil.save_direct_user_image(
                     code=code,
                     source_path_or_url=source_val,
                     image_type=image_type,
                     category=self.category,
                     image_base64_data=b64_data
                 )
+
                 return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None}), (200 if success else 500)
 
             if sub == "user_image_update":
@@ -798,7 +686,7 @@ class ModuleJavUncensored(PluginModuleBase):
                         or_(MetaItem.originaltitle.ilike(stem), MetaItem.code.ilike(stem))
                     ).first()
                     if meta:
-                        res, _ = MetaImageUtil.sync_single_record_disk_images(meta)
+                        res, _ = MetaUtil.sync_single_record_disk_images(meta)
                         if res == 'updated': ret['updated_count'] += 1
                 sess.commit()
                 ModuleMetaDb.checkpoint_wal()
@@ -818,7 +706,7 @@ class ModuleJavUncensored(PluginModuleBase):
 
     def search(self, keyword, manual=False, media_path=None, use_db=True):
         if (not keyword or not str(keyword).strip()) and media_path:
-            keyword = MetaParserUtil.extract_keyword_from_path(media_path, category=self.category)
+            keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
             logger.debug(f"[{self.name}] search() media_path 기반 키워드 보정: '{keyword}'")
 
         logger.info(f'======= jav uncensored search START - keyword:[{keyword}] manual:[{manual}] use_db:[{use_db}] =======')
@@ -867,6 +755,10 @@ class ModuleJavUncensored(PluginModuleBase):
                 
             except Exception as e_db:
                 logger.error(f"[{self.name}] DB Search Error: {e_db}")
+
+        if use_db and not ModuleMetaDb._ensure_meta_db_writable(self.category) and not manual:
+            logger.info(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 외부 사이트 검색 차단: {keyword}")
+            return all_results
 
         # 2. 직결 라우팅 (Uncensored 고유 방식)
         for site_name, site_info in self.site_map.items():
@@ -967,6 +859,10 @@ class ModuleJavUncensored(PluginModuleBase):
             cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
 
             if cached_json:
+                if not ModuleMetaDb._ensure_meta_db_writable(self.category):
+                    logger.debug(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 캐시 읽기 전용 즉시 반환: {code}")
+                    return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+
                 is_db_untranslated = False
                 db_plot = cached_json.get('plot', '')
                 if db_plot and not skip_trans:
@@ -978,18 +874,23 @@ class ModuleJavUncensored(PluginModuleBase):
                     needs_enrichment = not cached_json.get('thumb')
                     if needs_enrichment:
                         logger.info(f"[{self.name}] 이미지/트레일러 누락 감지. Enrichment를 수행합니다...")
+                        MetaUtil.mark_batch_site_request(opts)
                         fresh_data = target_instance.info(code, extra_opts={'skip_trans': True})
                         if fresh_data and fresh_data.get('ret') == 'success' and fresh_data.get('data'):
                             fresh_ret = fresh_data['data']
                             cached_json['thumb'] = fresh_ret.get('thumb', [])
                             cached_json['fanart'] = fresh_ret.get('fanart', [])
-                            if fresh_ret.get('extras'):
-                                for extra in fresh_ret['extras']:
-                                    if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
-                                    elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
-                                cached_json['extras'] = fresh_ret['extras']
-                            if save_db:
-                                ModuleMetaDb.save_metadata(self.category, cached_json)
+                            if fresh_ret.get('poster_url'):
+                                cached_json['poster_url'] = fresh_ret['poster_url']
+                            if fresh_ret.get('landscape_url'):
+                                cached_json['landscape_url'] = fresh_ret['landscape_url']
+
+                            if fresh_ret.get('extra_info'):
+                                if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
+                                    cached_json['extra_info'] = {}
+                                for k_ei in ['landscape_url', 'poster_url', '_storage_media']:
+                                    if fresh_ret['extra_info'].get(k_ei):
+                                        cached_json['extra_info'][k_ei] = fresh_ret['extra_info'][k_ei]
 
                     if cached_json.get('extras'):
                         for extra in cached_json['extras']:
@@ -1002,9 +903,10 @@ class ModuleJavUncensored(PluginModuleBase):
                     ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
                     logger.info(f"[Meta DB Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
                     
-                    return MetaResponseUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+                    return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
         ret = None
+        MetaUtil.mark_batch_site_request(opts)
         res = target_instance.info(code, extra_opts={'skip_trans': skip_trans})
         if res and res.get('ret') == 'success':
             ret = res['data']
@@ -1103,25 +1005,68 @@ class ModuleJavUncensored(PluginModuleBase):
             year_log = ret.get('year', '????')
             logger.info(f"[{self.name}] Info Success: Code: {code} -> {title_log} ({year_log})")
 
-        # 전달된 동영상 파일 경로를 extra_info에 보관하고 조건 충족 시 프리뷰 클립 자동 생성
+        # 기존 영상 파일 자동 감지 및 흡수
+        from .util_preview import MetaPreviewUtil
+        MetaPreviewUtil.check_and_adopt_existing_video(ret, category=self.category)
+
         media_path = opts.get('media_path')
         if media_path and os.path.exists(media_path):
             if 'extra_info' not in ret or not isinstance(ret['extra_info'], dict):
                 ret['extra_info'] = {}
             ret['extra_info']['source_video_path'] = media_path
 
-            from .util_preview import MetaPreviewUtil
-            if MetaPreviewUtil.is_auto_create_enabled(self.category) and not ret.get('extras'):
-                code_val = ret.get('code') or code
-                cat_val = self.category
-                threading.Thread(
-                    target=MetaPreviewUtil.process_preview_workflow,
-                    args=(code_val, media_path, cat_val),
-                    daemon=True
-                ).start()
-                logger.info(f"[{self.name}] 공식 트레일러 부재 감지 -> 백그라운드 프리뷰 클립 자동 생성 트리거: {code_val}")
+        code_val = ret.get('code') or code
+        cat_val = self.category
 
-        # DB에는 정규 마스터 데이터 영구 저장
+        raw_trailer_url = None
+        for ex in (ret.get('original', {}).get('extras') or []):
+            if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
+                raw_trailer_url = ex['content_url']
+                break
+        if not raw_trailer_url:
+            for ex in (ret.get('extras') or []):
+                if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
+                    c_url = ex['content_url']
+                    if 'mode=preview_' not in c_url:
+                        raw_trailer_url = c_url
+                        break
+
+        trailer_download_success = False
+        if raw_trailer_url and MetaPreviewUtil.is_trailer_download_enabled(cat_val):
+            if not (ret.get('extra_info', {}) or {}).get('trailer_video'):
+                logger.info(f"[{self.name}] 공식 트레일러 감지 -> 영상 동기 아카이빙 시작: {code_val}")
+                succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
+                    code_val, raw_trailer_url, cat_val, force=True, item_dict=ret
+                )
+                if succ:
+                    trailer_download_success = True
+
+        if media_path and os.path.exists(media_path) and MetaPreviewUtil.is_auto_create_enabled(cat_val):
+            has_preview = bool((ret.get('extra_info', {}) or {}).get('preview_clip'))
+            has_trailer_video = bool((ret.get('extra_info', {}) or {}).get('trailer_video'))
+            if not has_preview and not has_trailer_video and not trailer_download_success:
+                logger.info(f"[{self.name}] 공식 트레일러 부재/다운로드 실패 감지 -> 프리뷰 클립 동기 생성 시작: {code_val}")
+                MetaPreviewUtil.process_preview_workflow(
+                    code_val, media_path, cat_val, force=True, item_dict=ret
+                )
+
+        ret_extra = ret.get('extra_info', {}) or {}
+        stream_url = None
+        video_prefix = ""
+        if ret_extra.get('preview_clip'):
+            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['preview_clip'], ret, video_type='preview', category=cat_val)
+            video_prefix = "[Preview] "
+        elif ret_extra.get('trailer_video'):
+            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['trailer_video'], ret, video_type='trailer', category=cat_val)
+
+        if stream_url:
+            ret['extras'] = [{
+                'mode': 'mp4',
+                'title': video_prefix + (ret.get('title') or ret.get('tagline') or ret.get('originaltitle')),
+                'content_url': stream_url,
+                'content_type': 'trailer'
+            }]
+
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
         should_save = use_db and save_db and ret
         if should_save:
@@ -1135,7 +1080,7 @@ class ModuleJavUncensored(PluginModuleBase):
         if should_save:
             ModuleMetaDb.save_metadata(self.category, ret)
 
-        return MetaResponseUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
+        return MetaUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
 
 
     def _finalize_info_return(self, entity_dict, extra_opts=None):

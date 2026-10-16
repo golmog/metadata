@@ -71,35 +71,43 @@
 
   {{ macros.setting_checkbox('jav_censored_use_extras', '예고편 사용', value=arg['jav_censored_use_extras'], desc=None) }}
 
-  <!-- 프리뷰 클립 생성 마스터 설정 트리 -->
-  {{ macros.setting_checkbox('jav_censored_use_preview_clip', '프리뷰 클립 생성', value=arg['jav_censored_use_preview_clip'], desc=['작품 상세창 또는 외부 API 요청 시 몽타주 프리뷰 클립을 생성하고 관리하는 기능을 활성화합니다.']) }}
+  <!-- 트레일러/프리뷰 영상 저장 마스터 설정 트리 -->
+  {{ macros.setting_checkbox('jav_censored_use_preview_clip', '트레일러/프리뷰 영상 저장', value=arg['jav_censored_use_preview_clip'], desc=['공식 트레일러 아카이빙 및 몽타주 프리뷰 클립 생성/저장 통합 기능을 활성화합니다.']) }}
 
   <div id="jav_censored_use_preview_clip_div" class="collapse">
-    {{ macros.info_text('stream_copy_info', '무인코딩(Stream Copy) 프리뷰', value='', desc=['시스템 자원 소모 및 인코딩 타임아웃을 방지하기 위해 재인코딩 없이 원본 스트림을 그대로 복사(-c copy)하여 클립을 생성합니다.', '※ 지원 조건: MP4 컨테이너 직결이 가능한 표준 비디오 코덱(H.264, HEVC/H.265, AV1, VP9) 소스 영상']) }}
+    {{ macros.setting_checkbox('jav_censored_video_auto_download_trailer', '트레일러 영상 자동 저장', value=arg.get('jav_censored_video_auto_download_trailer'), desc=['메타데이터 생성(수집) 시 공식 사이트의 트레일러 영상을 다운로드하여 지정된 저장소에 보관합니다.']) }}
 
-    {{ macros.setting_checkbox('jav_censored_preview_auto_create', '예고편 부재 시 프리뷰 클립 자동 생성', value=arg.get('jav_censored_preview_auto_create'), desc=['ON: 동영상 경로가 전달되었을 때 공식 예고편이 없으면 백그라운드에서 프리뷰 클립을 자동 생성합니다.', 'OFF: 수동 버튼 클릭 또는 외부 API 요청 시에만 생성합니다. (기본값: OFF)']) }}
-
-    {{ macros.setting_input_text('jav_censored_preview_ffmpeg_path', 'FFmpeg 바이너리 경로', value=arg['jav_censored_preview_ffmpeg_path'], placeholder='ffmpeg') }}
-    {{ macros.setting_input_text('jav_censored_preview_ffprobe_path', 'FFprobe 바이너리 경로', value=arg['jav_censored_preview_ffprobe_path'], placeholder='ffprobe') }}
-    {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
-    {{ macros.setting_checkbox('jav_censored_preview_include_audio', '사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
-    {{ macros.setting_radio_with_value('jav_censored_preview_storage_type', '클립 저장 방식', [['local', '로컬 디렉토리 저장'], ['gdrive', '구글 드라이브 (Rclone 업로드 & 스트리밍 중계)']], value=(arg.get('jav_censored_preview_storage_type') or 'local'), desc=['로컬: 지정한 디스크 루트 아래에 카테고리별 표준 폴더 구조로 저장하고 FF 프록시로 서빙합니다.', '구글 드라이브: rclone으로 원격 업로드 후, 재생 시 Range 지원 스트리밍 중계로 다이렉트 재생합니다.']) }}
+    {{ macros.setting_radio_with_value('jav_censored_preview_storage_type', '영상 저장 방식', [['local', '로컬 디렉토리 저장'], ['gdrive', '구글 드라이브 (Rclone 업로드 & 스트리밍 중계)']], value=(arg.get('jav_censored_preview_storage_type') or 'local'), desc=['로컬: 지정한 디스크 루트 아래에 카테고리별 표준 폴더 구조로 저장하고 FF 프록시로 서빙합니다.', '구글 드라이브: rclone으로 원격 업로드 후, 재생 시 Range 지원 스트리밍 중계로 다이렉트 재생합니다.']) }}
 
     <div id="jav_censored_preview_local_div" class="collapse">
-      {{ macros.setting_input_text('jav_censored_preview_local_path', '로컬 저장 루트 경로', value=arg['jav_censored_preview_local_path'], placeholder='/data/previews', desc=['프리뷰가 저장될 기본 루트 디렉토리입니다. 하위 경로는 카테고리 규격에 맞춰 자동 생성됩니다.']) }}
+      {{ macros.setting_input_text('jav_censored_preview_local_path', '로컬 저장 루트 경로', value=arg['jav_censored_preview_local_path'], placeholder='/data/previews', desc=['영상 파일이 저장될 기본 루트 디렉토리입니다. 하위 경로는 카테고리 규격에 맞춰 자동 생성됩니다.']) }}
     </div>
 
     <div id="jav_censored_preview_gdrive_div" class="collapse">
-      {{ macros.setting_input_text('jav_censored_preview_rclone_path', 'Rclone 실행 경로', value=arg['jav_censored_preview_rclone_path'], placeholder='rclone') }}
-      {{ macros.setting_input_text('jav_censored_preview_rclone_conf', 'rclone.conf 파일 경로', value=arg['jav_censored_preview_rclone_conf'], placeholder='/root/.config/rclone/rclone.conf') }}
-      {{ macros.setting_input_text('jav_censored_preview_rclone_upload_remote', '업로드/관리용 리모트 경로', value=(arg.get('jav_censored_preview_rclone_upload_remote') or arg.get('jav_censored_preview_rclone_target_path')), placeholder='gf:{0AIZlNUzzYfZEUk9PVA}/previews', desc=['파일 업로드 및 삭제에 사용할 리모트 대상 경로 (쓰기 권한 필요)']) }}
-      {{ macros.setting_input_text('jav_censored_preview_rclone_playback_remote', '재생/스트리밍 전용 리모트명', value=(arg.get('jav_censored_preview_rclone_playback_remote') or arg.get('jav_censored_preview_rclone_remote')), placeholder='gfin', desc=['rclone.conf 내의 재생 토큰 발급용 리모트명 (읽기 전용 계정 가능, 동일하게 쓸 경우 위 리모트명 입력)']) }}
-      {{ macros.setting_input_text('jav_censored_preview_rclone_options', 'Rclone 업로드 추가 옵션', value=arg['jav_censored_preview_rclone_options'], placeholder='예: --drive-chunk-size 64M') }}
+      {{ macros.setting_input_text('jav_censored_preview_gdrive_remote_path', '구글 드라이브 리모트 경로 루트', value=(arg.get('jav_censored_preview_gdrive_remote_path') or arg.get('jav_censored_preview_video_folder_id') or ''), placeholder='예: mydrive:{1XyZ...} 또는 mydrive:previews', desc=['트레일러 및 프리뷰 영상 파일이 저장될 구글 드라이브 리모트 대상의 루트 경로입니다.', '예시: mydrive:previews 또는 mydrive:{폴더ID} (리모트명 뒤 콜론 자동 보정 지원)']) }}
+      {{ macros.setting_input_text('jav_censored_preview_rclone_playback_remote', '재생/스트리밍 전용 리모트명', value=(arg.get('jav_censored_preview_rclone_playback_remote') or arg.get('jav_censored_preview_rclone_remote') or 'gfin'), placeholder='gfin', desc=['rclone.conf 내의 재생 토큰 발급용 리모트명 (서비스 계정 위임 리모트 등)']) }}
     </div>
+
+    {{ macros.setting_checkbox('jav_censored_preview_auto_create', '프리뷰 클립 자동 생성', value=arg.get('jav_censored_preview_auto_create'), desc=['예고편 다운로드에 실패하거나 예고편 정보가 없는 경우 프리뷰 클립을 자동 생성합니다.', '파일 처리, Plex 내에서 메타데이터 매칭 등 동영상 경로가 전달되는 경우에만 생성 가능합니다. (기본값: OFF)']) }}
+
+    {{ macros.setting_input_text('jav_censored_preview_ffmpeg_path', 'FFmpeg 바이너리 경로', value=arg['jav_censored_preview_ffmpeg_path'], placeholder='ffmpeg', desc=['※ FFprobe 바이너리는 FFmpeg 실행 파일과 동일한 디렉토리에서 자동으로 탐색합니다.']) }}
+    {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
+    {{ macros.setting_checkbox('jav_censored_preview_include_audio', '프리뷰 영상에 사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
+
+    {{ macros.setting_checkbox('jav_censored_video_delete_on_metadata_delete', '메타데이터 삭제시 영상 삭제', value=arg.get('jav_censored_video_delete_on_metadata_delete'), desc=['메타데이터 삭제 또는 카테고리 전체 초기화 시 연동된 영상 파일(로컬 디렉토리 및 구글 드라이브)도 함께 영구 삭제됩니다.']) }}
   </div>
 
   {{ macros.m_hr() }}
-  {{ macros.setting_radio_with_value('jav_censored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버']], value=arg['jav_censored_image_mode'], desc=['기본: FF 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 저장하고 연결된 URL을 사용']) }}
+  <!-- Rclone 클라우드 공용 인프라 설정 -->
+  <div id="jav_censored_rclone_common_box" class="mb-3 p-3 rounded" style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.08);">
+    {{ macros.info_text('rclone_common_info', 'Rclone 클라우드 공용 설정', value='', desc=['구글 드라이브 업로드 및 관리에 사용할 Rclone 공용 실행 및 인증 설정입니다. (영상/이미지 공통 적용)']) }}
+    {{ macros.setting_input_text('jav_censored_rclone_path', 'Rclone 실행 경로', value=(arg.get('jav_censored_rclone_path') or arg.get('jav_censored_preview_rclone_path') or 'rclone'), placeholder='rclone') }}
+    {{ macros.setting_input_text('jav_censored_rclone_conf', 'rclone.conf 파일 경로', value=(arg.get('jav_censored_rclone_conf') or arg.get('jav_censored_preview_rclone_conf') or '/data/db/rclone.conf'), placeholder='/data/db/rclone.conf') }}
+    {{ macros.setting_input_text('jav_censored_rclone_options', 'Rclone 업로드 추가 옵션', value=(arg.get('jav_censored_rclone_options') or arg.get('jav_censored_preview_rclone_options') or ''), placeholder='예: --drive-chunk-size 64M') }}
+  </div>
+
+  {{ macros.m_hr() }}
+  {{ macros.setting_radio_with_value('jav_censored_image_mode', '이미지 URL 처리 방법', [['ff_proxy', '기본'], ['discord_proxy', '디스코드'], ['image_server', '이미지 서버'], ['gdrive', '구글 드라이브 썸네일']], value=arg['jav_censored_image_mode'], desc=['기본: FF 내장 프록시 사용', '디스코드: 선택된 이미지를 디스코드에 업로드하여 이용.', '이미지 서버: 선택된 이미지를 로컬에 저장하고 연결된 웹 URL로 서빙.', '구글 드라이브 썸네일: 구글 드라이브 폴더에 저장 후 Google Drive File ID를 추출하여 무손실 썸네일 링크(&sz=s0)로 서빙.']) }}
 
   <div id="jav_censored_use_discord_proxy_div" class="collapse">
     {{ macros.setting_checkbox('jav_censored_use_discord_proxy_server', '디스코드 Proxy 서버(FF) 사용', value=arg['jav_censored_use_discord_proxy_server'], desc=['Discord 이미지 URL의 도메인을 지정된 FF 서버 주소로 변경합니다.', '미사용시 일정시간 이후 url이 작동하지 않습니다.']) }}
@@ -111,19 +119,30 @@
     {{ macros.setting_input_textarea('jav_censored_my_webhook_list', '디스코드 웹훅', value=arg['jav_censored_my_webhook_list'], row='5', desc=['연령 제한 채널 설정 필수', '구분자 엔터']) }}
   </div>
 
-  <div id="jav_censored_use_image_server_div" class="collapse">
-    {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://my-domain.com/images', desc=['외부에서 접근할 이미지 서버의 기본 웹 주소입니다. (끝에 / 없이 입력)', 'FF 내장 이미지 라우트 이용 시: https://FF_DDNS/images', '※ 별도 이미지 서버 사용시에는 기본 라우트 주소(https://FF_DDNS/images)와 중복되지 않도록 하시기 바랍니다.', '※ 이미지 서버 URL 뒤에 아래 설정한 폴더 포맷 경로가 결합되어 최종 이미지 웹 주소가 완성됩니다.']) }}
-    
-    {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc=['이미지들이 저장될 시스템 로컬 디스크의 최상위 루트 경로입니다. (예: /data/images)', '※ FF의 기본 /images 웹 라우트는 이 로컬 Root 폴더(/data/images) 내부를 직접 서빙합니다.']) }}
+  <!-- 이미지 서버 / 구글 드라이브 썸네일 공통 파일 저장 영역 -->
+  <div id="jav_censored_use_image_store_div" class="collapse">
+    <!-- 이미지 서버 및 구글 드라이브 썸네일 공통 공유 설정 -->
+    {{ macros.setting_radio_with_value('jav_censored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_censored_image_save_mode'], desc=['디스크에 파일을 저장할 때 포맷 변환 방식을 지정합니다. (기본: JPEG 변환 저장, 이미지 서버 및 구글 드라이브 공통 적용)']) }}
 
-    {{ macros.setting_radio_with_value('jav_censored_image_save_mode', '이미지 저장 방식', [['jpeg', 'JPEG 변환 저장'], ['original', '원본 저장']], value=arg['jav_censored_image_save_mode'], desc=['이미지 서버에 파일을 저장할 때 포맷 변환 방식을 지정합니다. (기본: JPEG 변환 저장, 모든 카테고리 공통 적용)']) }}
+    {{ macros.setting_input_text('jav_censored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['저장 루트 경로 하위에 생성될 상대 폴더 구조를 지정합니다. (앞뒤 / 유무 무관, 이미지 서버 및 구글 드라이브 공통 적용)', '권장 기본값: /jav/cen/{label_1}/{label}', '사용 가능 토큰: {label}, {label_1}, {studio}, {studio_1}, {year}, {year4}, {code} 등']) }}
 
-    {{ macros.setting_input_text('jav_censored_image_server_save_format', '포스터 저장 폴더 포맷', value=arg['jav_censored_image_server_save_format'], desc=['로컬 저장 경로 Root 하위에 생성될 상대 폴더 구조를 지정합니다. (앞뒤 / 유무 무관)', '권장 기본값: /jav/cen/{label_1}/{label}', '설정 매핑 예시:', '- 로컬 Root가 /data/images 이고 포맷이 /jav/cen/{label_1}/{label} 인 경우 -> 실제 디스크 /data/images/jav/cen/... 에 저장', '- 이미지 서버 URL이 https://.../images 인 경우 -> 최종 웹 주소는 https://.../images/jav/cen/... 으로 서빙', '사용 가능 토큰: {label}, {label_1}, {studio}, {studio_1}, {year}, {year4}, {code} 등']) }}
+    <!-- [이미지 서버] 선택 시에만 노출되는 전용 설정 -->
+    <div id="jav_censored_use_image_server_only_div" class="collapse mb-2 p-2 rounded" style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.08);">
+      {{ macros.setting_input_text('jav_censored_image_server_url', '이미지 서버 URL', value=arg['jav_censored_image_server_url'], placeholder='예: https://my-domain.com/images', desc=['외부에서 접근할 이미지 서버의 기본 웹 주소입니다. (끝에 / 없이 입력)', 'FF 내장 이미지 라우트 이용 시: https://FF_DDNS/images', '※ 이미지 서버 URL 뒤에 위에서 설정한 폴더 포맷 경로가 결합되어 최종 웹 주소가 완성됩니다.']) }}
+      
+      {{ macros.setting_input_text('jav_censored_image_server_local_path', '로컬 저장 경로 Root', value=arg['jav_censored_image_server_local_path'], desc=['이미지들이 저장될 시스템 로컬 디스크의 최상위 루트 경로입니다. (예: /data/images)', '※ FF의 기본 /images 웹 라우트는 이 로컬 Root 폴더(/data/images) 내부를 직접 서빙합니다.']) }}
+    </div>
 
-    {{ macros.setting_radio_with_value('jav_censored_actor_image_mode', '배우 이미지 소스', [['gds', 'GDS 구글 File ID'], ['image_server', '이미지 서버'], ['site', '사이트 원본 URL']], value=(arg.get('jav_censored_actor_image_mode') or 'gds'), desc=['GDS 구글 File ID: 배포 DB의 구글 드라이브 썸네일 이미지를 대표 사진으로 연결합니다. (기본값)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.', '사이트 원본 URL: 사이트 원본 이미지를 직접 연결합니다. (※ 사이트 차단 가능성이 있으므로 주의)']) }}
+    <!-- [구글 드라이브 썸네일] 선택 시 노출되는 이미지 전용 설정 -->
+    <div id="jav_censored_use_gdrive_image_div" class="collapse mb-2 p-2 rounded" style="background: rgba(0, 123, 255, 0.05); border: 1px solid rgba(0, 123, 255, 0.2);">
+      {{ macros.setting_input_text('jav_censored_image_gdrive_remote_path', '구글 드라이브 리모트 경로 루트', value=(arg.get('jav_censored_image_gdrive_remote_path') or arg.get('jav_censored_image_gdrive_folder_id') or ''), placeholder='예: mydrive:images 또는 mydrive:{폴더ID}', desc=['포스터, 가로커버, 팬아트 이미지가 저장될 Rclone 원격 대상의 루트 경로입니다.', '예시: mydrive:images 또는 mydrive:{폴더ID} (리모트명 뒤 콜론 자동 보정 지원)']) }}
+    </div>
+
+    <!-- 인물 이미지 및 파일 덮어쓰기 공통 설정 -->
+    {{ macros.setting_radio_with_value('jav_censored_actor_image_mode', '배우 이미지 소스', [['gds', 'GDS 썸네일'], ['image_server', '이미지 서버'], ['gdrive', '구글 드라이브 썸네일'], ['site', '사이트 원본 URL']], value=(arg.get('jav_censored_actor_image_mode') or 'gds'), desc=['GDS 썸네일: 배포 DB의 구글 드라이브 썸네일 이미지를 대표 사진으로 연결합니다. (기본값, 무손실 &sz=s0)', '이미지 서버: 로컬 이미지 서버에 배우 사진을 저장하여 서빙합니다.', '구글 드라이브 썸네일: 개인 Rclone 리모트에 저장하고 개인 File ID로 연결합니다. (공유 DB 익스포트 시 자동 제외)', '사이트 원본 URL: 사이트 원본 이미지를 직접 연결합니다. (※ 사이트 차단 가능성이 있으므로 주의)']) }}
 
     <div id="jav_censored_actor_image_server_div" class="collapse">
-      {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['로컬 저장 경로 Root 하위에 저장할 경로를 설정합니다. (예: /jav/actors)']) }}
+      {{ macros.setting_input_text('jav_censored_image_server_actor_path', '배우 이미지 폴더', value=arg['jav_censored_image_server_actor_path'], desc=['저장 경로 Root 하위에 저장할 배우 폴더 경로를 설정합니다. (예: /jav/actors)']) }}
     </div>
 
     {{ macros.setting_checkbox('jav_censored_image_server_rewrite', '파일이 있어도 다시 저장', value=arg['jav_censored_image_server_rewrite'], desc=['On: 다시 저장.', 'Off: 저장된 이미지가 있으면 다시 저장하지 않습니다.']) }}
@@ -217,7 +236,7 @@ $('input[type=radio][name=jav_censored_actor_image_mode]').change(function() {
 });
 
 function use_actor_image_mode(value) {
-  if (value === 'image_server') {
+  if (value === 'image_server' || value === 'gdrive') {
     $('#jav_censored_actor_image_server_div').collapse('show');
   } else {
     $('#jav_censored_actor_image_server_div').collapse('hide');
@@ -248,13 +267,20 @@ $('#jav_censored_use_ollama').change(function() {
 function use_image_server(value) {
   if (value == 'ff_proxy') {
     $('#jav_censored_use_discord_proxy_div').collapse('hide');
-    $('#jav_censored_use_image_server_div').collapse('hide');
+    $('#jav_censored_use_image_store_div').collapse('hide');
   } else if (value == 'discord_proxy') {
     $('#jav_censored_use_discord_proxy_div').collapse('show');
-    $('#jav_censored_use_image_server_div').collapse('hide');
-  } else {
+    $('#jav_censored_use_image_store_div').collapse('hide');
+  } else if (value == 'image_server') {
     $('#jav_censored_use_discord_proxy_div').collapse('hide');
-    $('#jav_censored_use_image_server_div').collapse('show');
+    $('#jav_censored_use_image_store_div').collapse('show');
+    $('#jav_censored_use_image_server_only_div').collapse('show');
+    $('#jav_censored_use_gdrive_image_div').collapse('hide');
+  } else if (value == 'gdrive') {
+    $('#jav_censored_use_discord_proxy_div').collapse('hide');
+    $('#jav_censored_use_image_store_div').collapse('show');
+    $('#jav_censored_use_image_server_only_div').collapse('hide');
+    $('#jav_censored_use_gdrive_image_div').collapse('show');
   }
 }
 

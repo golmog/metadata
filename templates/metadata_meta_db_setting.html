@@ -15,6 +15,38 @@
   {{ macros.setting_checkbox('meta_db_use', '메타 DB 인프라 사용', value=arg['meta_db_use'], desc=['작품 메타데이터 및 인물 정보를 로컬 메타 DB(SQLite/PostgreSQL)에 통합 관리하고 고속 캐시로 활용합니다.', '체크 해제 시 메타 DB의 모든 기능(저장, 캐시 조회, 백그라운드 워커)이 완전히 비활성화됩니다.']) }}
 
   <div id="meta_db_use_div" class="collapse">
+    {{ macros.info_text_and_buttons(
+      'meta_db_schema_info',
+      '통합 메타 DB 스키마 버전',
+      [],
+      value='스키마 버전 확인 중...',
+      desc=[]
+    ) }}
+    <div id="meta_db_schema_action" class="mt-2 text-center" style="display: none;">
+      <button type="button" class="btn btn-sm font-weight-bold shadow mr-2" id="btn_meta_db_schema_migrate">
+        ⚠️ 통합 스키마 업그레이드 실행
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-danger font-weight-bold shadow" id="btn_meta_db_schema_migrate_stop">
+        마이그레이션 중단
+      </button>
+    </div>
+    <div id="meta_db_schema_migrate_desc" class="small text-warning text-center mb-2" style="display: none;">
+      ⚠️ 백업 후 실제 DB 구조와 데이터를 변경하는 관리자 작업입니다. 실행 전 대상 DB와 백업 경로를 확인하세요.
+    </div>
+    <div id="meta_db_schema_progress" class="p-3 mb-3 rounded mx-auto" style="display: none; width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255,255,255,0.08);">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="small font-weight-bold text-info" id="meta_db_schema_progress_status">준비 중...</span>
+        <span class="small font-weight-bold text-white" id="meta_db_schema_progress_percent">0.0%</span>
+      </div>
+      <div class="progress mb-2" style="height: 18px; background: #0c0e11; border-radius: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary font-weight-bold" id="meta_db_schema_progress_bar" role="progressbar" style="width: 0%; font-size: 0.75rem;">0%</div>
+      </div>
+      <div class="d-flex justify-content-between align-items-center small text-muted">
+        <span id="meta_db_schema_progress_stats">진행: 0 / 0</span>
+        <span id="meta_db_schema_progress_target" class="text-truncate text-info text-right" style="max-width: 220px;">-</span>
+      </div>
+    </div>
+    {{ macros.m_hr() }}
     {{ macros.setting_checkbox('meta_db_save', '새 메타데이터 DB 자동 저장', value=arg['meta_db_save'], desc=['새롭게 파싱되거나 번역된 메타데이터를 DB에 자동으로 저장합니다.']) }}
     {{ macros.setting_checkbox('meta_db_save_only_translated', '번역 완료된 메타데이터만 DB에 저장', value=arg['meta_db_save_only_translated'], desc=['ON: 번역이 성공적으로 완료된 메타데이터만 DB에 저장하며, 번역 실패 또는 번역 생략 수집 시에는 저장을 건너뜁니다.']) }}
     {{ macros.setting_checkbox('meta_db_include_original', '번역 전 원문 텍스트 보관 (original)', value=arg['meta_db_include_original'], desc=['ON: 제목, 줄거리, 제작사 등의 번역 전 원본 텍스트를 DB와 JSON에 백업 보관합니다. (재번역 및 오프라인 복구 시 유용)', 'OFF: 원문 백업을 제외하고 최종 번역 데이터만 저장합니다.']) }}
@@ -73,19 +105,16 @@
 
     {{ macros.m_hr() }}
 
-    <!-- 백업 & 스마트 Import / Export -->
+    <!-- 스마트 Import / 공유용 Export -->
     {{ macros.setting_input_textarea_and_buttons('meta_db_import_path', 'JSON/DB Import & Export', [
       ['btn_db_import_merge', '스마트 병합 Import'],
       ['btn_db_import_missing', '없는 것만 Import'],
       ['btn_db_import_stop', '임포트 중단'],
-      ['btn_db_export_full_all', '전체 백업 Export (Full)'],
       ['btn_db_export_clean', '공유용 Export (Clean)']
     ], value=arg['meta_db_import_path'], row='4', desc=[
       'JSON 폴더 경로 또는 .db 파일 경로를 입력하세요. (엔터로 여러 줄 입력 가능)',
       '형식: [카테고리]|[경로] (예: JAV_CEN|/mnt/cen_json, JAV_UNCEN|/mnt/uncen_db.db, WESTERN|/mnt/west_json)',
       '※ 경로 입력후 실행전 반드시 설정을 저장하세요',
-      '※ 지원 카테고리: JAV_CEN, JAV_UNCEN, WESTERN (카테고리 접두사 필수 입력)',
-      '※ 전체 백업: 모든 이미지 URL이 포함된 100% 온전한 Standalone DB로 다운로드됩니다.',
       '※ 공유용 Export: 이미지/서버 주소가 정제된 배포용 DB로 다운로드됩니다.'
     ]) }}
 
@@ -122,10 +151,46 @@
         '동기화 실행 시 동일 인물로 파편화된 복수 ID(PA...) 레코드들을 1단계(이름+원문+사진 일치) 및 2단계(이름+영문/원문+생일 일치) 안전 규칙에 따라 단일 마스터 레코드로 자동 병합합니다.'
       ]
     ) }}
-    {{ macros.m_hr() }}
+
+    <!-- 배우 DB 동기화와 백업/복원 전용 진행 표시 -->
+    <div id="meta_db_maintenance_progress" class="p-3 mb-3 rounded mx-auto" style="display: none; width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255,255,255,0.08);" aria-live="polite">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="small font-weight-bold text-info" id="meta_db_maintenance_progress_status">준비 중...</span>
+        <span class="small font-weight-bold text-white" id="meta_db_maintenance_progress_percent">준비 중</span>
+      </div>
+      <div class="progress mb-2" style="height: 18px; background: #0c0e11; border-radius: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary font-weight-bold" id="meta_db_maintenance_progress_bar" role="progressbar" style="width: 100%; font-size: 0.75rem;"></div>
+      </div>
+      <div class="d-flex justify-content-between align-items-center small text-muted">
+        <span id="meta_db_maintenance_progress_stats">진행 상태 확인 중...</span>
+        <span id="meta_db_maintenance_progress_target" class="text-truncate text-info text-right" style="max-width: 220px;">-</span>
+      </div>
+      <div id="meta_db_maintenance_progress_detail" class="small text-muted mt-2" style="overflow-wrap: anywhere;"></div>
+    </div>
+
+    <!-- 메타 DB 백업 및 복원 관리 패널 -->
+    <div id="meta_db_schema_restore" class="mt-2 mb-3 p-3 rounded mx-auto" style="width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255, 193, 7, 0.35) !important;">
+      <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom border-secondary">
+        <span class="small font-weight-bold text-warning">메타 DB 백업 및 복원</span>
+        <button type="button" class="btn btn-sm btn-outline-info font-weight-bold" id="btn_meta_db_schema_backup" title="현재 메타 DB 상태를 즉시 백업 디렉토리에 저장합니다.">
+          💾 현재 상태 수동 백업 생성
+        </button>
+      </div>
+      <div class="input-group input-group-sm mb-2">
+        <select id="meta_db_restore_backup" class="form-control form-control-sm">
+          <option value="">백업 목록을 불러오는 중...</option>
+        </select>
+        <div class="input-group-append">
+          <button type="button" class="btn btn-sm btn-outline-warning font-weight-bold" id="btn_meta_db_schema_restore">
+            선택한 백업 복원
+          </button>
+        </div>
+      </div>
+      <div class="small text-muted text-center" style="font-size: 0.78rem;">※ 복원 시 선택한 백업으로 현재 DB를 덮어씁니다. 복원 전 현재 상태를 먼저 수동 백업해 두세요.</div>
+    </div>
+
 
   </div>
-
 </div>
 </form>
 
@@ -233,19 +298,257 @@ function refreshPersonVersionInfo(isManualClick) {
         } else if (ret.has_update) {
           notify('새로운 배우 DB 파일(' + ret.file_version + ')이 감지되었습니다. 동기화를 진행해주세요.', 'info');
         }
+
       }
     }
   });
 }
 
+var metaDbSchemaInitialCheck = true;
+var metaDbSchemaEventSource = null;
+var metaDbSchemaFallbackTimer = null;
+var metaDbSchemaNeedsMigration = false;
+
+function refreshMetaDbSchemaInfo(isInitialCheck) {
+  globalSendCommand('meta_db_schema_status', null, null, null, function(ret){
+    if (!ret || ret.ret !== 'success') return;
+    var versions = [];
+    $.each(ret.data || {}, function(name, status) {
+      versions.push(name + ': v' + (status.schema_version || 0) + '/' + ret.target_version);
+    });
+    var m = ret.migration || {};
+    metaDbMaintenanceMigrating = !!m.is_running;
+    setMetaDbMaintenanceBusy(metaDbMaintenanceBusy);
+    var text = versions.join(' | ') || '상태 확인 불가';
+    if (m.status && m.status !== '대기 중') {
+      text += ' | ' + m.status;
+      if (m.total) text += ' (' + (m.current || 0) + '/' + m.total + ')';
+    }
+    var el = $('#meta_db_schema_info');
+    if (el.is('input, textarea, select')) el.val(text); else el.text(text);
+    var needsMigration = false;
+    $.each(ret.data || {}, function(name, s) {
+      if ((s.schema_version || 0) < ret.target_version || s.migration_state !== 'complete') {
+        needsMigration = true;
+      }
+    });
+    metaDbSchemaNeedsMigration = needsMigration;
+    var action = $('#meta_db_schema_action');
+    var migrateButton = $('#btn_meta_db_schema_migrate');
+    var stopButton = $('#btn_meta_db_schema_migrate_stop');
+    var migrateDescription = $('#meta_db_schema_migrate_desc');
+    if (m.is_running) {
+      updateMetaDbSchemaProgress(m);
+    } else if (m.status === '완료' || m.status === '실패' || m.status === '중단됨') {
+      $('#meta_db_schema_progress').hide();
+    }
+    action.toggle(needsMigration || !!m.is_running);
+    migrateButton.toggle(needsMigration && !m.is_running);
+    stopButton.toggle(!!m.is_running);
+    stopButton.prop('disabled', !m.is_running);
+    migrateDescription.toggle(needsMigration || !!m.is_running);
+
+    var statusText = versions.join(' | ') || '상태 확인 불가';
+    if (needsMigration) {
+      statusText += ' | 업그레이드 필요 (v' + ret.target_version + ')';
+      migrateDescription.text(
+        '⚠️ 현재 ' + statusText +
+        ' 상태입니다. 백업 후 인물·영상 DB를 함께 변경하는 관리자 작업입니다.'
+      );
+      if (isInitialCheck && !m.is_running) {
+        notify(
+          '통합 메타 DB 스키마 업그레이드가 필요합니다. 설정 페이지에서 실행해주세요.',
+          'warning'
+        );
+      }
+    } else if (m.is_running) {
+      migrateDescription.text('통합 메타 DB 스키마 업그레이드가 실행 중입니다. 작업이 끝날 때까지 DB 작업이 제한됩니다.');
+    } else {
+      migrateDescription.text('');
+    }
+
+    if (m.is_running && !metaDbSchemaEventSource) {
+      connectMetaDbSchemaSSE();
+    }
+
+  });
+}
+
+function refreshMetaDbSchemaBackups() {
+  globalSendCommand('meta_db_schema_backups', null, null, null, function(ret) {
+    var select = $('#meta_db_restore_backup');
+    select.empty();
+    if (!ret || ret.ret !== 'success' || !(ret.data || []).length) {
+      select.append($('<option>').val('').text('복원 가능한 백업이 없습니다.'));
+      return;
+    }
+    select.append($('<option>').val('').text('복원할 백업을 선택하세요.'));
+    $.each(ret.data, function(_, backup) {
+      select.append($('<option>').val(backup.path).text(backup.label));
+    });
+  });
+}
+
+function connectMetaDbSchemaSSE() {
+  if (metaDbSchemaEventSource) metaDbSchemaEventSource.close();
+  if (typeof EventSource === 'undefined') {
+    if (!metaDbSchemaFallbackTimer) {
+      metaDbSchemaFallbackTimer = setInterval(function() {
+        refreshMetaDbSchemaInfo(false);
+      }, 2000);
+    }
+    return;
+  }
+  metaDbSchemaEventSource = new EventSource('/' + package_name + '/normal/meta_db/meta_schema_stream');
+  metaDbSchemaEventSource.onmessage = function(e) {
+    try {
+      var data = JSON.parse(e.data);
+      if (data.status && data.status.is_running) {
+        metaDbMaintenanceMigrating = true;
+        setMetaDbMaintenanceBusy(metaDbMaintenanceBusy);
+        updateMetaDbSchemaProgress(data.status);
+        $('#meta_db_schema_action').show();
+        $('#btn_meta_db_schema_migrate').hide();
+        $('#btn_meta_db_schema_migrate_stop').show().prop('disabled', false);
+        $('#meta_db_schema_migrate_desc').show().text(
+          '통합 메타 DB 스키마 업그레이드가 실행 중입니다. ' +
+          (data.status.status || '작업 중') +
+          ' (' + (data.status.current || 0) + '/' + (data.status.total || 0) + ')'
+        );
+      } else if (data.status) {
+        updateMetaDbSchemaProgress(data.status);
+        metaDbMaintenanceMigrating = false;
+        setMetaDbMaintenanceBusy(metaDbMaintenanceBusy);
+        refreshMetaDbSchemaInfo(false);
+        refreshMetaDbSchemaBackups();
+        metaDbSchemaEventSource.close();
+        metaDbSchemaEventSource = null;
+      }
+    } catch (err) {}
+  };
+  metaDbSchemaEventSource.onerror = function() {
+    if (metaDbSchemaEventSource) {
+      metaDbSchemaEventSource.close();
+      metaDbSchemaEventSource = null;
+    }
+  };
+}
+
+function updateMetaDbSchemaProgress(status) {
+  if (!status) return;
+  var $panel = $('#meta_db_schema_progress');
+  var total = Number(status.total || 0);
+  var current = Number(status.current || 0);
+  var percent = total > 0 ? Math.min(100, Math.max(0, current / total * 100)) : 0;
+  var percentText = percent.toFixed(1) + '%';
+
+  $panel.slideDown(150);
+  $('#meta_db_schema_progress_status').text(status.status || '작업 진행 중...');
+  $('#meta_db_schema_progress_percent').text(percentText);
+  $('#meta_db_schema_progress_bar').css('width', percentText).text(percentText);
+
+  var statsLabel = '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString();
+  if (status.phase === 'backup') {
+    statsLabel = '백업: ' + current.toLocaleString() + ' / ' + total.toLocaleString();
+  } else if (status.phase === 'person') {
+    statsLabel = '인물 변환: ' + current.toLocaleString() + ' / ' + total.toLocaleString();
+  } else if (status.phase === 'restore') {
+    statsLabel = '복원: ' + current.toLocaleString() + ' / ' + total.toLocaleString();
+  }
+  $('#meta_db_schema_progress_stats').text(statsLabel);
+
+  var currentTarget = status.current_db || status.phase || '-';
+  $('#meta_db_schema_progress_target').text(currentTarget);
+
+  var $progressBar = $('#meta_db_schema_progress_bar');
+  if (status.is_running) {
+    $progressBar.addClass('progress-bar-animated bg-primary').removeClass('bg-success bg-warning bg-danger');
+  } else {
+    $progressBar.removeClass('progress-bar-animated bg-primary');
+    if (status.status === '완료' || status.status === '복원 완료' || status.status === '백업 완료') {
+      $progressBar.addClass('bg-success').removeClass('bg-warning bg-danger');
+    } else if (status.status === '실패' || (status.phase && status.phase === 'failed')) {
+      $progressBar.addClass('bg-danger').removeClass('bg-success bg-warning');
+    } else {
+      $progressBar.addClass('bg-warning').removeClass('bg-success bg-danger');
+    }
+  }
+}
+
 $(document).ready(function(){
   use_collapse("meta_db_use");
   refreshPersonVersionInfo(false);
+  refreshMetaDbSchemaInfo(metaDbSchemaInitialCheck);
+  refreshMetaDbSchemaBackups();
+  metaDbSchemaInitialCheck = false;
 
   set_pg_conn_type_view("{{arg.get('meta_db_pg_conn_type') or 'tcp'}}");
   $('input[type=radio][name="meta_db_pg_conn_type"]').change(function(){
     set_pg_conn_type_view(this.value);
   });
+
+  $(document).on('click', '#btn_meta_db_schema_migrate', function(e){
+      e.preventDefault();
+      if (!confirm('통합 메타 DB를 백업한 뒤 v1 구조로 변환합니다. 계속하시겠습니까?')) return;
+
+      var $btn = $(this);
+      $btn.prop('disabled', true);
+
+      $('#meta_db_schema_progress').slideDown(150);
+      $('#meta_db_schema_progress_status').text('마이그레이션 준비 중...');
+      $('#meta_db_schema_progress_percent').text('0.0%');
+      $('#meta_db_schema_progress_bar').css('width', '0%').text('0%').addClass('progress-bar-animated bg-primary').removeClass('bg-success bg-warning bg-danger');
+      $('#meta_db_schema_progress_stats').text('준비 중...');
+      $('#meta_db_schema_progress_target').text('-');
+
+      $.ajax({
+        url: '/' + package_name + '/meta_api',
+        type: 'POST',
+        cache: false,
+        global: false,
+        data: { command: 'meta_db_schema_migrate' },
+        dataType: 'json',
+        success: function(ret){
+          if (typeof notify === 'function') {
+            notify(ret.msg || '마이그레이션 요청 완료', ret.ret === 'success' ? 'info' : 'warning');
+          }
+          refreshMetaDbSchemaInfo(false);
+          connectMetaDbSchemaSSE();
+        },
+        error: function(xhr, status, error){
+          $btn.prop('disabled', false);
+          if (typeof notify === 'function') notify('마이그레이션 요청 실패: ' + error, 'warning');
+        }
+      });
+  });
+
+  $(document).on('click', '#btn_meta_db_schema_migrate_stop', function(e){
+      e.preventDefault();
+      if (!confirm('현재 커밋 완료 지점까지 저장하고 마이그레이션을 중단하시겠습니까?')) return;
+
+      var $btn = $(this);
+      $btn.prop('disabled', true);
+
+      $.ajax({
+        url: '/' + package_name + '/meta_api',
+        type: 'POST',
+        cache: false,
+        global: false,
+        data: { command: 'meta_db_schema_migrate_stop' },
+        dataType: 'json',
+        success: function(ret){
+          if (typeof notify === 'function') {
+            notify(ret.msg || '중단 요청 완료', ret.ret === 'success' ? 'info' : 'warning');
+          }
+        },
+        error: function(xhr, status, error){
+          $btn.prop('disabled', false);
+          if (typeof notify === 'function') notify('중단 요청 실패: ' + error, 'warning');
+        }
+      });
+  });
+
+
 });
 
 function set_pg_conn_type_view(val) {
@@ -268,24 +571,161 @@ $(document).on('click', '#btn_check_jav_actors_version', function(e){
   refreshPersonVersionInfo(true);
 });
 
-// 수동 동기화 실행 버튼 클릭 핸들러
-$(document).on('click', '#btn_sync_jav_actors_setting', function(e){
-  e.preventDefault();
-  if (!confirm("배우 배포 DB 데이터를 동기화하고 중복 레코드를 단일 마스터 인물로 통합하시겠습니까?")) return;
+// DB maintenance requests return immediately; state is read from the worker's shared snapshot.
+var metaDbMaintenanceTimer = null;
+var metaDbMaintenancePending = false;
+var metaDbMaintenancePolling = false;
+var metaDbMaintenanceBusy = false;
+var metaDbMaintenanceMigrating = false;
+var metaDbMaintenanceLastStatus = null;
+var metaDbMaintenanceExpectedJobId = null;
 
-  var btn = $(this);
-  var origText = btn.text();
-  btn.prop('disabled', true).text('동기화 & 통합 중...');
-  
-  globalSendCommand('person_sync_jav_actors', null, null, null, function(ret){
-    btn.prop('disabled', false).text(origText);
-    notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
-    if (ret && ret.version_info) {
-      updatePersonVersionInfo(ret.version_info);
-    } else {
-      refreshPersonVersionInfo(false);
+function setMetaDbMaintenanceBusy(busy) {
+  metaDbMaintenanceBusy = busy;
+  $('#btn_sync_jav_actors_setting, #btn_meta_db_schema_backup, #btn_meta_db_schema_restore')
+    .prop('disabled', busy || metaDbMaintenanceMigrating);
+  $('#btn_meta_db_schema_migrate').prop('disabled', busy || metaDbMaintenanceMigrating);
+}
+
+function updateMetaDbMaintenanceProgress(status) {
+  if (!status || !status.operation) return;
+  var total = Number(status.total || 0);
+  var current = Number(status.current || 0);
+  var determinate = total > 0 || typeof status.percent === 'number';
+  var percent = typeof status.percent === 'number' ? status.percent : (total > 0 ? current / total * 100 : 0);
+  percent = Math.max(0, Math.min(100, percent));
+  var label = determinate ? percent.toFixed(1) + '%' : (status.is_running ? '진행 중' : '-');
+  var $bar = $('#meta_db_maintenance_progress_bar');
+  $('#meta_db_maintenance_progress').show();
+  $('#meta_db_maintenance_progress_status').text(status.status || '작업 진행 중...');
+  $('#meta_db_maintenance_progress_percent').text(label);
+  $bar.css('width', determinate ? percent + '%' : '100%').text(determinate ? label : '');
+  $bar.removeClass('bg-primary bg-success bg-warning bg-danger progress-bar-animated');
+  $bar.addClass(status.is_running ? 'bg-primary progress-bar-animated' :
+    (status.phase === 'failed' ? 'bg-danger' : 'bg-success'));
+  if (determinate) $bar.attr('aria-valuenow', percent); else $bar.removeAttr('aria-valuenow');
+  var stats = total > 0 ? '진행: ' + current.toLocaleString() + ' / ' + total.toLocaleString() : '처리 중...';
+  if (!status.is_running && total <= 0) stats = status.phase === 'failed' ? '작업 실패' : '작업 종료';
+  if (status.operation === 'actor_sync') {
+    stats += ' | 신규: ' + (status.inserted || 0).toLocaleString() +
+      ' | 갱신: ' + (status.updated || 0).toLocaleString() +
+      ' | 제외: ' + (status.skipped || 0).toLocaleString();
+  } else if (status.total_targets) {
+    stats += ' | DB: ' + (status.completed_targets || 0) + ' / ' + status.total_targets;
+  }
+  $('#meta_db_maintenance_progress_stats').text(stats);
+  $('#meta_db_maintenance_progress_target').text(status.current_db || '-');
+  $('#meta_db_maintenance_progress_detail').text(status.last_error || status.message || '');
+}
+
+function scheduleMetaDbMaintenancePoll() {
+  if (metaDbMaintenanceTimer) clearTimeout(metaDbMaintenanceTimer);
+  metaDbMaintenanceTimer = setTimeout(refreshMetaDbMaintenanceStatus, 1500);
+}
+
+function refreshMetaDbMaintenanceStatus() {
+  if (metaDbMaintenancePolling || metaDbMaintenancePending) {
+    scheduleMetaDbMaintenancePoll();
+    return;
+  }
+  metaDbMaintenancePolling = true;
+  $.ajax({
+    url: '/' + package_name + '/meta_api', type: 'POST', cache: false, global: false,
+    dataType: 'json', data: { command: 'meta_db_maintenance_status' },
+    success: function(ret) {
+      if (metaDbMaintenancePending) return;
+      if (!ret || ret.ret !== 'success') { scheduleMetaDbMaintenancePoll(); return; }
+      var status = ret.data || {};
+      if (metaDbMaintenanceExpectedJobId && status.job_id !== metaDbMaintenanceExpectedJobId) {
+        scheduleMetaDbMaintenancePoll();
+        return;
+      }
+      if (!status.is_running) metaDbMaintenanceExpectedJobId = null;
+      var previous = metaDbMaintenanceLastStatus;
+      metaDbMaintenanceLastStatus = status;
+      updateMetaDbMaintenanceProgress(status);
+      setMetaDbMaintenanceBusy(!!status.is_running);
+      if (status.is_running) {
+        scheduleMetaDbMaintenancePoll();
+      } else if (previous && previous.is_running &&
+                 (!previous.job_id || previous.job_id === status.job_id)) {
+        if (typeof notify === 'function') {
+          notify(status.last_error || status.message || status.status || '작업 종료',
+                 status.phase === 'failed' ? 'warning' : 'success');
+        }
+        if (status.operation === 'actor_sync') refreshPersonVersionInfo(false);
+        if (status.operation === 'backup' || status.operation === 'restore') refreshMetaDbSchemaBackups();
+        if (status.operation === 'restore') refreshMetaDbSchemaInfo(false);
+      }
+      if (!status.is_running) {
+        if (metaDbMaintenanceTimer) clearTimeout(metaDbMaintenanceTimer);
+        metaDbMaintenanceTimer = setTimeout(refreshMetaDbMaintenanceStatus, 5000);
+      }
+    },
+    error: function() { scheduleMetaDbMaintenancePoll(); },
+    complete: function() { metaDbMaintenancePolling = false; }
+  });
+}
+
+function startMetaDbMaintenance(command, operation, args) {
+  if (metaDbMaintenancePending || metaDbMaintenanceBusy || metaDbMaintenanceMigrating) return;
+  metaDbMaintenancePending = true;
+  setMetaDbMaintenanceBusy(true);
+  var starting = {operation: operation, is_running: true, phase: 'queued', status: '작업 요청 중...', current: 0, total: 0};
+  metaDbMaintenanceLastStatus = starting;
+  updateMetaDbMaintenanceProgress(starting);
+  $.ajax({
+    url: '/' + package_name + '/meta_api', type: 'POST', cache: false, global: false,
+    dataType: 'json', data: $.extend({command: command}, args || {}),
+    success: function(ret) {
+      if (ret && ret.ret === 'success' && ret.data && ret.data.job_id) {
+        metaDbMaintenanceExpectedJobId = ret.data.job_id;
+        metaDbMaintenanceLastStatus.job_id = ret.data.job_id;
+      }
+      if (!ret || ret.ret !== 'success') {
+        metaDbMaintenanceExpectedJobId = null;
+        var failed = {operation: operation, is_running: false, phase: 'failed', status: '작업 요청 실패',
+                      last_error: (ret && ret.msg) || '작업 요청 실패'};
+        metaDbMaintenanceLastStatus = failed;
+        updateMetaDbMaintenanceProgress(failed);
+        if (typeof notify === 'function') notify(failed.last_error, 'warning');
+      }
+    },
+    error: function() {
+      if (typeof notify === 'function') notify('작업 요청 응답을 받지 못했습니다. 서버의 진행 상태를 다시 확인합니다.', 'warning');
+    },
+    complete: function() {
+      metaDbMaintenancePending = false;
+      refreshMetaDbMaintenanceStatus();
     }
   });
+}
+
+$(document).on('click', '#btn_sync_jav_actors_setting', function(e) {
+  e.preventDefault();
+  if (!confirm('배우 배포 DB 데이터를 동기화하고 중복 인물 정보를 통합하시겠습니까?')) return;
+  startMetaDbMaintenance('person_sync_jav_actors', 'actor_sync');
+});
+
+$(document).on('click', '#btn_meta_db_schema_backup', function(e) {
+  e.preventDefault();
+  if (!confirm('현재 상태의 메타 DB 전체 수동 백업을 생성하시겠습니까?')) return;
+  startMetaDbMaintenance('meta_db_schema_backup', 'backup');
+});
+
+$(document).on('click', '#btn_meta_db_schema_restore', function(e) {
+  e.preventDefault();
+  var path = $('#meta_db_restore_backup').val();
+  if (!path) { if (typeof notify === 'function') notify('복원할 백업을 먼저 선택하세요.', 'warning'); return; }
+  if (!confirm('선택한 백업으로 현재 메타 DB를 덮어씁니다. 계속하시겠습니까?')) return;
+  startMetaDbMaintenance('meta_db_schema_restore', 'restore', {arg1: 'ALL', arg2: path});
+});
+
+$(document).ready(function() {
+  refreshMetaDbMaintenanceStatus();
+});
+$(window).on('beforeunload', function() {
+  if (metaDbMaintenanceTimer) clearTimeout(metaDbMaintenanceTimer);
 });
 
 </script>

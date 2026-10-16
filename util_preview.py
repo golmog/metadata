@@ -12,6 +12,7 @@ import traceback
 import requests
 import shutil
 from io import BytesIO
+from datetime import datetime
 
 from .setup import *
 
@@ -20,6 +21,9 @@ class MetaPreviewUtil:
     _token_cache = {}
     _impersonate_indices = {}
     _rotation_lock = threading.Lock()
+    _remote_dir_cache = {}
+    _local_dir_cache = {}
+    MAX_DIR_CACHE_SIZE = 300
 
     @classmethod
     def get_setting(cls, key, category='JAV_CEN', default=''):
@@ -31,9 +35,10 @@ class MetaPreviewUtil:
         else:
             module_pfx = 'jav_censored'
 
-        val = P.ModelSetting.get(f"{module_pfx}_{key}")
-        if val is None or str(val).strip() == '':
-            val = P.ModelSetting.get(f"jav_censored_{key}")
+        # Category switches are read by is_enabled/is_auto_create_enabled.
+        # Storage roots, playback, encoders and rclone are shared UI settings.
+        key = {'preview_rclone_conf': 'rclone_conf', 'preview_rclone_remote': 'preview_gdrive_remote_path'}.get(key, key)
+        val = P.ModelSetting.get(f'jav_censored_{key}')
         return val if val is not None else default
 
     @classmethod
@@ -51,6 +56,36 @@ class MetaPreviewUtil:
         cat_upper = str(category or 'JAV_CEN').upper()
         module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
         return P.ModelSetting.get_bool(f"{module_pfx}_preview_auto_create")
+
+    @classmethod
+    def is_trailer_download_enabled(cls, category='JAV_CEN'):
+        """트레일러 영상 자동 다운로드 활성화 여부"""
+        if not cls.is_enabled(category):
+            return False
+        cat_upper = str(category or 'JAV_CEN').upper()
+        module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
+        return P.ModelSetting.get_bool(f"{module_pfx}_video_auto_download_trailer")
+
+    @classmethod
+    def is_delete_video_on_meta_delete_enabled(cls, category='JAV_CEN'):
+        """메타데이터 삭제 시 영상 파일도 함께 삭제할지 여부"""
+        if not cls.is_enabled(category):
+            return False
+        cat_upper = str(category or 'JAV_CEN').upper()
+        module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
+        return P.ModelSetting.get_bool(f"{module_pfx}_video_delete_on_metadata_delete")
+
+    @classmethod
+    def get_ffprobe_path(cls, category='JAV_CEN'):
+        """FFmpeg 경로와 동일 디렉토리에서 ffprobe 바이너리를 우선 자동 탐색"""
+        ffmpeg_bin = cls.get_setting("preview_ffmpeg_path", category, default="ffmpeg")
+        if os.path.isabs(ffmpeg_bin) or os.path.dirname(ffmpeg_bin):
+            bin_dir = os.path.dirname(ffmpeg_bin)
+            probe_name = "ffprobe.exe" if os.name == 'nt' else "ffprobe"
+            candidate = os.path.join(bin_dir, probe_name)
+            if os.path.exists(candidate):
+                return candidate
+        return "ffprobe"
 
     @classmethod
     def get_video_duration(cls, filepath, ffprobe_path='ffprobe'):
@@ -105,7 +140,7 @@ class MetaPreviewUtil:
             return False, "원본 영상 파일이 존재하지 않습니다."
 
         ffmpeg_bin = cls.get_setting("preview_ffmpeg_path", category, default="ffmpeg")
-        ffprobe_bin = cls.get_setting("preview_ffprobe_path", category, default="ffprobe")
+        ffprobe_bin = cls.get_ffprobe_path(category)
         total_duration = int(cls.get_setting("preview_duration", category, default="60"))
         include_audio = cls.get_setting("preview_include_audio", category, default="False") == "True"
 
@@ -223,14 +258,26 @@ class MetaPreviewUtil:
                     logger.debug(f"[MetaPreview] 임시 컷팅 폴더 정리 예외: {e_clean}")
 
     @classmethod
-    def get_preview_relative_path(cls, item, category='JAV_CEN'):
-        """카테고리별 표준 계층 경로 및 파일명 반환 ({카테고리}/{label_1|studio_1}/{label|studio}/{code}_preview.mp4)"""
+    def get_video_relative_path(cls, item_or_dict, video_type='preview', category='JAV_CEN'):
+        """카테고리별 표준 계층 경로 및 비디오 파일명 반환 ({카테고리}/{label_1|studio_1}/{label|studio}/{code}_{type}.mp4)"""
         cat_upper = str(category or 'JAV_CEN').upper()
-        code_clean = (item.code or item.ui_code or 'unknown').strip()
-        filename = f"{code_clean}_preview.mp4"
+        if isinstance(item_or_dict, dict):
+            code_clean = (item_or_dict.get('code') or item_or_dict.get('ui_code') or 'unknown').strip()
+            ui_code = (item_or_dict.get('ui_code') or item_or_dict.get('originaltitle') or item_or_dict.get('code') or '').strip()
+            studio_raw = (item_or_dict.get('studio') or 'Unknown').strip()
+            label_raw = (item_or_dict.get('label') or '').strip().upper()
+        else:
+            code_clean = (getattr(item_or_dict, 'code', '') or getattr(item_or_dict, 'ui_code', '') or 'unknown').strip()
+            ui_code = (getattr(item_or_dict, 'ui_code', '') or getattr(item_or_dict, 'originaltitle', '') or getattr(item_or_dict, 'code', '') or '').strip()
+            studio_raw = (getattr(item_or_dict, 'studio', '') or 'Unknown').strip()
+            label_raw = (getattr(item_or_dict, 'label', '') or '').strip().upper()
+
+        suffix = "trailer" if video_type == 'trailer' else "preview"
+        filename = f"{code_clean}_{suffix}.mp4"
+
+        from support_site import SiteAvBase
 
         if cat_upper == 'WESTERN':
-            studio_raw = (item.studio or 'Unknown').strip()
             safe_studio = re.sub(r'[^A-Za-z0-9가-힣]', '_', studio_raw).strip('_') or 'Unknown'
             studio_1 = safe_studio[0].upper() if safe_studio else 'ETC'
             if studio_1.isdigit():
@@ -238,81 +285,451 @@ class MetaPreviewUtil:
             rel_dir = f"western/{studio_1}/{safe_studio}"
 
         elif cat_upper == 'JAV_UNCEN':
-            label_raw = (item.label or (item.ui_code.split('-')[0] if '-' in (item.ui_code or '') else '') or 'ETC').strip().upper()
-            rel_dir = f"jav_uncen/{label_raw}"
+            clean_label = label_raw
+            if not clean_label:
+                if '-' in ui_code:
+                    clean_label = ui_code.split('-')[0].strip().upper()
+                else:
+                    parsed_ui, _, _ = SiteAvBase._parse_ui_code(ui_code, category='JAV_UNCEN')
+                    clean_label = parsed_ui.split('-')[0].strip().upper() if '-' in parsed_ui else 'ETC'
+            rel_dir = f"jav_uncen/{clean_label}"
 
         else:
             # JAV_CEN
-            ui_code = item.ui_code or item.code or ''
-            label_raw = (ui_code.split('-')[0] if '-' in ui_code else 'ETC').strip().upper()
-            label_1 = label_raw[0] if label_raw else 'ETC'
-            if label_raw.startswith('741') or label_1.isdigit():
+            clean_label = label_raw
+            if not clean_label:
+                if '-' in ui_code:
+                    clean_label = ui_code.split('-')[0].strip().upper()
+                else:
+                    parsed_ui, _, _ = SiteAvBase._parse_ui_code(ui_code, category='JAV_CEN')
+                    clean_label = parsed_ui.split('-')[0].strip().upper() if '-' in parsed_ui else 'ETC'
+            label_1 = clean_label[0] if clean_label else 'ETC'
+            if clean_label.startswith('741') or label_1.isdigit():
                 label_1 = '09'
-            rel_dir = f"jav_cen/{label_1}/{label_raw}"
+            rel_dir = f"jav_cen/{label_1}/{clean_label}"
 
         return rel_dir, filename
 
+    @classmethod
+    def get_preview_relative_path(cls, item, category='JAV_CEN'):
+        """기존 프리뷰 전용 상대 경로 헬퍼 호환 유지"""
+        return cls.get_video_relative_path(item, video_type='preview', category=category)
+
 
     @classmethod
-    def upload_to_gdrive(cls, local_clip_path, dest_rel_path, category='JAV_CEN'):
-        if not local_clip_path or not os.path.exists(local_clip_path):
-            return None, "로컬 클립 파일이 없습니다."
+    def get_stored_video(cls, item_or_dict, video_type, storage_type, category='JAV_CEN'):
+        """Read the selected storage's recorded asset without rewriting other storage."""
+        from urllib.parse import parse_qs, urlparse
+        extra = item_or_dict.get('extra_info', {}) if isinstance(item_or_dict, dict) else item_or_dict.extra_info or {}
+        key = 'trailer_video' if video_type == 'trailer' else 'preview_clip'
+        info = extra.get(key) or {}
+        if info.get('storage_type', 'local') == storage_type and info:
+            return dict(info)
+        rows = item_or_dict.get('media_files', []) if isinstance(item_or_dict, dict) else item_or_dict.media_files
+        for row in rows:
+            def value(key):
+                return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+            if value('media_type') != video_type or not value('relative_path'):
+                continue
+            fid = value('gdrive_fileid')
+            if bool(fid) != (storage_type == 'gdrive'):
+                continue
+            relative = value('relative_path')
+            result = dict(storage_type=storage_type, relative_path=relative,
+                          filename=relative.replace('\\', '/').rsplit('/', 1)[-1],
+                          google_fileid=fid or '', local_path='')
+            if storage_type == 'local':
+                query = parse_qs(urlparse(value('url') or '').query)
+                if query.get('mode') != ['preview_local'] or not query.get('path'):
+                    continue
+                result['local_path'] = query['path'][0]
+            return result
+        return None
 
-        rclone_bin = cls.get_setting("preview_rclone_path", category, default="rclone")
-        rclone_conf = cls.get_setting("preview_rclone_conf", category, default="/root/.config/rclone/rclone.conf")
-        
-        # 업로드 전용 리모트 경로 설정
-        target_remote_path = (
-            cls.get_setting("preview_rclone_upload_remote", category, default="") or
-            cls.get_setting("preview_rclone_target_path", category, default="")
-        ).rstrip('/')
-        extra_options = cls.get_setting("preview_rclone_options", category, default="")
+    @classmethod
+    def get_video_stream_url(cls, clip_info, item_or_dict, video_type='preview', category='JAV_CEN'):
+        """저장된 영상 클립(프리뷰 또는 트레일러)의 최종 서빙/스트리밍 웹 URL 생성"""
+        if not clip_info or not isinstance(clip_info, dict):
+            return ''
 
-        if not target_remote_path:
-            return None, "rclone 업로드 리모트 경로가 설정되지 않았습니다."
+        storage_type = clip_info.get('storage_type', 'local')
+        file_id = clip_info.get('google_fileid')
+        local_path = clip_info.get('local_path')
 
-        dest_remote_file = f"{target_remote_path}/{dest_rel_path.strip('/')}"
+        ddns_host = (F.SystemModelSetting.get('ddns') or '').rstrip('/')
+        cat_upper = str(category or 'JAV_CEN').upper()
+        is_uncen = (cat_upper == 'JAV_UNCEN')
+        video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
 
-        cmd = [rclone_bin, "--config", rclone_conf, "moveto", local_clip_path, dest_remote_file]
+        # 구글 드라이브 저장 방식
+        if storage_type == 'gdrive' and file_id:
+            return f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_gdrive&fileid={file_id}&cat={cat_upper}"
+
+        # 로컬 디렉토리 저장 방식
+        if storage_type == 'local' and local_path:
+            # Local videos always use the FF streaming proxy.
+            from urllib.parse import quote_plus
+            return f"{ddns_host}/metadata/normal/{video_endpoint}?mode=preview_local&path={quote_plus(local_path)}"
+
+        return ''
+
+
+    @classmethod
+    def normalize_rclone_remote_name(cls, remote_str):
+        """리모트 문자열 끝에 콜론(:)이 없으면 자동으로 붙여 Rclone 표준 리모트명으로 변환"""
+        if not remote_str or not isinstance(remote_str, str):
+            return ''
+        clean = remote_str.strip()
+        if not clean:
+            return ''
+        if ':' not in clean:
+            return f"{clean}:"
+        return clean
+
+
+    _remote_file_paths = {}
+    MAX_REMOTE_PATH_CACHE_SIZE = 16384
+
+    @classmethod
+    def _remember_remote_path(cls, file_id, relative_path, category, is_image):
+        key = (str(category).upper(), bool(is_image), str(file_id))
+        if key not in cls._remote_file_paths and len(cls._remote_file_paths) >= cls.MAX_REMOTE_PATH_CACHE_SIZE:
+            cls._remote_file_paths.pop(next(iter(cls._remote_file_paths)), None)
+        cls._remote_file_paths[key] = relative_path
+
+    @classmethod
+    def get_recorded_remote_path(cls, file_id, default='', category='JAV_CEN', is_image=False):
+        return cls._remote_file_paths.get((str(category).upper(), bool(is_image), str(file_id)), default)
+
+    @classmethod
+    def clear_dir_cache(cls):
+        """배치 작업 시작/종료 시 메모리 디렉터리 캐시 초기화"""
+        cls._remote_file_paths.clear()
+        cls._remote_dir_cache.clear()
+        cls._local_dir_cache.clear()
+
+    @classmethod
+    def get_remote_file_id(cls, dest_rel_path, category='JAV_CEN', is_image=False, use_dir_cache=False):
+        """원격 구글 드라이브 경로의 파일 존재 여부를 사전 확인하고 File ID를 반환 (부재 시 None)."""
+        if not dest_rel_path:
+            return None
+
+        clean_path = dest_rel_path.replace('\\', '/').strip('/')
+        cat_upper = str(category or 'JAV_CEN').upper()
+
+        # Share folder observations with user-image discovery in storage synchronization.
+        if use_dir_cache:
+            files = cls.get_remote_directory_files(os.path.dirname(clean_path), category=cat_upper,
+                                                   is_image=is_image, use_cache=True)
+            return files.get(os.path.basename(clean_path).lower())
+
+        # 단일 파일 stat 조회 모드
+        rclone_bin = cls.get_setting("rclone_path", cat_upper, default="rclone")
+        rclone_conf = cls.get_setting("rclone_conf", cat_upper, default="/data/db/rclone.conf")
+        module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
+
+        if is_image:
+            raw_upload_remote = (
+                P.ModelSetting.get("jav_censored_image_gdrive_remote_path") or ""
+            ).strip()
+        else:
+            raw_upload_remote = (
+                cls.get_setting("preview_gdrive_remote_path", cat_upper, default="") or
+                cls.get_setting("preview_video_folder_id", cat_upper, default="")
+            ).strip()
+
+        if not raw_upload_remote:
+            return None
+
+        dest_remote_file = cls.build_rclone_target_remote_path(raw_upload_remote, dest_rel_path=dest_rel_path)
+        if not dest_remote_file:
+            return None
+
+        try:
+            cmd = [rclone_bin, "--config", rclone_conf, "lsjson", "--stat", dest_remote_file]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+            if res.returncode == 0 and res.stdout.strip():
+                parsed = json.loads(res.stdout.strip())
+                item_obj = parsed[0] if isinstance(parsed, list) and parsed else parsed
+                if isinstance(item_obj, dict):
+                    fid = item_obj.get('ID') or item_obj.get('id')
+                    actual_name = item_obj.get('Name') or item_obj.get('Path') or os.path.basename(clean_path)
+                    cls._remember_remote_path(fid, '/'.join(
+                        part for part in (os.path.dirname(clean_path), os.path.basename(actual_name)) if part), cat_upper, is_image)
+                    return fid
+        except Exception as exc:
+            logger.debug(f"[MetaPreview] 원격 File ID 사전 조회 예외 ({dest_remote_file}): {exc}")
+        return None
+
+    @classmethod
+    def get_remote_directory_files(cls, rel_dir, category='JAV_CEN', is_image=False, use_cache=False):
+        key = (str(category).upper(), bool(is_image), rel_dir)
+        if use_cache and key in cls._remote_dir_cache:
+            return cls._remote_dir_cache[key]
+        files = cls._load_remote_directory_file_map(rel_dir, category=category, is_image=is_image)
+        if use_cache:
+            if len(cls._remote_dir_cache) >= cls.MAX_DIR_CACHE_SIZE:
+                cls._remote_dir_cache.pop(next(iter(cls._remote_dir_cache)), None)
+            cls._remote_dir_cache[key] = files
+        return files
+
+    @classmethod
+    def register_remote_file(cls, dest_rel_path, file_id, category='JAV_CEN', is_image=False):
+        """새로 업로드되거나 갱신된 파일 ID를 메모리 캐시에 즉시 반영"""
+        if not dest_rel_path or not file_id:
+            return
+
+        cls._remember_remote_path(file_id, dest_rel_path.replace('\\', '/').strip('/'), category, is_image)
+        clean_path = dest_rel_path.replace('\\', '/').strip('/')
+        dir_name = os.path.dirname(clean_path)
+        file_name = os.path.basename(clean_path).lower()
+        cat_upper = str(category or 'JAV_CEN').upper()
+        cache_key = (cat_upper, bool(is_image), dir_name)
+
+        if cache_key not in cls._remote_dir_cache:
+            cls._remote_dir_cache[cache_key] = {}
+
+        cls._remote_dir_cache[cache_key][file_name] = file_id
+
+    @classmethod
+    def has_local_file(cls, full_filepath, use_cache=False):
+        """로컬 파일 경로의 존재 여부 확인 (캐시 옵션 지원)"""
+        if not full_filepath:
+            return False
+        if not use_cache:
+            return os.path.exists(full_filepath)
+
+        norm_path = os.path.abspath(full_filepath)
+        dir_path = os.path.dirname(norm_path)
+        file_name = os.path.basename(norm_path).lower()
+
+        if dir_path not in cls._local_dir_cache:
+            if len(cls._local_dir_cache) >= cls.MAX_DIR_CACHE_SIZE:
+                oldest_local_key = next(iter(cls._local_dir_cache))
+                del cls._local_dir_cache[oldest_local_key]
+
+            if os.path.isdir(dir_path):
+                try:
+                    self_files = {f.lower() for f in os.listdir(dir_path)}
+                    cls._local_dir_cache[dir_path] = self_files
+                except Exception:
+                    cls._local_dir_cache[dir_path] = set()
+            else:
+                cls._local_dir_cache[dir_path] = set()
+
+        return file_name in cls._local_dir_cache[dir_path]
+
+    @classmethod
+    def register_local_file(cls, full_filepath):
+        """새로 생성된 로컬 파일을 디렉터리 캐시에 등록"""
+        if not full_filepath:
+            return
+
+        norm_path = os.path.abspath(full_filepath)
+        dir_path = os.path.dirname(norm_path)
+        file_name = os.path.basename(norm_path).lower()
+
+        if dir_path not in cls._local_dir_cache:
+            cls._local_dir_cache[dir_path] = set()
+
+        cls._local_dir_cache[dir_path].add(file_name)
+
+    @classmethod
+    def _load_remote_directory_file_map(cls, rel_dir, category='JAV_CEN', is_image=False):
+        """rclone lsjson 명령으로 해당 디렉터리의 전체 파일명과 File ID를 1회 단일 쿼리로 수집"""
+        cat_upper = str(category or 'JAV_CEN').upper()
+        rclone_bin = cls.get_setting("rclone_path", cat_upper, default="rclone")
+        rclone_conf = cls.get_setting("rclone_conf", cat_upper, default="/data/db/rclone.conf")
+        module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
+
+        if is_image:
+            raw_upload_remote = (
+                P.ModelSetting.get("jav_censored_image_gdrive_remote_path") or ""
+            ).strip()
+        else:
+            raw_upload_remote = (
+                cls.get_setting("preview_gdrive_remote_path", cat_upper, default="") or
+                cls.get_setting("preview_video_folder_id", cat_upper, default="")
+            ).strip()
+
+        if not raw_upload_remote:
+            return {}
+
+        remote_target_dir = cls.build_rclone_target_remote_path(raw_upload_remote, dest_rel_path=rel_dir)
+        if not remote_target_dir:
+            return {}
+
+        cmd = [rclone_bin, "--config", rclone_conf, "lsjson", remote_target_dir]
+        logger.debug(f"[MetaPreview] 원격 폴더 파일 목록 1회 일괄 적재 시작 ➔ {remote_target_dir}")
+
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=25)
+            if res.returncode == 0 and res.stdout.strip():
+                items = json.loads(res.stdout.strip())
+                file_map = {}
+                for it in items:
+                    if isinstance(it, dict) and not it.get('IsDir'):
+                        fname = it.get('Name') or it.get('Path')
+                        fid = it.get('ID') or it.get('id')
+                        if fname and fid:
+                            file_map[fname.lower()] = fid
+                            cls._remember_remote_path(fid, f'{rel_dir}/{fname}'.strip('/'), cat_upper, is_image)
+                logger.debug(f"[MetaPreview] 원격 폴더 캐시 적재 완료 ({len(file_map)}개 파일): {remote_target_dir}")
+                return file_map
+        except Exception as exc:
+            logger.debug(f"[MetaPreview] 원격 폴더 목록 조회 실패 ({remote_target_dir}): {exc}")
+
+        return {}
+
+
+    @classmethod
+    def build_rclone_target_remote_path(cls, remote_str, dest_rel_path=""):
+        """리모트 경로 루트와 상대 경로를 문자열로 단순 결합 (포맷 앞의 슬래시 정제)"""
+        if not remote_str or not isinstance(remote_str, str):
+            return None
+        clean_remote = remote_str.strip()
+        if not clean_remote:
+            return None
+
+        # 콜론이 없으면 기본 리모트명으로 간주하여 콜론 추가
+        if ':' not in clean_remote:
+            clean_remote = f"{clean_remote}:"
+
+        clean_rel = str(dest_rel_path or '').replace('\\', '/').strip('/')
+        if '..' in clean_rel.split('/'):
+            raise ValueError('Remote asset path escapes its root')
+        if not clean_rel:
+            return clean_remote
+
+        # 리모트가 콜론으로 끝나면 슬래시 없이 바로 연결 (예: mydrive: + jav/cen -> mydrive:jav/cen)
+        if clean_remote.endswith(':'):
+            return f"{clean_remote}{clean_rel}"
+        # 리모트 뒤에 서브 경로가 있는 경우 슬래시로 연결 (예: mydrive:images + jav/cen -> mydrive:images/jav/cen)
+        return f"{clean_remote.rstrip('/')}/{clean_rel}"
+
+
+    @classmethod
+    def sync_file_to_gdrive(cls, local_path, dest_rel_path, category='JAV_CEN', overwrite=True, is_image=False):
+        """
+        구글 드라이브 통합 업로드 파이프라인:
+        원격 파일 사전 검사 -> 존재 시 ID만 추출 후 스킵 -> 교체 시 임시 리네임 후 직업로드 -> 새 ID 검증 -> 구파일 비동기 삭제
+        """
+        if not local_path or not os.path.exists(local_path):
+            return None, "로컬 파일이 존재하지 않습니다."
+
+        cat_upper = str(category or 'JAV_CEN').upper()
+        rclone_bin = cls.get_setting("rclone_path", cat_upper, default="rclone")
+        rclone_conf = cls.get_setting("rclone_conf", cat_upper, default="/data/db/rclone.conf")
+
+        module_pfx = 'western' if cat_upper in ['WESTERN', 'WEST'] else ('jav_uncensored' if cat_upper in ['JAV_UNCEN', 'UNCENSORED'] else 'jav_censored')
+
+        if is_image:
+            raw_upload_remote = (
+                P.ModelSetting.get("jav_censored_image_gdrive_remote_path") or ""
+            ).strip()
+        else:
+            raw_upload_remote = (
+                cls.get_setting("preview_gdrive_remote_path", cat_upper, default="") or
+                cls.get_setting("preview_video_folder_id", cat_upper, default="")
+            ).strip()
+
+        extra_options = cls.get_setting("rclone_options", cat_upper, default="")
+
+        if not raw_upload_remote:
+            return None, "구글 드라이브 리모트 경로 루트가 설정되지 않았습니다."
+
+        dest_remote_file = cls.build_rclone_target_remote_path(raw_upload_remote, dest_rel_path=dest_rel_path)
+        if not dest_remote_file:
+            return None, "유효하지 않은 Rclone 원격 대상 경로입니다."
+
+        def get_remote_file_stat(remote_target):
+            try:
+                cmd = [rclone_bin, "--config", rclone_conf, "lsjson", "--stat", remote_target]
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
+                if res.returncode == 0 and res.stdout.strip():
+                    parsed = json.loads(res.stdout.strip())
+                    item_obj = parsed[0] if isinstance(parsed, list) and parsed else parsed
+                    if isinstance(item_obj, dict):
+                        return item_obj.get('ID') or item_obj.get('id')
+            except Exception as exc:
+                logger.debug(f"[MetaPreview] 원격 파일 stat 조회 예외 ({remote_target}): {exc}")
+            return None
+
+        # 원격 파일 존재 여부 사전 검사
+        existing_fid = get_remote_file_stat(dest_remote_file)
+
+        # 이미 원격에 파일이 있고 덮어쓰기/재처리가 불필요한 경우: 다운로드/업로드 없이 File ID만 즉시 반환
+        if existing_fid and not overwrite:
+            logger.debug(f"[MetaPreview] 원격 파일 이미 존재 ➔ 즉시 기존 File ID 반환 및 스킵: {existing_fid} ({os.path.basename(dest_remote_file)})")
+            return existing_fid, "already_exists"
+
+        # 재처리/교체 대상인 경우: 기존 파일을 임시 백업 파일명으로 리네임
+        backup_remote_file = None
+        if existing_fid:
+            backup_remote_file = f"{dest_remote_file}.old_{int(time.time())}"
+            rename_cmd = [rclone_bin, "--config", rclone_conf, "moveto", dest_remote_file, backup_remote_file]
+            p_ren = subprocess.run(rename_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+            if p_ren.returncode != 0:
+                logger.warning(f"[MetaPreview] 기존 원격 파일 임시 리네임 실패 (직접 덮어쓰기 시도): {p_ren.stderr[:150]}")
+                backup_remote_file = None
+
+        # 정식 파일명으로 직접 업로드 실행
+        cmd = [rclone_bin, "--config", rclone_conf, "moveto", local_path, dest_remote_file]
         if extra_options:
             cmd.extend(extra_options.split())
 
-        logger.info(f"[MetaPreview] Rclone 구글 드라이브 업로드 시작: {dest_remote_file}")
+        logger.debug(f"[MetaPreview] Rclone 구글 드라이브 업로드 시작: {dest_remote_file}")
         try:
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
-            if p.returncode != 0:
-                logger.error(f"[MetaPreview] Rclone 업로드 실패: {p.stderr[-300:]}")
-                return None, p.stderr[-200:]
+            p_up = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
+            if p_up.returncode != 0:
+                logger.error(f"[MetaPreview] Rclone 업로드 실패: {p_up.stderr[-300:]}")
+                # 업로드 실패 시 백업해둔 기존 파일 원상 복구
+                if backup_remote_file:
+                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
+                return None, p_up.stderr[-200:]
 
-            max_retries = 5
-            retry_delay = 2
+            # 업로드 완료 후 신규 File ID 조회 및 검증
+            new_fid = None
+            for attempt in range(1, 6):
+                time.sleep(min(2.0, 0.5 * attempt))
+                new_fid = get_remote_file_stat(dest_remote_file)
+                if new_fid:
+                    break
 
-            for attempt in range(1, max_retries + 1):
-                time.sleep(retry_delay)
+            if not new_fid:
+                if backup_remote_file:
+                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
+                return None, "업로드 후 신규 Google File ID 획득 실패"
 
-                ls_cmd = [rclone_bin, "--config", rclone_conf, "lsjson", "--stat", dest_remote_file]
-                p_ls = subprocess.run(ls_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
-
-                if p_ls.returncode == 0 and p_ls.stdout.strip():
+            # 신규 파일 ID 교체가 정상 확인되면 임시 백업해둔 구파일을 비동기 스레드로 백그라운드 삭제
+            if backup_remote_file:
+                def run_async_remote_delete(target_path):
                     try:
-                        parsed_json = json.loads(p_ls.stdout.strip())
-                        item_obj = parsed_json[0] if isinstance(parsed_json, list) and parsed_json else parsed_json
-                        if isinstance(item_obj, dict):
-                            file_id = item_obj.get('ID') or item_obj.get('id')
-                            if file_id:
-                                logger.debug(f"[MetaPreview] Rclone 업로드 및 Google File ID 획득 성공 ({attempt}번째 시도): {file_id} ({os.path.basename(dest_remote_file)})")
-                                return file_id, None
-                    except Exception as e_json:
-                        logger.debug(f"[MetaPreview] lsjson 결과 파싱 중 예외: {e_json}")
+                        del_cmd = [rclone_bin, "--config", rclone_conf, "deletefile", target_path]
+                        subprocess.run(del_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                        logger.debug(f"[MetaPreview] 원격 구파일 정리 완료: {target_path}")
+                    except Exception as e_del:
+                        logger.debug(f"[MetaPreview] 원격 구파일 삭제 예외 (무시): {e_del}")
 
-                logger.warning(f"[MetaPreview] File ID 조회 미반영, 재시도 예정 ({attempt}/{max_retries})")
+                threading.Thread(target=run_async_remote_delete, args=(backup_remote_file,), daemon=True).start()
 
-            logger.error(f"[MetaPreview] {max_retries}회 재시도 후에도 Google File ID 획득 실패: {dest_remote_file}")
-            return None, "업로드 후 Google File ID 획득 실패 (재시도 초과)"
+            return new_fid, None
 
-        except Exception as e:
-            logger.error(f"[MetaPreview] Rclone 업로드 중 예외: {e}")
-            return None, str(e)
+        except Exception as exc:
+            logger.error(f"[MetaPreview] 업로드 중 예외 발생: {exc}")
+            if backup_remote_file:
+                try:
+                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
+                except Exception:
+                    pass
+            return None, str(exc)
+
+    @classmethod
+    def upload_to_gdrive(cls, local_clip_path, dest_rel_path, category='JAV_CEN'):
+        """기존 트레일러 업로드 호출을 통합 엔진으로 연결."""
+        fid, err = cls.sync_file_to_gdrive(local_clip_path, dest_rel_path, category=category, overwrite=True, is_image=False)
+        return fid, err
+
 
     @classmethod
     def delete_preview_clip(cls, clip_info, category='JAV_CEN'):
@@ -323,16 +740,24 @@ class MetaPreviewUtil:
 
         if storage_type == 'gdrive':
             file_id = clip_info.get('google_fileid')
+            if not file_id:
+                return False, '구글 드라이브 파일 ID가 없습니다.'
             if file_id:
                 rclone_conf = cls.get_setting("preview_rclone_conf", category, default="/root/.config/rclone/rclone.conf")
-                # 삭제 시에는 쓰기 권한이 있는 업로드 리모트 계정을 우선 참조
-                remote_name = (
-                    cls.get_setting("preview_rclone_upload_remote", category, default="").split(':')[0] or
-                    cls.get_setting("preview_rclone_playback_remote", category, default="") or
-                    cls.get_setting("preview_rclone_remote", category, default="my_gdrive")
+                # 동영상 리모트 경로 루트의 콜론(:) 앞부분에서 리모트명을 추출하고, 미지정 시 재생/스트리밍 전용 리모트로 폴백
+                video_remote_root = cls.get_setting("preview_gdrive_remote_path", category, default="").strip()
+                extracted_remote = video_remote_root.split(':', 1)[0].strip() if video_remote_root else ''
+
+                playback_remote = (
+                    cls.get_setting("preview_rclone_playback_remote", category, default="").split(':', 1)[0].strip() or
+                    cls.get_setting("preview_rclone_remote", category, default="my_gdrive").split(':', 1)[0].strip()
                 )
+
+                remote_name = extracted_remote or playback_remote
                 access_token = cls.get_gdrive_access_token(rclone_conf, remote_name)
 
+                if not access_token:
+                    return False, "구글 드라이브 삭제 인증 토큰을 가져오지 못했습니다."
                 if access_token:
                     del_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?supportsAllDrives=true"
                     headers = {"Authorization": f"Bearer {access_token}"}
@@ -343,64 +768,472 @@ class MetaPreviewUtil:
                         elif res.status_code == 404:
                             logger.debug(f"[MetaPreview] 구글 드라이브 파일이 이미 존재하지 않음 (FileID: {file_id})")
                         else:
-                            logger.warning(f"[MetaPreview] 구글 드라이브 파일 삭제 실패 (HTTP {res.status_code}): {res.text}")
+                            return False, f"구글 드라이브 파일 삭제 실패 (HTTP {res.status_code})"
                     except Exception as e_del:
-                        logger.error(f"[MetaPreview] 구글 드라이브 파일 삭제 API 예외: {e_del}")
+                        return False, f"구글 드라이브 파일 삭제 실패: {e_del}"
 
         local_path = clip_info.get('local_path')
-        if local_path and os.path.exists(local_path):
+        if storage_type == 'local' and local_path and os.path.exists(local_path):
             try:
                 os.remove(local_path)
                 logger.info(f"[MetaPreview] 로컬 프리뷰 파일 삭제 완료: {local_path}")
             except Exception as e_rm:
-                logger.error(f"[MetaPreview] 로컬 프리뷰 파일 삭제 실패: {e_rm}")
+                return False, f"로컬 영상 파일 삭제 실패: {e_rm}"
 
         return True, "기존 프리뷰 파일 삭제 완료"
 
     @classmethod
-    def process_preview_workflow(cls, code, source_video_path, category='JAV_CEN', force=False):
-        """기존 파일 삭제 ➔ FFmpeg 몽타주 추출 ➔ Rclone 업로드/로컬 이동 ➔ 실패 시 임시 파일 강제 정리 ➔ DB extra_info 갱신"""
+    def delete_video_assets(cls, extra_info, category='JAV_CEN', video_type=None):
+        """Delete selected video assets; None retains the existing bulk-delete API."""
+        if video_type not in (None, '', 'trailer', 'preview'):
+            return False, "유효하지 않은 영상 종류입니다."
+        if not extra_info or not isinstance(extra_info, dict):
+            return True, "삭제할 비디오 정보가 없습니다."
+        deleted = []
+        for kind, key, label in (('preview', 'preview_clip', '프리뷰'), ('trailer', 'trailer_video', '트레일러')):
+            if video_type and video_type != kind:
+                continue
+            if not extra_info.get(key):
+                continue
+            success, message = cls.delete_preview_clip(extra_info[key], category=category)
+            if not success:
+                return False, message
+            extra_info.pop(key, None)
+            deleted.append(label)
+        return True, ', '.join(deleted) + ' 삭제 완료' if deleted else '삭제할 비디오 파일 없음'
+
+    @classmethod
+    def check_and_adopt_existing_video(cls, item_or_dict, category='JAV_CEN'):
+        """
+        저장소(로컬 디렉토리)에 이미 프리뷰 클립 또는 트레일러 파일이 존재하면
+        신규 다운로드나 인코딩 없이 메타데이터 extra_info로 자동 흡수
+        """
+        if not cls.is_enabled(category):
+            return False
+
+        storage_type = cls.get_setting("preview_storage_type", category, default="local")
+        if storage_type != 'local':
+            return False
+
+        local_root = cls.get_setting("preview_local_path", category, default="/data/previews")
+        if not os.path.exists(local_root):
+            return False
+
+        if isinstance(item_or_dict, dict):
+            extra = item_or_dict.setdefault('extra_info', {})
+        else:
+            if not getattr(item_or_dict, 'extra_info', None):
+                item_or_dict.extra_info = {}
+            extra = item_or_dict.extra_info
+
+        changed = False
+
+        # 프리뷰 클립 자동 감지 및 흡수
+        if not extra.get('preview_clip'):
+            rel_dir, preview_filename = cls.get_video_relative_path(item_or_dict, video_type='preview', category=category)
+            full_preview_path = os.path.join(local_root, rel_dir.replace('/', os.path.sep), preview_filename)
+            if os.path.exists(full_preview_path) and os.path.getsize(full_preview_path) > 1024:
+                ffprobe_bin = cls.get_ffprobe_path(category)
+                dur = cls.get_video_duration(full_preview_path, ffprobe_bin)
+                extra['preview_clip'] = {
+                    'storage_type': 'local',
+                    'filename': preview_filename,
+                    'relative_path': f'{rel_dir}/{preview_filename}',
+                    'duration': int(round(dur)) if dur else 60,
+                    'created_time': datetime.fromtimestamp(os.path.getmtime(full_preview_path)).strftime('%Y-%m-%d %H:%M:%S'),
+                    'local_path': full_preview_path,
+                    'google_fileid': ''
+                }
+                changed = True
+                logger.info(f"[MetaPreview] 기존 로컬 프리뷰 클립 자동 감지 및 흡수 완료: {full_preview_path}")
+
+        # 트레일러 영상 자동 감지 및 흡수
+        if not extra.get('trailer_video'):
+            rel_dir, trailer_filename = cls.get_video_relative_path(item_or_dict, video_type='trailer', category=category)
+            full_trailer_path = os.path.join(local_root, rel_dir.replace('/', os.path.sep), trailer_filename)
+            if os.path.exists(full_trailer_path) and os.path.getsize(full_trailer_path) > 1024:
+                ffprobe_bin = cls.get_ffprobe_path(category)
+                dur = cls.get_video_duration(full_trailer_path, ffprobe_bin)
+                extra['trailer_video'] = {
+                    'storage_type': 'local',
+                    'filename': trailer_filename,
+                    'relative_path': f'{rel_dir}/{trailer_filename}',
+                    'duration': int(round(dur)) if dur else 0,
+                    'created_time': datetime.fromtimestamp(os.path.getmtime(full_trailer_path)).strftime('%Y-%m-%d %H:%M:%S'),
+                    'local_path': full_trailer_path,
+                    'google_fileid': ''
+                }
+                changed = True
+                logger.info(f"[MetaPreview] 기존 로컬 트레일러 영상 자동 감지 및 흡수 완료: {full_trailer_path}")
+
+        return changed
+
+    @staticmethod
+    def trailer_source_url(url):
+        from urllib.parse import urlparse, parse_qs
+        value = str(url or '').strip()
+        for _ in range(3):
+            parsed = urlparse(value)
+            if '/metadata/normal/jav_video' not in parsed.path:
+                break
+            inner = (parse_qs(parsed.query).get('url') or [''])[0]
+            if not inner or inner == value:
+                break
+            value = inner
+        return value
+
+    @classmethod
+    def remove_official_trailer(cls, target, url):
+        """Remove the failed download URL without recording or blocking it."""
+        is_dict = isinstance(target, dict)
+        extra = dict((target.get('extra_info') if is_dict else target.extra_info) or {})
+        rejected = cls.trailer_source_url(url)
+        if not rejected:
+            return False
+        extra.pop('unavailable_trailer', None)
+        def matches(url):
+            return bool(url and cls.trailer_source_url(url) == rejected)
+        def strip(data):
+            result = dict(data or {})
+            for key in ('trailer', 'trailer_url'):
+                if matches(result.get(key)):
+                    result.pop(key, None)
+            if isinstance(result.get('extras'), list):
+                result['extras'] = [entry for entry in result['extras'] if not (
+                    isinstance(entry, dict) and str(entry.get('content_type') or '').lower() == 'trailer'
+                    and matches(entry.get('content_url')))]
+            return result
+        extra = strip(extra)
+        original = strip(target.get('original') if is_dict else target.original)
+        if is_dict:
+            target.update(strip(target))
+            for key in ('trailer', 'trailer_url'):
+                if matches(target.get(key)):
+                    target.pop(key, None)
+            target.update(original=original, extra_info=extra)
+        else:
+            target.original, target.extra_info = original, extra
+            for media in list(target.media_files):
+                if media.media_type == 'trailer' and not media.gdrive_fileid and matches(media.url):
+                    target.media_files.remove(media)
+        return True
+
+    @classmethod
+    def process_trailer_download_workflow(cls, code, trailer_url, category='JAV_CEN', force=False, item_dict=None, use_dir_cache=False):
+        """원격 트레일러 영상 다운로드 ➔ Rclone 업로드 또는 로컬 이동 ➔ 메타데이터 갱신 (디렉터리 캐시 지원)"""
         from .mod_meta_db import ModuleMetaDb, MetaItem
 
-        logger.debug(f"[MetaPreview] 프리뷰 워크플로우 가동 -> 대상: [{category}] {code}, 원본: '{source_video_path}', 강제실행: {force}")
+        if not force and not cls.is_trailer_download_enabled(category):
+            return False, "트레일러 자동 다운로드 설정이 꺼져 있습니다."
 
-        sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
-        if not sess:
-            return False, "DB 세션 획득 실패"
+        if not trailer_url or not isinstance(trailer_url, str) or not trailer_url.startswith(('http://', 'https://')):
+            return False, "유효한 원격 트레일러 URL이 아닙니다."
+
+        std_cat = str(category or 'JAV_CEN').upper()
+        sess = None
+        item = None
+
+        # 메모리 딕셔너리가 전달되지 않은 경우(배치 작업 등)에만 DB 세션 조회
+        if item_dict is None:
+            sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
+            if not sess:
+                return False, "DB 세션 획득 실패"
+            for _ in range(3):
+                item = sess.query(MetaItem).filter_by(code=code).first()
+                if item:
+                    break
+                time.sleep(0.3)
+
+            if not item:
+                sess.remove()
+                logger.warning(f"[MetaPreview] DB에 해당 작품 메타데이터가 존재하지 않아 작업을 중단합니다: {code}")
+                return False, f"작품 메타데이터를 찾을 수 없습니다: {code}"
 
         temp_output = None
         workflow_success = False
 
         try:
-            item = sess.query(MetaItem).filter_by(code=code).first()
+            target_obj = item_dict if item_dict is not None else item
+            extra = target_obj.get('extra_info', {}) if isinstance(target_obj, dict) else dict(target_obj.extra_info or {})
+            storage_type = cls.get_setting("preview_storage_type", std_cat, default="local")
+            existing_trailer = cls.get_stored_video(target_obj, 'trailer', storage_type, std_cat)
+            rel_dir, trailer_filename = cls.get_video_relative_path(target_obj, video_type='trailer', category=std_cat)
+            dest_rel_full_path = f"{rel_dir}/{trailer_filename}"
+            previous = existing_trailer or {}
+            if previous.get('storage_type') == storage_type and previous.get('relative_path'):
+                recorded = previous['relative_path'].replace('\\', '/')
+                if recorded.startswith('/') or ':' in recorded or '..' in recorded.split('/'):
+                    raise ValueError('Invalid recorded video path')
+                dest_rel_full_path = recorded
+                trailer_filename = recorded.rsplit('/', 1)[-1]
+
+
+            # 로컬 저장 모드일 때 이미 해당 파일이 있으면 다운로드 생략 및 흡수
+            if storage_type == 'local':
+                local_root = cls.get_setting("preview_local_path", std_cat, default="/data/previews")
+                final_local_file = os.path.join(local_root, dest_rel_full_path.replace('/', os.path.sep))
+                has_file = cls.has_local_file(final_local_file, use_cache=use_dir_cache)
+                if not force and has_file and os.path.exists(final_local_file) and os.path.getsize(final_local_file) > 1024:
+                    cls.register_local_file(final_local_file)
+                    duration = cls.get_video_duration(final_local_file, cls.get_ffprobe_path(std_cat))
+                    extra['trailer_video'] = dict(storage_type='local', local_path=final_local_file,
+                        relative_path=dest_rel_full_path, filename=trailer_filename, google_fileid='',
+                        duration=int(round(duration or 0)), created_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    if isinstance(target_obj, dict):
+                        target_obj['extra_info'] = extra
+                    else:
+                        target_obj.extra_info = extra
+                    if sess:
+                        ModuleMetaDb.sync_item_video_assets(target_obj)
+                        sess.commit()
+                    return True, extra.get('trailer_video')
+
+            # 구글 드라이브 모드이고 덮어쓰기 목적이 아닐 때: 원격 파일 사전 검사 및 File ID 갱신
+            if storage_type == 'gdrive' and not force:
+                existing_remote_fid = cls.get_remote_file_id(dest_rel_full_path, category=std_cat, is_image=False, use_dir_cache=use_dir_cache)
+                if existing_remote_fid:
+                    actual_relative_path = cls.get_recorded_remote_path(existing_remote_fid, dest_rel_full_path, category=std_cat)
+                    existing_meta = extra.get('trailer_video') or {}
+                    cur_fid = existing_meta.get('google_fileid')
+
+                    # 메타데이터에 등록된 File ID와 다르거나 미등록 상태이면 최신 원격 ID로 동기화
+                    if cur_fid != existing_remote_fid or not existing_meta.get('storage_type') or existing_meta.get('relative_path') != actual_relative_path:
+                        trailer_meta = {
+                            'storage_type': 'gdrive',
+                            'filename': actual_relative_path.rsplit('/', 1)[-1],
+                            'relative_path': actual_relative_path,
+                            'duration': existing_meta.get('duration') or 0,
+                            'created_time': existing_meta.get('created_time') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'google_fileid': existing_remote_fid,
+                            'local_path': ''
+                        }
+                        extra['trailer_video'] = trailer_meta
+                        if isinstance(target_obj, dict):
+                            target_obj['extra_info'] = extra
+                        else:
+                            target_obj.extra_info = extra
+                            if sess:
+                                ModuleMetaDb.sync_item_video_assets(target_obj)
+                                sess.commit()
+                                ModuleMetaDb.checkpoint_wal()
+                        logger.info(f"[MetaPreview] [GDrive] 원격 트레일러 파일 확인 ➔ File ID 동기화 및 다운로드 스킵: {code} ({existing_remote_fid})")
+                        return True, trailer_meta
+                    else:
+                        logger.debug(f"[MetaPreview] [GDrive] 트레일러 File ID 일치 확인 ➔ 다운로드 스킵: {code}")
+                        return True, existing_meta
+
+            tmp_dir = os.path.join(path_data, 'tmp')
+            os.makedirs(tmp_dir, exist_ok=True)
+            temp_output = os.path.join(tmp_dir, trailer_filename)
+
+            if os.path.exists(temp_output):
+                try:
+                    os.remove(temp_output)
+                except Exception:
+                    pass
+
+            # 출처 사이트 식별 및 프록시 엔드포인트 결정
+            site_raw = target_obj.get('site') if isinstance(target_obj, dict) else getattr(target_obj, 'site', '')
+            site_key = (site_raw or '').strip().lower()
+            if not site_key or site_key == 'unknown':
+                if 'dmm.co.jp' in trailer_url: site_key = 'dmm'
+                elif 'mgstage.com' in trailer_url: site_key = 'mgstage'
+                elif 'fc2.com' in trailer_url: site_key = 'fc2com'
+                elif '1pondo.tv' in trailer_url: site_key = '1pondo'
+                elif '10musume.com' in trailer_url: site_key = '10musume'
+                elif 'pacopacomama.com' in trailer_url: site_key = 'paco'
+                elif 'caribbeancom.com' in trailer_url: site_key = 'carib'
+                elif 'heyzo.com' in trailer_url: site_key = 'heyzo'
+                elif 'stashdb.org' in trailer_url: site_key = 'stashdb'
+                elif 'theporndb.net' in trailer_url: site_key = 'tpdb'
+                else: site_key = 'dmm'
+
+            from urllib.parse import quote_plus
+            is_uncen = (std_cat == 'JAV_UNCEN')
+            video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
+            proxy_route_path = f"/{P.package_name}/normal/{video_endpoint}?site={site_key}&url={quote_plus(trailer_url)}"
+
+            logger.info(f"[MetaPreview] 트레일러 다운로드 시작(FF Proxy): {code} [{site_key}] ➔ {trailer_url}")
+
+            download_success = False
+            last_status_code = None
+            source_failure = None
+
+            try:
+                with F.app.test_client() as client:
+                    proxy_res = client.get(proxy_route_path, follow_redirects=True)
+                    last_status_code = proxy_res.status_code
+                    source_failure = proxy_res.headers.get('X-Metadata-Trailer-Error')
+
+                    if proxy_res.status_code in [200, 206]:
+                        if hasattr(proxy_res, 'iter_encoded'):
+                            stream_iter = proxy_res.iter_encoded()
+                        elif hasattr(proxy_res, 'response') and hasattr(proxy_res.response, '__iter__'):
+                            stream_iter = proxy_res.response
+                        else:
+                            stream_iter = [proxy_res.data]
+
+                        with open(temp_output, 'wb') as f_out:
+                            for chunk in stream_iter:
+                                if chunk:
+                                    f_out.write(chunk)
+
+                        if os.path.exists(temp_output) and os.path.getsize(temp_output) > 1024:
+                            download_success = True
+            except Exception as e_internal_proxy:
+                logger.debug(f"[MetaPreview] 내부 프록시 라우팅 호출 예외 ({code}): {e_internal_proxy}")
+
+            if not download_success and source_failure not in ('not_found', 'invalid_content', 'tls_error'):
+                ddns_host = (F.SystemModelSetting.get('ddns') or '').rstrip('/')
+                if ddns_host:
+                    full_proxy_url = f"{ddns_host}{proxy_route_path}"
+                    try:
+                        res = requests.get(full_proxy_url, stream=True, timeout=(10, 90), verify=False)
+                        last_status_code = res.status_code
+                        source_failure = res.headers.get('X-Metadata-Trailer-Error')
+                        if res.status_code in [200, 206]:
+                            with open(temp_output, 'wb') as f_out:
+                                for chunk in res.iter_content(chunk_size=65536):
+                                    if chunk:
+                                        f_out.write(chunk)
+                            if os.path.exists(temp_output) and os.path.getsize(temp_output) > 1024:
+                                download_success = True
+                    except Exception as e_ddns_proxy:
+                        logger.debug(f"[MetaPreview] DDNS 프록시 다운로드 예외 ({code}): {e_ddns_proxy}")
+
+            if not download_success or not os.path.exists(temp_output) or os.path.getsize(temp_output) < 1024:
+                cls.remove_official_trailer(target_obj, trailer_url)
+                if sess:
+                    sess.commit()
+                    ModuleMetaDb.checkpoint_wal()
+                logger.warning(f'[MetaPreview] 다운로드 실패로 공식 트레일러 URL 제거: {code}')
+                return False, f"트레일러 프록시 다운로드 실패 (HTTP {last_status_code}, {source_failure or 'temporary_error'})"
+
+            if existing_trailer and existing_trailer.get('storage_type', 'local') == storage_type:
+                deleted, message = cls.delete_preview_clip(existing_trailer, category=std_cat)
+                if not deleted:
+                    return False, message
+
+            ffprobe_bin = cls.get_ffprobe_path(std_cat)
+            dur = cls.get_video_duration(temp_output, ffprobe_bin)
+
+            trailer_meta = {
+                'storage_type': storage_type,
+                'filename': trailer_filename,
+                'relative_path': dest_rel_full_path,
+                'duration': int(round(dur)) if dur else 0,
+                'created_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+            if storage_type == 'gdrive':
+                file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat)
+                if not file_id:
+                    return False, f"구글 드라이브 업로드 실패: {err}"
+
+                cls.register_remote_file(dest_rel_full_path, file_id, category=std_cat, is_image=False)
+                trailer_meta['google_fileid'] = file_id
+                trailer_meta['local_path'] = ''
+            else:
+                local_root = cls.get_setting("preview_local_path", std_cat, default="/data/previews")
+                final_local_file = os.path.join(local_root, dest_rel_full_path.replace('/', os.path.sep))
+                os.makedirs(os.path.dirname(final_local_file), exist_ok=True)
+                if os.path.exists(final_local_file):
+                    try:
+                        os.remove(final_local_file)
+                    except Exception:
+                        pass
+                shutil.move(temp_output, final_local_file)
+                cls.register_local_file(final_local_file)
+                trailer_meta['local_path'] = final_local_file
+                trailer_meta['google_fileid'] = ''
+
+            # 인메모리 객체 또는 DB 레코드에 반영
+            extra['trailer_video'] = trailer_meta
+            extra.pop('unavailable_trailer', None)
+            if isinstance(target_obj, dict):
+                target_obj['extra_info'] = extra
+            else:
+                target_obj.extra_info = extra
+                if sess:
+                    ModuleMetaDb.sync_item_video_assets(target_obj)
+                    sess.commit()
+                    ModuleMetaDb.checkpoint_wal()
+
+            workflow_success = True
+            logger.info(f"[MetaPreview] [{std_cat}] {code} 트레일러 영상 저장 완료 ({storage_type}) -> {trailer_filename}")
+            return True, trailer_meta
+
+        except Exception as e:
+            if sess:
+                sess.rollback()
+            logger.error(f"[MetaPreview] 트레일러 다운로드 워크플로우 예외 ({code}): {e}")
+            logger.error(traceback.format_exc())
+            return False, str(e)
+        finally:
+            if sess:
+                sess.remove()
+            if not workflow_success and temp_output and os.path.exists(temp_output):
+                try:
+                    os.remove(temp_output)
+                except Exception:
+                    pass
+
+    @classmethod
+    def process_preview_workflow(cls, code, source_video_path, category='JAV_CEN', force=False, item_dict=None):
+        """기존 파일 삭제 ➔ FFmpeg 몽타주 추출 ➔ Rclone 업로드/로컬 이동 ➔ 메타데이터(메모리 또는 DB) 갱신"""
+        from .mod_meta_db import ModuleMetaDb, MetaItem
+
+        std_cat = str(category or 'JAV_CEN').upper()
+        sess = None
+        item = None
+
+        if item_dict is None:
+            sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
+            if not sess:
+                return False, "DB 세션 획득 실패"
+            for _ in range(3):
+                item = sess.query(MetaItem).filter_by(code=code).first()
+                if item:
+                    break
+                time.sleep(0.3)
+
             if not item:
+                sess.remove()
                 return False, f"작품 메타데이터를 찾을 수 없습니다: {code}"
 
-            extra = dict(item.extra_info or {})
-            existing_clip = extra.get('preview_clip')
+        temp_output = None
+        workflow_success = False
 
-            # 이미 클립이 존재할 경우 기존 파일(구글 드라이브/로컬)을 먼저 완전 삭제하여 중복 방지
-            if existing_clip:
-                cls.delete_preview_clip(existing_clip, category=std_cat)
-
+        try:
+            target_obj = item_dict if item_dict is not None else item
+            extra = target_obj.get('extra_info', {}) if isinstance(target_obj, dict) else dict(target_obj.extra_info or {})
             storage_type = cls.get_setting("preview_storage_type", std_cat, default="local")
-            rel_dir, clip_filename = cls.get_preview_relative_path(item, category=std_cat)
+            existing_clip = cls.get_stored_video(target_obj, 'preview', storage_type, std_cat)
+            rel_dir, clip_filename = cls.get_video_relative_path(target_obj, video_type='preview', category=std_cat)
             dest_rel_full_path = f"{rel_dir}/{clip_filename}"
+            previous = existing_clip or {}
+            if previous.get('storage_type') == storage_type and previous.get('relative_path'):
+                recorded = previous['relative_path'].replace('\\', '/')
+                if recorded.startswith('/') or ':' in recorded or '..' in recorded.split('/'):
+                    raise ValueError('Invalid recorded video path')
+                dest_rel_full_path = recorded
+                clip_filename = recorded.rsplit('/', 1)[-1]
 
-            # 임시 인코딩 대상 로컬 경로 결정
+            if existing_clip:
+                deleted, message = cls.delete_preview_clip(existing_clip, category=std_cat)
+                if not deleted:
+                    return False, message
+
             tmp_dir = os.path.join(path_data, 'tmp')
             os.makedirs(tmp_dir, exist_ok=True)
             temp_output = os.path.join(tmp_dir, clip_filename)
 
-            # 생성 시점에 이미 동일한 이름의 파일이 임시 디렉터리에 남아있으면 사전 삭제
             if os.path.exists(temp_output):
                 try:
                     os.remove(temp_output)
-                    logger.debug(f"[MetaPreview] 잔여 임시 파일 사전 정리 완료: {temp_output}")
-                except Exception as e_pre_rm:
-                    logger.warning(f"[MetaPreview] 잔여 임시 파일 삭제 실패: {e_pre_rm}")
+                except Exception:
+                    pass
 
-            # FFmpeg 몽타주 클립 생성
             success, msg = cls.generate_preview_clip(source_video_path, temp_output, category=std_cat)
             if not success:
                 return False, msg
@@ -408,11 +1241,11 @@ class MetaPreviewUtil:
             clip_meta = {
                 'storage_type': storage_type,
                 'filename': clip_filename,
+                'relative_path': dest_rel_full_path,
                 'duration': int(cls.get_setting("preview_duration", std_cat, default="60")),
                 'created_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
-            # 구글 드라이브 업로드 처리
             if storage_type == 'gdrive':
                 file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat)
                 if not file_id:
@@ -420,12 +1253,9 @@ class MetaPreviewUtil:
                 clip_meta['google_fileid'] = file_id
                 clip_meta['local_path'] = ''
             else:
-                # 로컬 저장 처리 (계층 구조 반영)
                 local_root = cls.get_setting("preview_local_path", std_cat, default="/data/previews")
                 final_local_file = os.path.join(local_root, dest_rel_full_path.replace('/', os.path.sep))
                 os.makedirs(os.path.dirname(final_local_file), exist_ok=True)
-
-                import shutil
                 if os.path.exists(final_local_file):
                     try:
                         os.remove(final_local_file)
@@ -435,31 +1265,36 @@ class MetaPreviewUtil:
                 clip_meta['local_path'] = final_local_file
                 clip_meta['google_fileid'] = ''
 
-            # DB extra_info에 무손실 저장 및 소스 비디오 경로 백업
             extra['preview_clip'] = clip_meta
             extra['source_video_path'] = source_video_path
-            item.extra_info = extra
-            sess.commit()
-            ModuleMetaDb.checkpoint_wal()
+
+            if isinstance(target_obj, dict):
+                target_obj['extra_info'] = extra
+            else:
+                target_obj.extra_info = extra
+                if sess:
+                    ModuleMetaDb.sync_item_video_assets(target_obj)
+                    sess.commit()
+                    ModuleMetaDb.checkpoint_wal()
 
             workflow_success = True
             logger.info(f"[MetaPreview] [{std_cat}] {code} 프리뷰 클립 등록 완료 ({storage_type}) -> {clip_filename}")
             return True, clip_meta
 
         except Exception as e:
-            sess.rollback()
-            logger.error(f"[MetaPreview] 워크플로우 예외 발생 ({code}): {e}")
+            if sess:
+                sess.rollback()
+            logger.error(f"[MetaPreview] 프리뷰 워크플로우 예외 ({code}): {e}")
             logger.error(traceback.format_exc())
             return False, str(e)
         finally:
-            sess.remove()
-            # 업로드 실패, 예외 등으로 인해 임시 파일이 아직 남아있는 경우 무조건 강제 삭제
+            if sess:
+                sess.remove()
             if not workflow_success and temp_output and os.path.exists(temp_output):
                 try:
                     os.remove(temp_output)
-                    logger.info(f"[MetaPreview] 실패 후 잔여 임시 파일 정리 완료: {temp_output}")
-                except Exception as e_clean:
-                    logger.debug(f"[MetaPreview] 임시 파일 정리 실패: {e_clean}")
+                except Exception:
+                    pass
 
 
     @classmethod
@@ -518,7 +1353,7 @@ class MetaPreviewUtil:
         return f"{header_b64}.{claims_b64}.{sig_b64}"
 
     @classmethod
-    def get_gdrive_access_token(cls, rclone_conf_path, remote_name):
+    def get_gdrive_access_token(cls, rclone_conf_path, remote_name, file_id=None):
         now = time.time()
         if not rclone_conf_path or not os.path.exists(rclone_conf_path):
             logger.error(f"[MetaPreview] rclone.conf 파일이 없습니다: {rclone_conf_path}")
@@ -560,16 +1395,22 @@ class MetaPreviewUtil:
                 if not impersonate_users and section.get('impersonate'):
                     impersonate_users = [section.get('impersonate').strip()]
 
-                # 위임 대상 사용자 선택 및 스레드 안전 순차 로테이션
+                # 위임 대상 사용자 선택 (동일 영상/파일은 해시 바인딩하여 단일 세션 유지, 그 외 순차 로테이션)
                 target_user = None
                 total_users = len(impersonate_users)
                 user_seq = 0
                 if impersonate_users:
-                    with cls._rotation_lock:
-                        curr_idx = cls._impersonate_indices.get(remote_name, 0)
-                        target_user = impersonate_users[curr_idx % total_users]
-                        cls._impersonate_indices[remote_name] = (curr_idx + 1) % total_users
-                        user_seq = (curr_idx % total_users) + 1
+                    if file_id:
+                        import zlib
+                        user_idx = zlib.crc32(str(file_id).encode('utf-8')) % total_users
+                        target_user = impersonate_users[user_idx]
+                        user_seq = user_idx + 1
+                    else:
+                        with cls._rotation_lock:
+                            curr_idx = cls._impersonate_indices.get(remote_name, 0)
+                            target_user = impersonate_users[curr_idx % total_users]
+                            cls._impersonate_indices[remote_name] = (curr_idx + 1) % total_users
+                            user_seq = (curr_idx % total_users) + 1
 
                 cache_key = f"{remote_name}:{target_user}" if target_user else f"{remote_name}:sa"
 
@@ -578,7 +1419,7 @@ class MetaPreviewUtil:
                     cached_token, expire_at = cls._token_cache[cache_key]
                     if now < (expire_at - 300):
                         if target_user:
-                            logger.debug(f"[MetaPreview] SA 권한 위임 토큰 캐시 히트: '{remote_name}' -> '{target_user}'")
+                            logger.debug(f"[MetaPreview] SA 권한 위임 토큰 캐시 히트: '{remote_name}' -> '{target_user}' (계정: {user_seq}/{total_users})")
                         return cached_token
 
                 # JWT 어서션 생성 및 OAuth2 access_token 발급 요청

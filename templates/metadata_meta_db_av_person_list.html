@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['btn_person_db_clear', '배우 DB 초기화'], ['btn_db_vacuum', 'DB 최적화 (VACUUM)']]) }}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('.static', filename='meta_db.css') }}">
+
+<!-- 상단 접이식 인물 배치 제어 및 실시간 터미널 패널 -->
+<div class="mb-3">
+  <button class="btn btn-sm btn-outline-info btn-block font-weight-bold py-2 text-center collapsed" type="button" data-toggle="collapse" data-target="#batch_collapse_box" aria-expanded="false" aria-controls="batch_collapse_box" id="btn_toggle_batch">
+    <span>
+      ⚡ AV 인물(배우) 통합 배치 작업 & 실시간 모니터링 
+      <span class="text-collapsed small text-muted">(펼치기) ▼</span>
+      <span class="text-expanded small text-muted">(접기) ▲</span>
+    </span>
+  </button>
+</div>
+
+<div class="collapse mb-4" id="batch_collapse_box">
+  <div class="card bg-dark border-secondary p-3 shadow-lg">
+    <!-- 배치 작업 설정 영역 -->
+    <div class="row align-items-center mb-2">
+      <div class="col-md-5 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">작업 대상 범위</label>
+        <select id="batch_target_scope" class="form-control form-control-sm font-weight-bold">
+          <option value="search_filter" selected>하단 검색/필터 결과 전체</option>
+        </select>
+      </div>
+
+      <div class="col-md-4 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">배치 작업 모드</label>
+        <select id="batch_mode" class="form-control form-control-sm">
+          <option value="person_image_sync" selected>☁️ 개인 저장소로 이미지 다운로드 및 동기화</option>
+          <option value="works_sync">🎬 소장 출연작 연계 및 통계 전수 동기화</option>
+          <option value="western_person_refresh">🌐 서양 인물 전체 정보 갱신 (StashDB / TPDB)</option>
+        </select>
+      </div>
+
+      <div class="col-md-3 mb-2 mb-md-0">
+        <label class="small font-weight-bold text-muted mb-1">작업 간 딜레이 (초)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" id="batch_delay" class="form-control form-control-sm font-weight-bold" min="0.1" step="0.1" value="0.5">
+          <div class="input-group-append">
+            <span class="input-group-text">초</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 선택된 모드별 동적 옵션 및 가이드 패널 -->
+    <div id="batch_dynamic_options_panel" class="mb-2 p-2 rounded" style="background: rgba(255, 255, 255, 0.03); border: 1px dashed rgba(255, 255, 255, 0.15);">
+      <div class="small text-info mb-1" id="batch_mode_desc_text"></div>
+      <div class="d-flex flex-wrap align-items-center" id="batch_mode_options_container"></div>
+    </div>
+
+    <!-- 제어 버튼 영역 -->
+    <div class="d-flex justify-content-end align-items-center mb-3 pt-2 border-top border-secondary">
+      <button type="button" class="btn btn-sm btn-primary font-weight-bold px-3 shadow mr-1" id="btn_batch_start">배치 작업 시작</button>
+
+      <div id="batch_resume_btn_group" style="display: none;" class="mr-1">
+        <button type="button" class="btn btn-sm btn-success font-weight-bold px-3 mr-1 shadow" id="btn_batch_resume" title="중단된 지점부터 이어서 작업을 계속 진행합니다.">▶ 중단 지점부터 재개</button>
+        <button type="button" class="btn btn-sm btn-outline-warning font-weight-bold px-3 shadow" id="btn_batch_restart" title="처음부터 다시 시작합니다.">🔄 처음부터 다시 시작</button>
+      </div>
+
+      <button type="button" class="btn btn-sm btn-danger font-weight-bold px-3 shadow mr-1" id="btn_batch_stop" style="display: none;">작업 중단</button>
+      <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_reset_panel" style="background-color: #21262d; border-color: #363b42;">패널 초기화</button>
+    </div>
+
+    <!-- 진행 현황 프로그레스 바 -->
+    <div class="mb-3" id="batch_progress_wrapper">
+      <div class="d-flex justify-content-between align-items-center mb-1 small">
+        <div>
+          <span class="badge badge-secondary mr-1" id="batch_badge_status">대기 중</span>
+          <span class="font-weight-bold text-white" id="batch_current_code_text">대기 중</span>
+        </div>
+        <div class="text-muted" id="batch_stats_text">진행: 0 / 0 (성공: 0, 실패: 0, 건너뜀: 0)</div>
+      </div>
+      <div class="progress" style="height: 20px; background-color: #1a1d21;">
+        <div id="batch_progress_bar" class="progress-bar progress-bar-striped progress-bar-animated bg-info font-weight-bold" role="progressbar" style="width: 0%;">0%</div>
+      </div>
+    </div>
+
+    <!-- 실시간 SSE 모니터링 터미널 -->
+    <div class="card border-secondary p-0 overflow-hidden" style="background: #0d1117;">
+      <div class="d-flex justify-content-between align-items-center px-3 py-1 border-bottom border-secondary bg-dark text-white">
+        <span class="small font-weight-bold text-info">🖥️ 실시간 스트리밍 작업 로그</span>
+        <div class="d-flex align-items-center">
+          <div class="custom-control custom-checkbox mr-3">
+            <input type="checkbox" class="custom-control-input" id="batch_log_autoscroll" checked>
+            <label class="custom-control-label small font-weight-bold text-muted" for="batch_log_autoscroll" style="cursor: pointer;">자동 스크롤</label>
+          </div>
+          <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_clear_log" style="background-color: #21262d; border-color: #363b42; font-size: 0.78rem; padding: 2px 10px;">로그 비우기</button>
+        </div>
+      </div>
+      <div id="batch_terminal_logs" class="p-2 font-monospace" style="height: 190px; overflow-y: auto; background: #08090a; color: #58a6ff; font-size: 0.82rem; line-height: 1.45; white-space: pre-wrap;">[시스템] 인물 배치 작업 대기 상태입니다. 상단에서 조건을 설정하고 시작 버튼을 누르세요.</div>
+    </div>
+  </div>
+</div>
+
+{{ macros.m_hr() }}
+
+<!-- 하단 검색 및 통합 인물 카드 영역 -->
+<div>
+  <form id="form_search_person" class="form-inline" style="text-align:left" onsubmit="return false;">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-7">
+          <div class="input-group input-group-sm">
+            <input type="hidden" id="search_category" name="category" value="PERSON">
+            <select id="search_domain" name="search_domain" class="form-control form-control-sm font-weight-bold text-primary">
+              <option value="ALL" selected>전체 도메인 (통합)</option>
+              <option value="JAV">JAV</option>
+              <option value="WESTERN">WESTERN</option>
+            </select>
+            <select id="search_status" name="search_status" class="form-control form-control-sm">
+              <option value="all">전체 상태</option>
+              <option value="has_photo">사진 등록</option>
+              <option value="no_photo">사진 누락</option>
+              <option value="has_works">소장작품 있음</option>
+              <option value="merged_only">중복 통합됨</option>
+            </select>
+            <select id="search_order" name="search_order" class="form-control form-control-sm">
+              <option value="desc">최근 등록순</option>
+              <option value="asc">과거 등록순</option>
+              <option value="works_desc">소장작품 많은순</option>
+              <option value="match">정확도/일치순</option>
+              <option value="id_asc">코드/ID 번호순 (1-9)</option>
+              <option value="id_desc">코드/ID 번호순 (9-1)</option>
+              <option value="name_asc">이름순 (ㄱ-ㅎ/A-Z)</option>
+              <option value="name_desc">이름 역순 (ㅎ-ㄱ/Z-A)</option>
+            </select>
+            <select id="page_size" name="page_size" class="form-control form-control-sm">
+              <option value="30" selected>30개씩</option>
+              <option value="60">60개씩</option>
+              <option value="90">90개씩</option>
+            </select>
+          </div>
+        </span>
+        <span class="col-md-5 text-right">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="이름, 원문명, 별칭 검색" aria-label="Search">
+          <button type="button" id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button type="button" id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+
+  <div id='page1'></div>
+  {{ macros.m_hr() }}
+  <div id="list_div" class="row px-2" data-list-type="person" data-list-domain="ALL"></div>
+  {{ macros.m_hr() }}
+  <div id='page2'></div>
+</div>
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "meta_db";
+</script>
+<script src="{{ url_for('.static', filename='common.js') }}"></script>
+<script src="{{ url_for('.static', filename='common_jav.js') }}"></script>
+<script src="{{ url_for('.static', filename='main_db.js') }}"></script>
+{% endblock %}

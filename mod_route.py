@@ -371,7 +371,7 @@ class ModuleRoute(PluginModuleBase):
                             MetaPreviewUtil.get_setting("preview_rclone_remote", category, default="my_gdrive")
                         )
 
-                        access_token = MetaPreviewUtil.get_gdrive_access_token(rclone_conf, remote_name)
+                        access_token = MetaPreviewUtil.get_gdrive_access_token(rclone_conf, remote_name, file_id=file_id)
                         if access_token:
                             gdrive_api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
                             req_headers = {

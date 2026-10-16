@@ -356,13 +356,15 @@
 
 /* 클릭 가능한 타이틀 및 복사 뱃지 인터랙션 스타일 */
 .item-title-clickable,
-.person-name-clickable {
+.person-name-clickable,
+.actor-title-link-clickable {
   transition: color 0.15s ease-in-out, filter 0.15s ease-in-out;
   user-select: text;
 }
 
 .item-title-clickable:hover,
-.person-name-clickable:hover {
+.person-name-clickable:hover,
+.actor-title-link-clickable:hover {
   text-decoration: underline !important;
   filter: brightness(1.25);
 }
@@ -436,6 +438,30 @@
   filter: brightness(1.15) !important;
   box-shadow: 0 4px 12px rgba(0, 123, 255, 0.6) !important;
   transform: translateY(-1px) !important;
+}
+
+/* 통합 메타 DB 스키마 변경은 일반 상태 표시와 구분되는 관리자 작업 */
+#btn_meta_db_schema_migrate {
+  display: none;
+  background: linear-gradient(135deg, #dc3545, #fd7e14) !important;
+  color: #fff !important;
+  border: none !important;
+  font-size: 0.88rem !important;
+  font-weight: bold !important;
+  padding: 0.35rem 1rem !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 7px rgba(220, 53, 69, 0.45) !important;
+  transition: all 0.2s ease-in-out !important;
+}
+
+#btn_meta_db_schema_migrate:hover {
+  filter: brightness(1.12) !important;
+  box-shadow: 0 4px 12px rgba(220, 53, 69, 0.65) !important;
+  transform: translateY(-1px) !important;
+}
+
+#btn_meta_db_schema_migrate_stop {
+  display: none;
 }
 
 /* 목록 및 카드 스켈레톤 UI 스타일 */
