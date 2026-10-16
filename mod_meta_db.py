@@ -5727,6 +5727,7 @@ class ModuleMetaDb(PluginModuleBase):
         is_all_category = (target_cat_upper == 'AV_ALL')
 
         sess = None
+        list_sessions = []
         domain = None
         std_cat = target_cat_upper
 
@@ -5739,6 +5740,9 @@ class ModuleMetaDb(PluginModuleBase):
             sess = cls._sessions.get('postgres')
             domain = 'postgres'
             std_cat = 'AV_ALL'
+            if sess is None:
+                logger.error("[MetaDB WebList] PostgreSQL 세션 획득 실패: AV_ALL")
+                return {'success': False, 'paging': None, 'list': [], 'msg': '메타 DB 연결을 확인하세요.'}
 
         try:
             try: page_size = int(params.get('page_size', 10))
@@ -5816,30 +5820,29 @@ class ModuleMetaDb(PluginModuleBase):
                     c_sess, _, c_std = cls.get_session_and_domain(c_cat)
                     if not c_sess:
                         continue
-                    try:
-                        c_conds = build_common_filters(MetaItem.category == c_std)
-                        c_cnt = c_sess.query(func.count(MetaItem.id)).filter(and_(*c_conds)).scalar() or 0
-                        total_count += c_cnt
+                    # Keep ORM relationships readable until page serialization completes.
+                    list_sessions.append(c_sess)
+                    c_conds = build_common_filters(MetaItem.category == c_std)
+                    c_cnt = c_sess.query(func.count(MetaItem.id)).filter(and_(*c_conds)).scalar() or 0
+                    total_count += c_cnt
 
-                        if c_cnt > 0:
-                            c_query = c_sess.query(MetaItem).filter(and_(*c_conds)).options(
-                                lazyload(MetaItem.media_files),
-                                lazyload(MetaItem.person_maps),
-                                lazyload(MetaItem.tag_maps),
-                                lazyload(MetaItem.fingerprints)
-                            )
-                            if search_order == 'asc':
-                                c_query = c_query.order_by(MetaItem.created_time.asc())
-                            elif search_order == 'title_asc':
-                                c_query = c_query.order_by(MetaItem.title.asc())
-                            elif search_order == 'title_desc':
-                                c_query = c_query.order_by(MetaItem.title.desc())
-                            else:
-                                c_query = c_query.order_by(MetaItem.created_time.desc())
+                    if c_cnt > 0:
+                        c_query = c_sess.query(MetaItem).filter(and_(*c_conds)).options(
+                            lazyload(MetaItem.media_files),
+                            lazyload(MetaItem.person_maps),
+                            lazyload(MetaItem.tag_maps),
+                            lazyload(MetaItem.fingerprints)
+                        )
+                        if search_order == 'asc':
+                            c_query = c_query.order_by(MetaItem.created_time.asc())
+                        elif search_order == 'title_asc':
+                            c_query = c_query.order_by(MetaItem.title.asc())
+                        elif search_order == 'title_desc':
+                            c_query = c_query.order_by(MetaItem.title.desc())
+                        else:
+                            c_query = c_query.order_by(MetaItem.created_time.desc())
 
-                            all_candidate_items.extend(c_query.limit(max_fetch_count).all())
-                    finally:
-                        c_sess.remove()
+                        all_candidate_items.extend(c_query.limit(max_fetch_count).all())
 
                 # 메모리 통합 정렬 및 페이지 슬라이싱
                 if search_order == 'asc':
@@ -5899,26 +5902,6 @@ class ModuleMetaDb(PluginModuleBase):
 
             start_page = ((page - 1) // 10) * 10 + 1
             end_page = min(start_page + 9, total_page)
-
-            # 관계 테이블 자동 조인을 차단하여 7개 테이블 조인 오버헤드 방지
-            query = sess.query(MetaItem).filter(and_(*filter_conditions)).options(
-                lazyload(MetaItem.media_files),
-                lazyload(MetaItem.person_maps),
-                lazyload(MetaItem.tag_maps),
-                lazyload(MetaItem.fingerprints)
-            )
-
-            # query 객체 생성 직후 정렬 옵션 바인딩
-            if search_order == 'asc':
-                query = query.order_by(MetaItem.created_time.asc())
-            elif search_order == 'title_asc':
-                query = query.order_by(MetaItem.title.asc())
-            elif search_order == 'title_desc':
-                query = query.order_by(MetaItem.title.desc())
-            else:
-                query = query.order_by(MetaItem.created_time.desc())
-
-            items = query.offset((page - 1) * page_size).limit(page_size).all()
 
             url_mapping_str = P.ModelSetting.get("meta_db_image_url_mapping") or ""
             mappings = []
@@ -5989,7 +5972,10 @@ class ModuleMetaDb(PluginModuleBase):
             logger.error(traceback.format_exc())
             return {'success': False, 'paging': None, 'list': []}
         finally:
-            sess.remove()
+            for list_session in list_sessions:
+                list_session.remove()
+            if sess is not None:
+                sess.remove()
 
 
     @classmethod
