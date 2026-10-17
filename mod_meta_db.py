@@ -649,6 +649,9 @@ class ModuleMetaDb(PluginModuleBase):
                 logger.error("[MetaDB Engine] PostgreSQL 드라이버(psycopg2-binary)가 설치되어 있지 않습니다.")
                 return
 
+            from .util_runtime import configure_postgres_cooperation, install_batch_timeouts
+            configure_postgres_cooperation(logger)
+
             pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
             pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
             pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
@@ -675,10 +678,12 @@ class ModuleMetaDb(PluginModuleBase):
                 pool_size=15,
                 max_overflow=30,
                 pool_recycle=300,
+                pool_timeout=15,
                 pool_pre_ping=True,
                 connect_args=connect_args
             )
 
+            install_batch_timeouts(pg_engine)
             cls._engines['postgres'] = pg_engine
             cls._sessions['postgres'] = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=pg_engine))
             from .migrations import MigrationOrchestrator
@@ -878,9 +883,10 @@ class ModuleMetaDb(PluginModuleBase):
                           inserted=0, updated=0, skipped=0, fail=0, last_error='', worker_id='')
             self._save_meta_maintenance_state()
             try:
-                if celery and F.config.get('use_celery', False):
+                if operation == 'actor_sync' and celery and F.config.get('use_celery', False):
                     task_meta_db_maintenance.apply_async(args=[operation, options or {}, job_id])
                 else:
+                    logger.debug('[MetaDB Maintenance] %s: 웹 프로세스 백그라운드 실행', operation)
                     threading.Thread(target=self._run_maintenance_worker,
                                      args=(operation, options or {}, job_id), daemon=True).start()
             except Exception as exc:
@@ -2896,7 +2902,6 @@ class ModuleMetaDb(PluginModuleBase):
 
             progress(phase='committing', status='배우 DB 저장 및 캐시 갱신 중', current=0, total=0, current_db='PERSON')
             sess.commit()
-            cls.checkpoint_wal()
 
             cls._cached_actors_map = None
             P.ModelSetting.set("meta_db_person_jav_last_synced_version", file_ver)
@@ -2944,7 +2949,6 @@ class ModuleMetaDb(PluginModuleBase):
 
                 if western_healed_count > 0:
                     sess.commit()
-                    cls.checkpoint_wal()
                     logger.info(f"[MetaDB ActorSync] 서양(WESTERN) 인물 DB 물리 컬럼 {western_healed_count}명 일괄 치유 완료")
             except Exception as e_west_heal:
                 sess.rollback()
@@ -2970,6 +2974,7 @@ class ModuleMetaDb(PluginModuleBase):
             return False, f"동기화 중 치명적 오류 발생: {str(e)}"
         finally:
             sess.close()
+            cls.checkpoint_wal()
 
 
     @classmethod
@@ -3225,6 +3230,7 @@ class ModuleMetaDb(PluginModuleBase):
         from support_site import SiteAvBase
         from sqlalchemy import cast, Text
         from tempfile import mkstemp
+        from .util_runtime import stage_storage_record, commit_storage_record, batch_stage
 
         def failure(code, message):
             return {'ret': 'error', 'error_code': code, 'msg': message, 'is_updated': False, 'changes': []}
@@ -3258,6 +3264,7 @@ class ModuleMetaDb(PluginModuleBase):
             if len(matches) != 1:
                 return failure('ambiguous_person', '인물 코드가 여러 레코드에 연결되어 있습니다.')
             person = matches[0]
+            snapshot = stage_storage_record(sess, person)
             dom = str(person.domain or '').upper()
             if dom not in ('JAV', 'WESTERN'):
                 return failure('unsupported_domain', 'AV 인물만 동기화할 수 있습니다.')
@@ -3282,7 +3289,8 @@ class ModuleMetaDb(PluginModuleBase):
                 if not source:
                     result.update(skipped=True, reason='source_unavailable', msg='다운로드 가능한 공식 이미지가 없습니다.')
                     return result
-                response = SiteAvBase.get_response(source, timeout=15)
+                with batch_stage(logger, 'Person image download', person.person_idx):
+                    response = SiteAvBase.get_response(source, timeout=15)
                 if response is None or response.status_code != 200:
                     return failure('download_failed', '공식 이미지 다운로드에 실패했습니다.')
                 temp_dir = os.path.join(path_data, 'tmp')
@@ -3302,7 +3310,8 @@ class ModuleMetaDb(PluginModuleBase):
                     prepared = prepare_image()
                     if prepared is not None:
                         return prepared
-                    fid = MetaUtil.upload_image_to_gdrive(staging, relative_path, category=dom, overwrite=not skip_existing)
+                    with batch_stage(logger, 'Person image upload', person.person_idx):
+                        fid = MetaUtil.upload_image_to_gdrive(staging, relative_path, category=dom, overwrite=not skip_existing)
                     if not fid:
                         return failure('upload_failed', '공식 이미지 업로드에 실패했습니다.')
                     MetaPreviewUtil.register_remote_file(relative_path, fid, category=dom, is_image=True)
@@ -3330,7 +3339,8 @@ class ModuleMetaDb(PluginModuleBase):
                      person.official_remote_path, person.thumb_url, person.has_photo)
             changed = before != after
             if changed:
-                sess.commit()
+                with batch_stage(logger, 'Person DB commit', person.person_idx):
+                    commit_storage_record(sess, person, snapshot)
             result.update(is_updated=changed or uploaded, skipped=not (changed or uploaded),
                           changes=([('GDrive 이미지 저장' if mode == 'gdrive' else '로컬 이미지 저장')] if uploaded else []) +
                                   (['인물 이미지 DB 연동'] if changed else []),
@@ -4181,7 +4191,6 @@ class ModuleMetaDb(PluginModuleBase):
                     p_rec.thumb_url = resolved_thumb
                     p_rec.has_photo = bool(resolved_thumb and str(resolved_thumb).strip())
                     sess.commit()
-                    cls.checkpoint_wal()
                     logger.info(f"[MetaDB Self-Healing] 인물 [{p_rec.name_ko or p_rec.name_org}]의 출연작 및 이미지 URL 자동 치유 완료")
                 except Exception as e_p_heal:
                     sess.rollback()
@@ -4469,7 +4478,6 @@ class ModuleMetaDb(PluginModuleBase):
 
             p_rec.updated_time = datetime.now()
             sess.commit()
-            cls.checkpoint_wal()
 
             logger.info(f"[MetaDB Person Refresh] 서양 인물 최신 정보 갱신 완료: {p_rec.person_idx} ({s_name}, 출처: {site_used.upper()})")
             detailed_data = cls.get_person_detailed_info(p_rec.id, domain='WESTERN')
@@ -4657,7 +4665,6 @@ class ModuleMetaDb(PluginModuleBase):
             p_rec.works = verified_works
             p_rec.works_count = total_verified
             sess.commit()
-            cls.checkpoint_wal()
 
             msg = f"출연작 검증 완료: 정상 유지 {total_verified}편, 오매칭 제거 {total_removed}편"
             logger.info(f"[MetaDB WorkVerify] 인물 [{p_rec.name_ko or p_rec.name_org}] {msg}")
@@ -5221,7 +5228,6 @@ class ModuleMetaDb(PluginModuleBase):
             p_rec.has_photo = bool(p_rec.thumb_url)
 
             sess.commit()
-            cls.checkpoint_wal()
             logger.info(f"[MetaDB Person Save] 인물 정보 저장 완료: {p_rec.person_idx} ({p_rec.name_ko or p_rec.name_org})")
             return True, "인물 정보가 성공적으로 저장되었습니다."
 
@@ -6001,7 +6007,6 @@ class ModuleMetaDb(PluginModuleBase):
 
             sess.delete(item)
             sess.commit()
-            cls.checkpoint_wal()
             logger.info(f"[MetaDB Delete] [{std_cat}] 메타데이터 삭제 완료: {code} ({title_log})")
             return True
         except Exception as e:
@@ -6139,30 +6144,34 @@ class ModuleMetaDb(PluginModuleBase):
 
             public_status = {key: value for key, value in self.batch_status[batch_key].items()
                              if key != 'target_items'}
-            # Emit once at the worker, independent of SSE subscribers/cache availability.
-            logger.debug('[MetaDB Batch] [%s/%s] [%s] %s', batch_key,
-                         public_status.get('mode') or 'unknown', event_type, log_line)
-            # Celery 프로세스와 웹 프로세스 간 상태 공유를 위해 트랙별 캐시 동기화
+            history_snapshot = list(history)
+            subscribers = list(self.batch_log_subscribers[batch_key])
+
+        # Emit once at the worker, independent of SSE subscribers/cache availability.
+        logger.debug('[MetaDB Batch] [%s/%s] [%s] %s', batch_key,
+                     public_status.get('mode') or 'unknown', event_type, log_line)
+        # Celery 프로세스와 웹 프로세스 간 상태 공유를 위해 트랙별 캐시 동기화
+        try:
+            shared_cache = F.get_cache(f"{P.package_name}_batch_job_{batch_key}")
+            shared_cache.set('status', json.dumps(public_status, ensure_ascii=False))
+            shared_cache.set('logs', json.dumps(history_snapshot, ensure_ascii=False))
+        except Exception:
+            pass
+
+        dead_subs = []
+        for sub_queue in subscribers:
             try:
-                shared_cache = F.get_cache(f"{P.package_name}_batch_job_{batch_key}")
-                shared_cache.set('status', json.dumps(public_status, ensure_ascii=False))
-                shared_cache.set('logs', json.dumps(history, ensure_ascii=False))
+                payload = json.dumps({
+                    'type': event_type,
+                    'message': formatted_entry,
+                    'status': public_status,
+                    'is_updated': is_updated
+                }, ensure_ascii=False)
+                sub_queue.put(f"data: {payload}\n\n")
             except Exception:
-                pass
+                dead_subs.append(sub_queue)
 
-            dead_subs = []
-            for sub_queue in self.batch_log_subscribers[batch_key]:
-                try:
-                    payload = json.dumps({
-                        'type': event_type,
-                        'message': formatted_entry,
-                        'status': public_status,
-                        'is_updated': is_updated
-                    }, ensure_ascii=False)
-                    sub_queue.put(f"data: {payload}\n\n")
-                except Exception:
-                    dead_subs.append(sub_queue)
-
+        with self._batch_log_lock:
             for dead in dead_subs:
                 if dead in self.batch_log_subscribers[batch_key]:
                     self.batch_log_subscribers[batch_key].remove(dead)
@@ -6248,6 +6257,7 @@ class ModuleMetaDb(PluginModuleBase):
 
     def _run_works_sync_batch(self, job_status, batch_opts, batch_key):
         """소장 작품(MetaItem) 전수 스캔 및 인물(MetaPerson) 출연작 연계/통계 일괄 갱신 엔진."""
+        from .util_runtime import cooperate
         clean_orphans = batch_opts.get('works_sync_clean_orphan', True)
         shared_cache = F.get_cache(f'{P.package_name}_batch_job_{batch_key}')
         shared_cache.set('stop_flag', 'false')
@@ -6291,6 +6301,7 @@ class ModuleMetaDb(PluginModuleBase):
                 ).filter(MetaItem.category == cat_scan).yield_per(500)
 
                 for m_code, m_ui_code, m_title, m_orig_title, m_year, m_prem, m_extra, m_orig in items_data:
+                    cooperate()
                     if should_stop():
                         job_status.update(is_running=False, status='중단됨')
                         self._broadcast_batch_log('사용자 요청으로 작품 스캔이 중단되었습니다.', batch_type=batch_key)
@@ -6363,6 +6374,7 @@ class ModuleMetaDb(PluginModuleBase):
                     if not page:
                         return
                     last_id = page[-1].id
+                    cooperate()
                     yield from page
                     p_sess.flush()
                     p_sess.expunge_all()
@@ -6372,6 +6384,7 @@ class ModuleMetaDb(PluginModuleBase):
             t_works_start = time.time()
 
             for p_idx_num, p_item in enumerate(all_persons, 1):
+                cooperate()
                 if should_stop():
                     p_sess.commit()
                     job_status['is_running'] = False
@@ -6448,7 +6461,6 @@ class ModuleMetaDb(PluginModuleBase):
                     self._save_persistent_batch_state(batch_type=batch_key)
 
             p_sess.commit()
-            self.checkpoint_wal()
             job_status['success'] = healed_persons_count
             job_status['is_running'] = False
             job_status['status'] = '완료'
@@ -6473,7 +6485,27 @@ class ModuleMetaDb(PluginModuleBase):
 
 
     def run_batch_refresh_worker(self, target_scope, target_codes=None, search_params=None, refresh_mode='missing', delay=2.0, action='restart', batch_type='item', batch_options=None):
+        from .util_runtime import batch_database_limits
+        try:
+            with batch_database_limits(logger):
+                return self._run_batch_refresh_worker(target_scope, target_codes, search_params,
+                    refresh_mode, delay, action, batch_type, batch_options)
+        except Exception as exc:
+            batch_key = 'person' if (str(batch_type).lower() == 'person' or refresh_mode in ('person_image_sync', 'works_sync')) else 'item'
+            status = self.batch_status[batch_key]
+            status.update(is_running=False, status=f'오류: {exc}',
+                          can_resume=bool(status.get('target_items')))
+            logger.exception('[MetaDB Batch] [%s/%s] 배치 실행 중단', batch_key, refresh_mode)
+            self._broadcast_batch_log(f'배치 작업 중단: {exc}', event_type='error', batch_type=batch_key)
+            self._save_persistent_batch_state(batch_key)
+            raise
+        finally:
+            # One best-effort checkpoint after the batch, including stop/failure paths.
+            self.checkpoint_wal()
+
+    def _run_batch_refresh_worker(self, target_scope, target_codes=None, search_params=None, refresh_mode='missing', delay=2.0, action='restart', batch_type='item', batch_options=None):
         """선택 항목 또는 하단 검색 조건을 대상으로 배치 작업을 실행하며, item/person 트랙별로 독립 격리 실행."""
+        from .util_runtime import cooperate
         batch_key = 'person' if (str(batch_type).lower() == 'person' or refresh_mode in ['person_image_sync', 'works_sync']) else 'item'
         job_status = self.batch_status[batch_key]
         batch_opts = dict(batch_options or {})
@@ -6689,6 +6721,8 @@ class ModuleMetaDb(PluginModuleBase):
                                 q_person = q_person.order_by(MetaPerson.id.asc())
 
                             for p in q_person.with_entities(MetaPerson.id, MetaPerson.person_idx, MetaPerson.name_org, MetaPerson.name_ko, MetaPerson.domain).yield_per(500):
+                                if len(target_items) % 500 == 0:
+                                    cooperate()
                                 target_items.append({
                                     'id': p.id,
                                     'person_idx': p.person_idx or str(p.id),
@@ -6797,6 +6831,8 @@ class ModuleMetaDb(PluginModuleBase):
 
                                 for r in q.yield_per(500):
                                     target_items.append({'code': r.code, 'ui_code': r.ui_code or r.code, 'category': r.category})
+                                    if len(target_items) % 500 == 0:
+                                        cooperate()
                             finally:
                                 sess.remove()
                     else:
@@ -6817,6 +6853,8 @@ class ModuleMetaDb(PluginModuleBase):
                                 ).filter(and_(*conds))
 
                                 for r in q.yield_per(500):
+                                    if len(temp_collected) % 500 == 0:
+                                        cooperate()
                                     temp_collected.append({
                                         'code': r.code,
                                         'ui_code': r.ui_code or r.code,
@@ -6878,6 +6916,7 @@ class ModuleMetaDb(PluginModuleBase):
         MetaPreviewUtil.clear_dir_cache()
 
         for idx in range(start_idx, total_len):
+            cooperate()
             stop_requested = job_status.get('stop_flag')
             try:
                 shared_cache = F.get_cache(f"{P.package_name}_batch_job_{batch_key}")
@@ -7115,16 +7154,34 @@ class ModuleMetaDb(PluginModuleBase):
 
     @classmethod
     def checkpoint_wal(cls):
-        cls.ensure_db_ready()
-        try:
-            if not cls._is_postgres:
-                for dom, eng in cls._engines.items():
-                    with eng.connect() as conn:
-                        conn.execute(text('PRAGMA wal_checkpoint(TRUNCATE)'))
+        """One best-effort WAL truncation at bulk-job boundaries; never wait for readers."""
+        if cls._is_postgres:
             return True
-        except Exception as e:
-            logger.error(f"[MetaDB] checkpoint_wal 에러: {e}")
-            return False
+        from urllib.parse import quote
+        success = True
+        # Do not initialize engines or run their connect hooks for maintenance.
+        # Those hooks set a 30s busy timeout before we could lower it.
+        for domain, engine in list(cls._engines.items()):
+            database = engine.url.database
+            if not database or database == ':memory:':
+                continue
+            try:
+                uri = 'file:' + quote(os.path.abspath(database), safe='/') + '?mode=rw'
+                connection = sqlite3.connect(uri, uri=True, timeout=0, isolation_level=None)
+                try:
+                    busy, pages, completed = connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                finally:
+                    connection.close()
+                if busy:
+                    success = False
+                    logger.debug('[MetaDB WAL] %s: 사용 중인 연결이 있어 TRUNCATE 생략 (pages=%s, checkpointed=%s)',
+                                 domain, pages, completed)
+                else:
+                    logger.debug('[MetaDB WAL] %s: TRUNCATE 완료', domain)
+            except sqlite3.Error as exc:
+                success = False
+                logger.warning('[MetaDB WAL] %s: 체크포인트 생략 (%s)', domain, exc)
+        return success
 
     @classmethod
     def vacuum_db(cls):
@@ -8387,7 +8444,6 @@ class ModuleMetaDb(PluginModuleBase):
                     self.sync_person_media_columns(p_rec)
                     sess.commit()
 
-                    self.checkpoint_wal()
                     self._cached_actors_map = None
                     logger.info(f"[MetaDB Person Master Change] 대표 인물 전환 성공: {old_idx} ➔ {target_sub_id} (이름: {p_rec.name_ko or p_rec.name_org})")
                     return jsonify({'ret': 'success', 'msg': f'[{target_sub_id}] 인물이 새로운 대표로 지정되었습니다.'})
@@ -8537,7 +8593,6 @@ class ModuleMetaDb(PluginModuleBase):
                     sess.add(new_standalone)
                     sess.commit()
 
-                    self.checkpoint_wal()
                     self._cached_actors_map = None
                     logger.info(f"[MetaDB Person Split] 서브 인물 그룹 분리 성공: {target_sub_id} ({new_standalone.name_ko}) ➔ 독립 레코드 생성")
                     return jsonify({'ret': 'success', 'msg': f'[{target_sub_id}] 인물이 단독 레코드로 분리되었습니다.'})
@@ -9051,7 +9106,6 @@ class ModuleMetaDb(PluginModuleBase):
                     item.extra_info = extra
                     self.sync_item_video_assets(item)
                     sess.commit()
-                    self.checkpoint_wal()
                     logger.debug(f"[MetaPreview] [{std_cat}] {code} {del_msg}")
                     return jsonify({'ret': 'success', 'msg': f'{del_msg}되었습니다.'})
                 except Exception as e:

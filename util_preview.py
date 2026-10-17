@@ -1015,7 +1015,6 @@ class MetaPreviewUtil:
                             if sess:
                                 ModuleMetaDb.sync_item_video_assets(target_obj)
                                 sess.commit()
-                                ModuleMetaDb.checkpoint_wal()
                         logger.info(f"[MetaPreview] [GDrive] 원격 트레일러 파일 확인 ➔ File ID 동기화 및 다운로드 스킵: {code} ({existing_remote_fid})")
                         return True, trailer_meta
                     else:
@@ -1105,7 +1104,6 @@ class MetaPreviewUtil:
                 cls.remove_official_trailer(target_obj, trailer_url)
                 if sess:
                     sess.commit()
-                    ModuleMetaDb.checkpoint_wal()
                 logger.warning(f'[MetaPreview] 다운로드 실패로 공식 트레일러 URL 제거: {code}')
                 return False, f"트레일러 프록시 다운로드 실패 (HTTP {last_status_code}, {source_failure or 'temporary_error'})"
 
@@ -1157,7 +1155,6 @@ class MetaPreviewUtil:
                 if sess:
                     ModuleMetaDb.sync_item_video_assets(target_obj)
                     sess.commit()
-                    ModuleMetaDb.checkpoint_wal()
 
             workflow_success = True
             logger.info(f"[MetaPreview] [{std_cat}] {code} 트레일러 영상 저장 완료 ({storage_type}) -> {trailer_filename}")
@@ -1275,7 +1272,6 @@ class MetaPreviewUtil:
                 if sess:
                     ModuleMetaDb.sync_item_video_assets(target_obj)
                     sess.commit()
-                    ModuleMetaDb.checkpoint_wal()
 
             workflow_success = True
             logger.info(f"[MetaPreview] [{std_cat}] {code} 프리뷰 클립 등록 완료 ({storage_type}) -> {clip_filename}")
