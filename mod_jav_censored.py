@@ -501,7 +501,7 @@ class ModuleJavCensored(PluginModuleBase):
 
             # 4대 메타 갱신 공용 파이프라인 호출
             elif command == 'db_refresh_image_only':
-                return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category))
+                return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category, storage_action=arg3 or None))
 
             elif command == 'db_refresh_missing_in_place':
                 return jsonify(MetaUtil.heal_metadata(self, arg1, self.category))
@@ -1419,7 +1419,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         if has_storage_error:
             is_invalid_image = False
-            logger.error(f"[{self.name}] [{site}] 저장소({current_image_mode}) 처리 오류로 미디어 처리가 중단됨 ➔ 타 사이트 구출을 건너뛰고 종료: {code}")
+            logger.warning(f"[{self.name}] [{site}] 저장소({current_image_mode}) 미디어 처리 실패 ➔ 타 사이트 구출은 생략하고 메타데이터 수집 계속: {code}")
         elif is_user_custom:
             # 유저 커스텀 이미지가 적용된 항목은 외부 사이트 구출을 타지 않음
             is_invalid_image = False
@@ -1644,7 +1644,9 @@ class ModuleJavCensored(PluginModuleBase):
 
         # 기존 영상 파일 자동 감지 및 흡수
         from .util_preview import MetaPreviewUtil
-        MetaPreviewUtil.check_and_adopt_existing_video(ret, category=self.category)
+        MetaPreviewUtil.check_and_adopt_existing_video(ret, category=self.category,
+            reuse_gdrive=opts.get('reuse_existing_media', False), existing_item=opts.get('_existing_media_item'),
+            reprocess=opts.get('reuse_existing_media') is False)
 
         media_path = opts.get('media_path')
         if media_path and os.path.exists(media_path):
@@ -1675,16 +1677,16 @@ class ModuleJavCensored(PluginModuleBase):
             if not (ret.get('extra_info', {}) or {}).get('trailer_video'):
                 logger.info(f"[{self.name}] 공식 트레일러 감지 -> 영상 동기 아카이빙 시작: {code_val}")
                 succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
-                    code_val, raw_trailer_url, cat_val, force=True, item_dict=ret
+                    code_val, raw_trailer_url, cat_val, force=not opts.get('reuse_existing_media', False), item_dict=ret
                 )
                 if succ:
                     trailer_download_success = True
 
         # 프리뷰 클립 자동 생성 (옵션 ON & 원본 영상이 있고, 트레일러 저장이 실패했거나 공식 트레일러가 없는 경우)
-        if media_path and os.path.exists(media_path) and MetaPreviewUtil.is_auto_create_enabled(cat_val):
+        if media_path and os.path.exists(media_path) and MetaPreviewUtil.is_auto_create_enabled(cat_val) and not opts.get('preserve_preview'):
             has_preview = bool((ret.get('extra_info', {}) or {}).get('preview_clip'))
             has_trailer_video = bool((ret.get('extra_info', {}) or {}).get('trailer_video'))
-            if not has_preview and not has_trailer_video and not trailer_download_success:
+            if opts.get('reprocess_existing_preview') or (not has_preview and not has_trailer_video and not trailer_download_success):
                 logger.info(f"[{self.name}] 공식 트레일러 부재/다운로드 실패 감지 -> 프리뷰 클립 동기 생성 시작: {code_val}")
                 MetaPreviewUtil.process_preview_workflow(
                     code_val, media_path, cat_val, force=True, item_dict=ret
