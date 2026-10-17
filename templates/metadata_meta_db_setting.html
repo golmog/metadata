@@ -320,10 +320,6 @@ function refreshMetaDbSchemaInfo(isInitialCheck) {
     metaDbMaintenanceMigrating = !!m.is_running;
     setMetaDbMaintenanceBusy(metaDbMaintenanceBusy);
     var text = versions.join(' | ') || '상태 확인 불가';
-    if (m.status && m.status !== '대기 중') {
-      text += ' | ' + m.status;
-      if (m.total) text += ' (' + (m.current || 0) + '/' + m.total + ')';
-    }
     var el = $('#meta_db_schema_info');
     if (el.is('input, textarea, select')) el.val(text); else el.text(text);
     var needsMigration = false;
