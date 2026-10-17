@@ -56,7 +56,7 @@
     {{ macros.m_hr() }}
 
     <!-- DB 엔진 설정 -->
-    {{ macros.setting_radio_with_value('meta_db_engine_type', 'DB 엔진 선택', [['sqlite', 'SQLite3 (도메인별 분할 로컬 파일)'], ['postgres', 'PostgreSQL']], value=arg['meta_db_engine_type'], desc=['SQLite: 도메인(jav_cen, jav_uncen, western, person)별 전용 .db 파일로 분산 저장됩니다.', '※ PostgreSQL: 아직 제대로 테스트를 거치지 않았으니 당분간 사용을 권장하지 않습니다.']) }}
+    {{ macros.setting_radio_with_value('meta_db_engine_type', 'DB 엔진 선택', [['sqlite', 'SQLite3 (도메인별 분할 로컬 파일)'], ['postgres', 'PostgreSQL']], value=arg['meta_db_engine_type'], desc=['SQLite: 도메인(jav_cen, jav_uncen, western, person)별 전용 .db 파일로 분산 저장됩니다.', '※ PostgreSQL: 성능 차이가 크므로 가급적 PostgreSQL을 사용하는 것을 권장합니다.']) }}
 
     <!-- SQLite 선택 시 표시되는 저장 경로 설정 -->
     <div id="meta_db_engine_sqlite_div" class="collapse">
