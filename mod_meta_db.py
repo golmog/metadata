@@ -730,6 +730,9 @@ class ModuleMetaDb(PluginModuleBase):
     def ensure_db_ready(cls):
         if not cls._engines or not cls._sessions:
             cls.init_engines()
+        if getattr(cls, '_media_recovery_pid', None) != os.getpid():
+            cls._media_recovery_pid = os.getpid()
+            MetaUtil.recover_media_replacements()
 
     @classmethod
     def get_meta_schema_status(cls, category=None):
@@ -1840,8 +1843,46 @@ class ModuleMetaDb(PluginModuleBase):
 
     @classmethod
     def save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None):
+        entries = (entity_dict.get('extra_info') or {}).get('_media_replacements') or [] if isinstance(entity_dict, dict) else []
+        try:
+            success = cls._save_metadata(category, entity_dict, target_session, target_person_session)
+        except Exception:
+            MetaUtil.finish_media_replacements(entries, False)
+            raise
+        if entries:
+            if success and target_session is not None:
+                MetaUtil.defer_media_replacements(target_session, entries)
+            else:
+                MetaUtil.finish_media_replacements(entries, bool(success))
+        return success
+
+    @classmethod
+    def _save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None):
         if not P.ModelSetting.get_bool("meta_db_use"):
             return False
+
+        image_storage_incomplete = False
+        removed_image_slots = set()
+        if str(category or '').upper() in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and isinstance(entity_dict, dict):
+            from support_site import SiteAvBase
+            removed_image_slots = {(entry['media_type'], entry.get('sort_order', 0))
+                                   for entry in (entity_dict.get('extra_info') or {}).get('_media_replacements', [])
+                                   if entry.get('status') == 'removed'}
+            removed_image_slots -= {(entry['media_type'], entry.get('sort_order', 0))
+                                    for entry in (entity_dict.get('extra_info') or {}).get('_media_replacements', [])
+                                    if entry.get('status') == 'generated'}
+            image_storage_incomplete = bool(SiteAvBase.image_storage_error(entity_dict, include_actors=False))
+            storage_error = SiteAvBase.image_storage_error(entity_dict)
+            entity_dict = copy.deepcopy(entity_dict)
+            SiteAvBase.sanitize_incomplete_images(entity_dict)
+            if storage_error:
+                logger.warning('[MetaDB] 미디어 처리 미완료, 확인된 미디어와 메타데이터 저장 (%s): %s', entity_dict.get('code'), storage_error)
+            for record in [entity_dict] + list(entity_dict.get('actor') or []):
+                extra = record.get('extra_info') if isinstance(record, dict) else getattr(record, 'extra_info', None)
+                if isinstance(extra, dict):
+                    extra.pop('_image_storage_state', None)
+                    extra.pop('storage_error', None)
+                    extra.pop('_media_replacements', None)
 
         cls.ensure_db_ready()
         sess, domain, std_cat = cls.get_session_and_domain(category)
@@ -2006,7 +2047,7 @@ class ModuleMetaDb(PluginModuleBase):
                 ):
                     resolved_poster_url = th['value']
                     break
-            if not resolved_poster_url and thumbs_list:
+            if std_cat not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and not resolved_poster_url and thumbs_list and not image_storage_incomplete:
                 for th in thumbs_list:
                     if isinstance(th, dict) and cls._is_http_url(th.get('value')):
                         resolved_poster_url = th['value']
@@ -2015,9 +2056,9 @@ class ModuleMetaDb(PluginModuleBase):
                 resolved_poster_url = entity_dict.get('poster_url') or ''
             if isinstance(resolved_poster_url, str) and '/metadata/normal/' in resolved_poster_url:
                 resolved_poster_url = ''
-            if not resolved_poster_url:
+            if not resolved_poster_url and not image_storage_incomplete:
                 resolved_poster_url = next(
-                    (value for value in (raw_site_p, raw_site_pl) if cls._is_http_url(value)),
+                    (value for value in ((raw_site_p,) if std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') else (raw_site_p, raw_site_pl)) if cls._is_http_url(value)),
                     ''
                 )
 
@@ -2033,12 +2074,24 @@ class ModuleMetaDb(PluginModuleBase):
             if not resolved_landscape_url:
                 resolved_landscape_url = entity_dict.get('landscape_url') or ''
 
+            if image_storage_incomplete:
+                if ('poster', 0) not in removed_image_slots:
+                    resolved_poster_url = resolved_poster_url or item.poster_url or ''
+                if ('landscape', 1) not in removed_image_slots:
+                    resolved_landscape_url = resolved_landscape_url or (item.extra_info or {}).get('landscape_url', '')
+            if ('poster', 0) in removed_image_slots:
+                resolved_poster_url = ''
+            if ('landscape', 1) in removed_image_slots:
+                resolved_landscape_url = ''
+
             # 저장소에 이미 존재하는 비디오 파일 자동 감지 및 흡수
             from .util_preview import MetaPreviewUtil
             MetaPreviewUtil.check_and_adopt_existing_video(entity_dict, category=std_cat)
 
             # DB 및 extra_info에는 항상 순수 정규 URL만 깨끗하게 저장
             merged_extra_info = copy.deepcopy(item.extra_info or {})
+            merged_extra_info.pop('_image_storage_state', None)
+            merged_extra_info.pop('storage_error', None)
             input_extra_info = copy.deepcopy(entity_dict.get('extra_info') or {})
             if isinstance(input_extra_info, dict):
                 input_extra_info.pop('actor_cache', None)
@@ -2048,8 +2101,12 @@ class ModuleMetaDb(PluginModuleBase):
             # 정규화된 최신 이미지 주소가 이전 extra_info 값에 의해 덮어씌워지지 않도록 최종 확정 반영
             if resolved_landscape_url:
                 merged_extra_info['landscape_url'] = resolved_landscape_url
+            elif ('landscape', 1) in removed_image_slots:
+                merged_extra_info.pop('landscape_url', None)
             if resolved_poster_url:
                 merged_extra_info['poster_url'] = resolved_poster_url
+            elif std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and (not image_storage_incomplete or ('poster', 0) in removed_image_slots):
+                merged_extra_info.pop('poster_url', None)
 
             if 'country' in entity_dict:
                 merged_extra_info['country'] = entity_dict.get('country') or []
@@ -2098,9 +2155,13 @@ class ModuleMetaDb(PluginModuleBase):
                 url = media.get('url') if isinstance(media, dict) else media.url
                 return bool(value) or '_user' in str(url or '').lower()
 
+            incoming_image_slots = {(t.get('aspect'), 0 if t.get('aspect') == 'poster' else 1)
+                                    for t in thumbs_list if isinstance(t, dict) and t.get('value')}
+            incoming_image_slots.update(('fanart', index) for index, url in enumerate(fanarts_list) if url)
             preserved_user_media = [
                 media for media in item.media_files
                 if user_asset(media) or media.media_type in ('trailer', 'preview') or
+                (image_storage_incomplete and (media.media_type, (media.sort_order or 0) if media.media_type == 'fanart' else 0 if media.media_type == 'poster' else 1) not in incoming_image_slots | removed_image_slots) or
                 (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and media.media_type in ('poster', 'landscape', 'fanart') and
                  (media.gdrive_fileid or media.relative_path) and
                  not MetaUtil.media_in_storage(media, active_image_mode))
@@ -3479,6 +3540,10 @@ class ModuleMetaDb(PluginModuleBase):
                 'updated_time': media.updated_time.isoformat() if media.updated_time else None,
             })
         d['media'] = media_assets
+        d['stored_images'] = {
+            'poster_url': item.poster_url or '',
+            'landscape_url': raw_extra.get('landscape_url') or '',
+        }
 
         media_poster = next(
             (media for media in media_assets
@@ -3532,8 +3597,6 @@ class ModuleMetaDb(PluginModuleBase):
 
         if resolved_p_url:
             d['thumb'].append({'aspect': 'poster', 'value': resolved_p_url, 'site': item.site, 'is_local': p_is_local})
-        elif resolved_pl_url:
-            d['thumb'].append({'aspect': 'poster', 'value': resolved_pl_url, 'site': item.site, 'is_local': pl_is_local})
 
         d['poster_url'] = resolved_p_url
         d['landscape_url'] = resolved_pl_url
@@ -4442,6 +4505,8 @@ class ModuleMetaDb(PluginModuleBase):
                          'name_ko': p_rec.name_ko, 'actor_idx': p_rec.person_idx,
                          'thumb': primary_photo, 'media_src': media_d}
                 SiteAvBase.save_western_actor_image(actor, skip_existing=skip_existing_image)
+                if SiteAvBase.image_storage_error(actor):
+                    logger.warning('[MetaDB Person] 이미지 처리 실패, 인물 정보는 저장: %s', SiteAvBase.image_storage_error(actor))
                 p_rec.media_src = actor.get('media_src', media_d)
                 cls.sync_person_media_columns(p_rec)
             p_rec.thumb_url = cls.resolve_person_active_thumb(p_rec)
@@ -4976,6 +5041,9 @@ class ModuleMetaDb(PluginModuleBase):
                     'works_detailed': works_detailed,
                     'works_count': p.works_count if p.works_count is not None else (sum(len(v) for v in p_works.values()) if isinstance(p_works, dict) else 0),
                     'extra_info': extra_data,
+                    'merged_count': p.merged_count or 1,
+                    'alt_indices': p.alt_indices or [],
+                    'merged_details': p.merged_details or [],
                     'source_data': source_data,
                     'manual_data': manual_data
                 })
@@ -5111,6 +5179,10 @@ class ModuleMetaDb(PluginModuleBase):
                         'media_src': p_media
                     }
                     SiteAvBase.save_western_actor_image(act_dummy)
+                    if SiteAvBase.image_storage_error(act_dummy):
+                        logger.warning('[MetaDB Person] 이미지 처리 실패, 인물 정보는 저장: %s', SiteAvBase.image_storage_error(act_dummy))
+                        SiteAvBase.sanitize_incomplete_images(act_dummy)
+                        primary_target_url = p_rec.thumb_url or ''
                     if act_dummy.get('media_src'):
                         p_media = cls.normalize_person_media(act_dummy['media_src'], domain=p_rec.domain)
                         clean_local = p_media['official']['local_img_path']
@@ -5124,6 +5196,10 @@ class ModuleMetaDb(PluginModuleBase):
                         'media_src': p_media
                     }
                     SiteAvBase.save_actor_image(act_dummy)
+                    if SiteAvBase.image_storage_error(act_dummy):
+                        logger.warning('[MetaDB Person] 이미지 처리 실패, 인물 정보는 저장: %s', SiteAvBase.image_storage_error(act_dummy))
+                        SiteAvBase.sanitize_incomplete_images(act_dummy)
+                        primary_target_url = p_rec.thumb_url or ''
                     if act_dummy.get('media_src'):
                         p_media = cls.normalize_person_media(act_dummy['media_src'], domain=p_rec.domain)
                         clean_local = p_media['official']['local_img_path']
@@ -7438,7 +7514,7 @@ class ModuleMetaDb(PluginModuleBase):
                 if progress_status and progress_status.get('stop_flag'): break
 
                 if t_type == 'db':
-                    from .util_db_copy import MetadataCopier
+                    from .util_migration import MetadataCopier
                     source_engine, source_session, copier = None, None, None
                     target_sessions = {}
                     try:
@@ -7591,7 +7667,7 @@ class ModuleMetaDb(PluginModuleBase):
     @classmethod
     def export_database(cls, category_mode="all", target_category=None, is_sanitized=False):
         """Export physical rows, including inactive storage assets and standalone people."""
-        from .util_db_copy import MetadataCopier
+        from .util_migration import MetadataCopier
         import tempfile
         cls.ensure_db_ready()
         sources, engine, target, copier = [], None, None, None
@@ -7865,7 +7941,7 @@ class ModuleMetaDb(PluginModuleBase):
                     tgt_engines[dom] = eng
                     tgt_sessions[dom] = sessionmaker(bind=eng)()
 
-            from .util_db_copy import MetadataCopier
+            from .util_migration import MetadataCopier
             status = progress_status if progress_status is not None else {}
             def target_for_category(category):
                 if target_type == 'postgres':
@@ -8794,7 +8870,7 @@ class ModuleMetaDb(PluginModuleBase):
                 target_mod = P.get_module(mod_name)
                 if not target_mod:
                     return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
-                return jsonify(MetaUtil.refresh_image_only(target_mod, code, target_cat))
+                return jsonify(MetaUtil.refresh_image_only(target_mod, code, target_cat, storage_action=arg3 or None))
 
             elif command == 'db_refresh_in_place':
                 code = arg1

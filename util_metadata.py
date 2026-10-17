@@ -294,9 +294,16 @@ class MetaUtil:
         return f"https://drive.google.com/thumbnail?id={file_id}&sz=s0"
 
     @classmethod
-    def upload_image_to_gdrive(cls, local_tmp_path, dest_rel_path, category='JAV_CEN', overwrite=True):
+    def upload_image_to_gdrive(cls, local_tmp_path, dest_rel_path, category='JAV_CEN', overwrite=True, replacements=None):
         """신규 통합 원격 업로드 엔진을 활용하여 이미지 업로드 및 사전 검사 수행."""
         if not local_tmp_path or not os.path.exists(local_tmp_path):
+            return None
+
+        try:
+            with Image.open(local_tmp_path) as image:
+                image.verify()
+        except Exception as exc:
+            logger.error('[MetaUtil] 유효하지 않은 이미지는 업로드하지 않습니다: %s (%s)', local_tmp_path, exc)
             return None
 
         from .util_preview import MetaPreviewUtil
@@ -319,10 +326,238 @@ class MetaUtil:
             logger.error(f"[MetaUtil] 이미지 구글 드라이브 통합 업로드 실패: {err}")
             return None
 
+        if replacements is not None:
+            from .util_preview import MediaReplacement
+            entry = next((e for e in replacements if e['relative_path'] == clean_rel), None)
+            if entry:
+                MediaReplacement.generated(entry, fid)
         return fid
 
     @classmethod
-    def query_gdrive_remote_dir_files(cls, dest_rel_dir, category='JAV_CEN', code_lower=None):
+    def upload_images_to_gdrive(cls, images, category='JAV_CEN', overwrite=True, replacements=None, code=''):
+        """Validate and stage each asset, then upload the ready files in one move."""
+        from .util_preview import MetaPreviewUtil, MediaReplacement
+        entries = replacements if replacements is not None else []
+        ready = {}
+        for relative, local in images.items():
+            try:
+                if relative.startswith('/') or '..' in relative.replace('\\', '/').split('/'):
+                    raise ValueError('Expected a remote relative image path')
+                with Image.open(local) as image:
+                    image.verify()
+                entry = next((e for e in entries if e['relative_path'] == relative), None)
+                if entry is None:
+                    kind = 'landscape' if relative.lower().endswith('_pl.jpg') else 'poster'
+                    entry = cls.prepare_storage_replacement(code, category, 'gdrive', relative, kind,
+                                                            1 if kind == 'landscape' else 0)
+                    entries.append(entry)
+                    if entry['had_original'] and not overwrite:
+                        MediaReplacement.finish(entry, False)
+                        continue
+                    MediaReplacement.stage(entry)
+                ready[relative] = local
+            except Exception as exc:
+                logger.warning('[MetaUtil] 이미지 일괄 업로드 준비 실패 (%s): %s', relative, exc)
+        confirmed = {}
+        try:
+            confirmed, error = MetaPreviewUtil.sync_images_to_gdrive(ready, category=category)
+            if error:
+                logger.warning('[MetaUtil] 이미지 일괄 업로드: %s', error)
+            for relative, file_id in confirmed.items():
+                entry = next(e for e in entries if e['relative_path'] == relative)
+                MediaReplacement.generated(entry, file_id)
+                MetaPreviewUtil.register_remote_file(relative, file_id, category=category, is_image=True)
+            return confirmed
+        finally:
+            if replacements is None:
+                cls.finish_media_replacements(entries, bool(confirmed))
+
+    @classmethod
+    def prepare_image_replacements(cls, entity, decision):
+        from .util_preview import MediaReplacement
+        from .util_preview import MetaPreviewUtil
+        mode = decision.get('image_mode')
+        if mode not in ('gdrive', 'image_server'):
+            return []
+        cls.recover_media_replacements()
+        entries = []
+        entity.extra_info['_media_replacements'] = entries
+        decision['_media_replacements'] = entries
+        category = 'WESTERN' if entity.code.startswith('W') else 'JAV_UNCEN' if entity.code.startswith('E') else 'JAV_CEN'
+        stem = str(entity.ui_code or '').lower()
+        pattern = re.compile(r'^' + re.escape(stem) + r'_(p|pl|art_(\d+))\.(jpg|jpeg|png|webp|gif)$', re.I)
+        remote = decision.get('gdrive_data') or {}
+        local = decision.get('image_server_paths') or {}
+        old_files = remote.get('remote_files') or {} if mode == 'gdrive' else {}
+        actual_names = getattr(old_files, 'actual_names', {})
+        if mode == 'image_server' and local.get('target_folder') and os.path.isdir(local['target_folder']):
+            old_files = {name: '' for name in os.listdir(local['target_folder'])}
+        names = {actual_names.get(str(fid), name): fid for name, fid in old_files.items() if pattern.match(name)}
+        sources = decision.get('final_image_sources') or {}
+        planned = []
+        if sources.get('poster_source') and not sources.get('skip_poster_download'):
+            planned.append(stem + '_p.jpg')
+        if sources.get('landscape_source') and not sources.get('skip_landscape_download'):
+            planned.append(stem + '_pl.jpg')
+        planned.extend(stem + '_art_%s.jpg' % (i + 1) for i, _ in enumerate(sources.get('arts') or []))
+        for name in planned:
+            names.setdefault(name, '')
+        folder = os.path.join(path_data, 'db', 'media_replacements')
+        for name, old_id in names.items():
+            match = pattern.match(name)
+            exists = bool(old_id) if mode == 'gdrive' else os.path.isfile(os.path.join(local['target_folder'], name))
+            if exists and not decision.get('rewrite_flag'):
+                continue
+            relative = ((remote.get('rel_dir', '') + '/' + name).strip('/') if mode == 'gdrive' else
+                        os.path.relpath(os.path.join(local['target_folder'], name),
+                            P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data, 'images')).replace(os.path.sep, '/'))
+            kind = 'poster' if match.group(1).lower() == 'p' else 'landscape' if match.group(1).lower() == 'pl' else 'fanart'
+            spec = dict(storage='gdrive' if mode == 'gdrive' else 'local', relative_path=relative,
+                        media_type=kind, sort_order=int(match.group(2)) - 1 if match.group(2) else 0 if kind == 'poster' else 1,
+                        code=entity.code, category=category, old_id=old_id)
+            if mode == 'gdrive':
+                spec.update(target=MetaPreviewUtil.build_rclone_target_remote_path(
+                    P.ModelSetting.get('jav_censored_image_gdrive_remote_path'), dest_rel_path=relative),
+                    rclone=MetaPreviewUtil.get_setting('rclone_path', category, default='rclone'),
+                    config=MetaPreviewUtil.get_setting('rclone_conf', category, default='/data/db/rclone.conf'))
+            else:
+                spec['target'] = os.path.join(local['target_folder'], name)
+            if mode == 'gdrive' and not exists:
+                exists = MediaReplacement.exists(spec, spec['target'])
+                if exists and not decision.get('rewrite_flag'):
+                    continue
+            entry = MediaReplacement.begin(folder, spec, exists=exists)
+            entries.append(entry)
+            MediaReplacement.stage(entry)
+        return entries
+
+    @classmethod
+    def prepare_storage_replacement(cls, code, category, mode, relative_path, media_type, sort_order=0):
+        from .util_preview import MediaReplacement
+        from .util_preview import MetaPreviewUtil
+        spec = dict(storage='gdrive' if mode == 'gdrive' else 'local', category=category, code=code,
+                    relative_path=relative_path, media_type=media_type, sort_order=sort_order, old_id='')
+        if mode == 'gdrive':
+            spec.update(target=MetaPreviewUtil.build_rclone_target_remote_path(
+                P.ModelSetting.get('jav_censored_image_gdrive_remote_path'), dest_rel_path=relative_path),
+                rclone=MetaPreviewUtil.get_setting('rclone_path', category, default='rclone'),
+                config=MetaPreviewUtil.get_setting('rclone_conf', category, default='/data/db/rclone.conf'))
+        else:
+            spec['target'] = os.path.join(P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data, 'images'), relative_path)
+        exists = MediaReplacement.exists(spec, spec['target'])
+        return MediaReplacement.begin(os.path.join(path_data, 'db', 'media_replacements'), spec, exists)
+
+    @classmethod
+    def prepare_video_replacement(cls, target, category, relative_path):
+        from .util_preview import MediaReplacement
+        from .util_preview import MetaPreviewUtil
+        extra = target.setdefault('extra_info', {}) if isinstance(target, dict) else target.extra_info
+        entries = extra.setdefault('_media_replacements', [])
+        storage = MetaPreviewUtil.get_setting('preview_storage_type', category, default='local')
+        code = target.get('code') if isinstance(target, dict) else target.code
+        spec = dict(storage=storage, category=category, code=code, relative_path=relative_path,
+                    media_type='trailer', sort_order=0, old_id='')
+        if storage == 'gdrive':
+            spec.update(target=MetaPreviewUtil.build_rclone_target_remote_path(
+                MetaPreviewUtil.get_setting('preview_gdrive_remote_path', category, default='') or
+                MetaPreviewUtil.get_setting('preview_video_folder_id', category, default=''), dest_rel_path=relative_path),
+                rclone=MetaPreviewUtil.get_setting('rclone_path', category, default='rclone'),
+                config=MetaPreviewUtil.get_setting('rclone_conf', category, default='/data/db/rclone.conf'))
+            exists = MediaReplacement.exists(spec, spec['target'])
+        else:
+            spec['target'] = os.path.join(MetaPreviewUtil.get_setting('preview_local_path', category, default='/data/previews'), relative_path)
+            exists = os.path.isfile(spec['target'])
+        entry = MediaReplacement.begin(os.path.join(path_data, 'db', 'media_replacements'), spec, exists)
+        entries.append(entry)
+        MediaReplacement.stage(entry)
+        return entry
+
+    @classmethod
+    def settle_image_replacements(cls, entity, decision):
+        from .util_preview import MediaReplacement
+        entries = decision.get('_media_replacements') or []
+        observations = (entity.extra_info or {}).get('_storage_media') or []
+        state = (entity.extra_info or {}).get('_image_storage_state') or {}
+        for entry in entries:
+            observed = next((a for a in observations if a['relative_path'].rsplit('/', 1)[-1] == entry['relative_path'].rsplit('/', 1)[-1]), None)
+            if observed:
+                MediaReplacement.generated(entry, observed.get('gdrive_fileid'))
+            elif state.get('status') == 'complete' or any(
+                    a['media_type'] == entry['media_type'] and a.get('sort_order', 0) == entry['sort_order'] for a in observations):
+                entry['status'] = 'removed'
+                MediaReplacement.save(entry)
+            else:
+                MediaReplacement.finish(entry, False)
+
+    @classmethod
+    def finish_media_replacements(cls, entries, commit):
+        from .util_preview import MediaReplacement
+        for entry in entries or []:
+            if not entry:
+                continue
+            try:
+                MediaReplacement.finish(entry, commit)
+            except Exception:
+                logger.exception('[MediaReplacement] 파일 정리/복원 보류: %s', entry.get('relative_path'))
+                try:
+                    entry['abandoned'] = True
+                    MediaReplacement.save(entry)
+                except Exception:
+                    logger.exception('[MediaReplacement] 복구 기록 저장 실패')
+
+    @classmethod
+    def defer_media_replacements(cls, session, entries):
+        from sqlalchemy import event
+        actual_session = session() if hasattr(session, 'registry') else session
+        actual_session.info.setdefault('media_replacements', []).extend(entries)
+        if actual_session.info.get('media_replacement_events'):
+            return
+        actual_session.info['media_replacement_events'] = True
+        def committed(sess):
+            if not sess.in_nested_transaction():
+                cls.finish_media_replacements(sess.info.pop('media_replacements', []), True)
+        def rolled_back(sess):
+            if not sess.in_nested_transaction():
+                cls.finish_media_replacements(sess.info.pop('media_replacements', []), False)
+        def ended(sess, transaction):
+            if transaction.parent is None:
+                # Session.close() also abandons an uncommitted transaction.
+                cls.finish_media_replacements(sess.info.pop('media_replacements', []), False)
+        event.listen(actual_session, 'after_commit', committed)
+        event.listen(actual_session, 'after_rollback', rolled_back)
+        event.listen(actual_session, 'after_transaction_end', ended)
+
+    @classmethod
+    def recover_media_replacements(cls):
+        from .util_preview import MediaReplacement
+        from .mod_meta_db import ModuleMetaDb, MetaItem
+        folder = os.path.join(path_data, 'db', 'media_replacements')
+        def is_committed(entry):
+            session, _, category = ModuleMetaDb.get_session_and_domain(entry['category'])
+            if session is None:
+                return None
+            from sqlalchemy.orm import sessionmaker
+            recovery = sessionmaker(bind=session.get_bind())()
+            try:
+                item = recovery.query(MetaItem).filter_by(code=entry['code'], category=category).first()
+                if not item:
+                    return False
+                assets = [m for m in item.media_files if m.media_type == entry['media_type'] and not m.is_user]
+                if entry['status'] == 'generated' and entry.get('new_id'):
+                    return any(m.gdrive_fileid == entry['new_id'] for m in assets)
+                if entry['status'] == 'removed':
+                    return not any((entry.get('old_id') and m.gdrive_fileid == entry['old_id']) or
+                                   m.relative_path == entry['relative_path'] for m in assets)
+                return False
+            except Exception:
+                logger.exception('[MediaReplacement] DB 기준 복구 판정 보류')
+                return None
+            finally:
+                recovery.close()
+        MediaReplacement.recover(folder, is_committed, logger)
+
+    @classmethod
+    def query_gdrive_remote_dir_files(cls, dest_rel_dir, category='JAV_CEN', code_lower=None, strict=False, is_image=True):
         """rclone lsjson으로 구글 드라이브 원격 대상 디렉토리의 파일 목록과 File ID를 직접 타겟팅 조회"""
         from .util_preview import MetaPreviewUtil
         cat_upper = str(category or 'JAV_CEN').upper()
@@ -332,15 +567,20 @@ class MetaUtil:
         rclone_conf = MetaPreviewUtil.get_setting("rclone_conf", category, default="/data/db/rclone.conf")
 
         raw_upload_remote = (
-            P.ModelSetting.get("jav_censored_image_gdrive_remote_path") or
-            ""
+            (P.ModelSetting.get("jav_censored_image_gdrive_remote_path") or '') if is_image else
+            (MetaPreviewUtil.get_setting('preview_gdrive_remote_path', category, default='') or
+             MetaPreviewUtil.get_setting('preview_video_folder_id', category, default=''))
         ).strip()
 
         if not raw_upload_remote:
+            if strict:
+                raise ValueError('GDrive 미디어 리모트 경로가 설정되지 않았습니다.')
             return {}
 
         remote_dir = MetaPreviewUtil.build_rclone_target_remote_path(raw_upload_remote, dest_rel_path=dest_rel_dir)
         if not remote_dir:
+            if strict:
+                raise ValueError('GDrive 미디어 리모트 경로를 해석하지 못했습니다.')
             return {}
 
         cmd = [rclone_bin, "--config", rclone_conf, "lsjson"]
@@ -351,8 +591,17 @@ class MetaUtil:
 
         try:
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12)
+            if strict and res.returncode != 0:
+                missing_dir = res.returncode == 3 and 'directory not found' in str(res.stderr or '').lower()
+                if missing_dir:
+                    return {}
+                raise RuntimeError('GDrive 미디어 폴더 목록 조회에 실패했습니다.')
+            if strict and res.returncode == 0 and not res.stdout.strip():
+                raise RuntimeError('GDrive 미디어 폴더 목록 응답이 비어 있습니다.')
             if res.returncode == 0 and res.stdout.strip():
                 items = json.loads(res.stdout.strip())
+                if strict and not isinstance(items, list):
+                    raise ValueError('GDrive 미디어 폴더 목록 응답 형식이 올바르지 않습니다.')
                 class ObservedFileMap(dict):
                     pass
                 file_map = ObservedFileMap()
@@ -361,6 +610,10 @@ class MetaUtil:
                     if isinstance(item, dict) and not item.get('IsDir'):
                         fname = item.get('Name') or item.get('Path')
                         fid = item.get('ID') or item.get('id')
+                        if strict and fname and str(fname).lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif') if is_image else ('.mp4',)) and item.get('Size') == 0:
+                            raise RuntimeError('GDrive에 비어 있는 이미지 파일이 있습니다: ' + str(fname))
+                        if strict and fname and str(fname).lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif') if is_image else ('.mp4',)) and not fid:
+                            raise RuntimeError('GDrive 미디어 File ID가 없습니다: ' + str(fname))
                         if fname and fid:
                             file_map[fname.lower()] = fid
                             file_map.actual_names[str(fid)] = fname
@@ -369,6 +622,8 @@ class MetaUtil:
                 return file_map
         except Exception as e:
             logger.debug(f"[MetaUtil] 구글 드라이브 원격 디렉토리 조회 예외 ({remote_dir}): {e}")
+            if strict:
+                raise
 
         return {}
 
@@ -1278,15 +1533,8 @@ class MetaUtil:
 
         opts = dict(extra_opts or {})
         res = copy.deepcopy(entity_dict)
-
-        thumbs = res.get('thumb') or []
-        has_poster = any(isinstance(t, dict) and t.get('aspect') == 'poster' and t.get('value') for t in thumbs)
-        if not has_poster:
-            pl_thumb = next((t for t in thumbs if isinstance(t, dict) and t.get('aspect') == 'landscape' and t.get('value')), None)
-            if pl_thumb:
-                fallback_poster = copy.deepcopy(pl_thumb)
-                fallback_poster['aspect'] = 'poster'
-                res.setdefault('thumb', []).append(fallback_poster)
+        from support_site import SiteAvBase
+        SiteAvBase.sanitize_incomplete_images(res)
 
         current_plot = str(res.get('plot') or '').strip()
         fallback_tagline = str(res.get('tagline') or '').strip()
@@ -1297,12 +1545,27 @@ class MetaUtil:
         if opts.get('for_db') or opts.get('internal'):
             return res
 
+        entries = (res.get('extra_info') or {}).pop('_media_replacements', [])
+        if entries:
+            cls.finish_media_replacements(entries, not P.ModelSetting.get_bool('meta_db_use') or not P.ModelSetting.get_bool('meta_db_save'))
+        res.pop('stored_images', None)
+
         # 외부 API 호출 및 웹 화면 출력 시에만 프록시 래핑 적용
         try:
             from .mod_meta_db import ModuleMetaDb
             res = ModuleMetaDb.apply_transient_overrides(res, opts, category=category)
         except Exception as e_override:
             logger.debug(f"[MetaUtil] apply_transient_overrides 예외: {e_override}")
+
+        # Display fallback belongs only to the returned copy, after DB/internal exits.
+        thumbs = res.get('thumb') or []
+        if not any(isinstance(t, dict) and t.get('aspect') == 'poster' and t.get('value') for t in thumbs):
+            landscape = next((t for t in thumbs if isinstance(t, dict) and t.get('aspect') == 'landscape' and t.get('value')), None)
+            if landscape:
+                fallback = copy.deepcopy(landscape)
+                fallback['aspect'] = 'poster'
+                res['thumb'] = list(thumbs) + [fallback]
+                res['poster_url'] = fallback['value']
 
         if opts.get('strip_images'):
             res['poster_url'] = ''
@@ -1313,7 +1576,7 @@ class MetaUtil:
         return res
 
     @classmethod
-    def refresh_image_only(cls, module, code, category, site_activity=None):
+    def refresh_image_only(cls, module, code, category, site_activity=None, storage_action=None):
         """미디어(포스터/커버/팬아트/트레일러) 전용 재동기화 단일 공용 로직"""
         from .mod_meta_db import ModuleMetaDb
 
@@ -1321,9 +1584,16 @@ class MetaUtil:
         if not cached_json:
             return {'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
 
+        # Old cached pages may still send 'check'; synchronize without prompting.
+        if storage_action == 'check':
+            storage_action = 'reuse'
+        if storage_action not in (None, 'reuse', 'replace'):
+            return {'ret': 'error', 'msg': '올바르지 않은 미디어 처리 옵션입니다.', 'is_updated': False}
+        operation_label = '재처리' if storage_action == 'replace' else '동기화'
+
         ui_code = cached_json.get('ui_code') or cached_json.get('originaltitle') or code
         title_log = str(cached_json.get('title') or ui_code)[:35]
-        logger.info(f"[{module.name}] [{category}] 미디어 전용 재동기화 시작: [{code}] ({ui_code})")
+        logger.info(f"[{module.name}] [{category}] 미디어 {operation_label} 시작: [{code}] ({ui_code}), 재사용={storage_action != 'replace'}")
 
         try:
             if hasattr(module, 'keyword_cache') and module.keyword_cache:
@@ -1332,7 +1602,12 @@ class MetaUtil:
             pass
 
         # for_db=True 플래그를 전달하여 프록시 래핑 없는 순수 원본 미디어 취득
-        info_opts = {'skip_trans': True, 'for_db': True}
+        info_opts = {'skip_trans': True, 'for_db': True, 'skip_actor_image_storage': True, 'preserve_preview': True}
+        if storage_action in ('reuse', 'replace'):
+            info_opts['reuse_existing_media'] = storage_action == 'reuse'
+            if storage_action == 'reuse':
+                info_opts['_existing_media_item'] = copy.deepcopy(cached_json)
+
         if site_activity is not None:
             info_opts['_batch_site_activity'] = site_activity
         try:
@@ -1340,8 +1615,24 @@ class MetaUtil:
         except TypeError:
             fresh_media = module.info(code, extra_opts=info_opts)
 
-        if not fresh_media or (not fresh_media.get('thumb') and not (fresh_media.get('original') or {}).get('thumb')):
+        if not fresh_media:
             return {'ret': 'warning', 'msg': f"[{ui_code}] 원격 사이트에서 미디어 정보를 가져오지 못했습니다.", 'title_log': title_log, 'is_updated': False}
+
+        from support_site import SiteAvBase
+        media_warning = SiteAvBase.image_storage_error(fresh_media)
+        SiteAvBase.sanitize_incomplete_images(fresh_media)
+        if media_warning:
+            logger.warning('[MetaUtil] 미디어 일부 실패, 메타데이터 갱신 계속 (%s): %s', code, media_warning)
+
+        # The receipt belongs to this processing attempt, not to the cached record.
+        # Validate the fresh result above before replacing any historical error flags.
+        cached_extra = dict(cached_json.get('extra_info') or {})
+        cached_extra.pop('storage_error', None)
+        cached_extra.pop('_image_storage_state', None)
+        fresh_state = (fresh_media.get('extra_info') or {}).get('_image_storage_state')
+        if fresh_state:
+            cached_extra['_image_storage_state'] = copy.deepcopy(fresh_state)
+        cached_json['extra_info'] = cached_extra
 
         cached_json['thumb'] = fresh_media.get('thumb', [])
         cached_json['fanart'] = fresh_media.get('fanart', [])
@@ -1349,6 +1640,10 @@ class MetaUtil:
         # fresh_media의 thumb 리스트에서 최신 포스터와 랜드스케이프를 직접 추출하여 확정 갱신
         fresh_p = next((t['value'] for t in cached_json['thumb'] if isinstance(t, dict) and t.get('aspect') == 'poster' and t.get('value')), '')
         fresh_pl = next((t['value'] for t in cached_json['thumb'] if isinstance(t, dict) and t.get('aspect') == 'landscape' and t.get('value')), '')
+
+        if not fresh_p and not media_warning:
+            cached_json['poster_url'] = ''
+            cached_json['extra_info'].pop('poster_url', None)
 
         if fresh_p:
             cached_json['poster_url'] = fresh_p
@@ -1365,7 +1660,7 @@ class MetaUtil:
         if fresh_media.get('extra_info'):
             if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
                 cached_json['extra_info'] = {}
-            for k_ei in ['landscape_url', 'poster_url', 'trailer_video', '_storage_media']:
+            for k_ei in ['landscape_url', 'poster_url', 'trailer_video', '_storage_media', '_media_replacements']:
                 if fresh_media['extra_info'].get(k_ei):
                     cached_json['extra_info'][k_ei] = fresh_media['extra_info'][k_ei]
 
@@ -1400,7 +1695,7 @@ class MetaUtil:
         # Return the persisted assets, including paths and inactive storage rows.
         cached_json = ModuleMetaDb.get_metadata(code, category=category) or cached_json
         logger.info(f"[{module.name}] [{code}] 이미지 및 미디어 주소 갱신 완료")
-        return {'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 동기화 완료", 'title_log': title_log, 'is_updated': True, 'data': cached_json}
+        return {'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 {operation_label} 완료" + (' (일부 미디어 실패)' if media_warning else ''), 'media_warning': media_warning, 'title_log': title_log, 'is_updated': True, 'data': cached_json}
 
     @classmethod
     def refresh_in_place(cls, module, code, category, site_activity=None):
@@ -1420,7 +1715,7 @@ class MetaUtil:
         except Exception:
             pass
 
-        info_opts = {'skip_trans': False, 'for_db': True}
+        info_opts = {'skip_trans': False, 'for_db': True, 'reuse_existing_media': False, 'preserve_preview': True}
         if site_activity is not None:
             info_opts['_batch_site_activity'] = site_activity
         try:
@@ -1431,10 +1726,17 @@ class MetaUtil:
         if not fresh_data:
             return {'ret': 'warning', 'msg': f"[{ui_code}] 출처 사이트에서 정보를 가져오지 못했습니다.", 'is_updated': False}
 
-        ModuleMetaDb.save_metadata(category, fresh_data)
+        from support_site import SiteAvBase
+        media_warning = SiteAvBase.image_storage_error(fresh_data)
+        SiteAvBase.sanitize_incomplete_images(fresh_data)
+        if media_warning:
+            logger.warning('[MetaUtil] 미디어 일부 실패, 메타데이터 갱신 계속 (%s): %s', code, media_warning)
+
+        if not ModuleMetaDb.save_metadata(category, fresh_data):
+            return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
         title_log = fresh_data.get('title', '')
         logger.info(f"[{module.name}] [{code}] 메타데이터 갱신 완료: {title_log}")
-        return {'ret': 'success', 'msg': f"[{ui_code}] 메타데이터 갱신 완료!\n{title_log}", 'title_log': title_log, 'is_updated': True, 'data': fresh_data}
+        return {'ret': 'success', 'msg': f"[{ui_code}] 메타데이터 갱신 완료!\n{title_log}" + (' (일부 미디어 실패)' if media_warning else ''), 'media_warning': media_warning, 'title_log': title_log, 'is_updated': True, 'data': fresh_data}
 
     @classmethod
     def refresh_auto_search(cls, module, code, category, site_activity=None):
@@ -1484,7 +1786,7 @@ class MetaUtil:
         except Exception:
             pass
 
-        info_opts = {'skip_trans': False, 'for_db': True}
+        info_opts = {'skip_trans': False, 'for_db': True, 'reuse_existing_media': False, 'preserve_preview': True}
         if site_activity is not None:
             info_opts['_batch_site_activity'] = site_activity
         try:
@@ -1495,11 +1797,18 @@ class MetaUtil:
         if not fresh_data:
             return {'ret': 'warning', 'msg': f"[{ui_code}] 상세 정보(Info)를 가져오지 못했습니다.", 'is_updated': False}
 
-        ModuleMetaDb.save_metadata(category, fresh_data)
+        from support_site import SiteAvBase
+        media_warning = SiteAvBase.image_storage_error(fresh_data)
+        SiteAvBase.sanitize_incomplete_images(fresh_data)
+        if media_warning:
+            logger.warning('[MetaUtil] 미디어 일부 실패, 메타데이터 갱신 계속 (%s): %s', code, media_warning)
+
+        if not ModuleMetaDb.save_metadata(category, fresh_data):
+            return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
         title_log = fresh_data.get('title', '')
         site_tag = best_item.get('site_key', '').upper()
         msg = f"[{ui_code}] 자동 재검색 갱신 완료! ({site_tag})\n{title_log}"
-        return {'ret': 'success', 'msg': msg, 'title_log': title_log, 'is_updated': True, 'data': fresh_data}
+        return {'ret': 'success', 'msg': msg + (' (일부 미디어 실패)' if media_warning else ''), 'media_warning': media_warning, 'title_log': title_log, 'is_updated': True, 'data': fresh_data}
 
     @classmethod
     def heal_metadata(cls, module, code, category, site_activity=None):
@@ -1543,7 +1852,7 @@ class MetaUtil:
         skip_trans = not need_trans
 
         ps_url = cached_json.get('original', {}).get('thumb', {}).get('ps_url')
-        info_opts = {'skip_trans': skip_trans, 'for_db': True}
+        info_opts = {'skip_trans': skip_trans, 'for_db': True, 'reuse_existing_media': False, 'preserve_preview': True}
         if site_activity is not None:
             info_opts['_batch_site_activity'] = site_activity
         if ps_url:
@@ -1564,6 +1873,12 @@ class MetaUtil:
 
         if not fresh_data:
             return {'ret': 'warning', 'msg': '최신 정보를 가져오지 못했습니다.', 'title_log': title_for_log, 'is_updated': False}
+
+        from support_site import SiteAvBase
+        media_warning = SiteAvBase.image_storage_error(fresh_data)
+        SiteAvBase.sanitize_incomplete_images(fresh_data)
+        if media_warning:
+            logger.warning('[MetaUtil] 미디어 일부 실패, 메타데이터 갱신 계속 (%s): %s', code, media_warning)
 
         changes = []
 
@@ -1662,7 +1977,8 @@ class MetaUtil:
         is_updated = (len(changes) > 0)
 
         if is_updated:
-            ModuleMetaDb.save_metadata(category, fresh_data)
+            if not ModuleMetaDb.save_metadata(category, fresh_data):
+                return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
 
             sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
             if sess:
@@ -1925,6 +2241,11 @@ class MetaUtil:
         if not sess:
             return {'ret': 'error', 'error_code': 'database_unavailable', 'msg': '세션 획득 실패', 'is_updated': False}
 
+        file_operations = []
+        files_committed = False
+        pending_gdrive_images = {}
+        prepared_image_results = {}
+        defer_gdrive_images = False
         try:
             with batch_stage(logger, 'DB read', code):
                 item = sess.query(MetaItem).options(lazyload('*')).filter_by(code=code, category=std_cat).first()
@@ -1967,10 +2288,20 @@ class MetaUtil:
             synced_image_paths = {}
 
             def sync_single_image_asset(source_url, filename_base, media_type, current_url="", sort_idx=0):
-                with batch_stage(logger, 'image ' + media_type, code):
-                    return perform_image_sync(source_url, filename_base, media_type, current_url, sort_idx)
+                if (media_type, sort_idx) in prepared_image_results:
+                    return prepared_image_results[(media_type, sort_idx)]
+                operation_start = len(file_operations)
+                try:
+                    with batch_stage(logger, 'image ' + media_type, code):
+                        return perform_image_sync(source_url, filename_base, media_type, current_url, sort_idx)
+                except Exception as exc:
+                    logger.warning('[MetaUtil] %s 이미지 처리 실패 (%s): %s', media_type, code, exc)
+                    return None, False
+                finally:
+                    cls.finish_media_replacements([op for op in file_operations[operation_start:] if op['status'] != 'generated'], False)
 
             def perform_image_sync(source_url, filename_base, media_type, current_url="", sort_idx=0):
+                operation = None
                 def image_result(url, changed):
                     if url:
                         if image_mode == 'gdrive':
@@ -1979,6 +2310,9 @@ class MetaUtil:
                             synced_image_paths[url] = MetaPreviewUtil.get_recorded_remote_path(fid, dest_rel, category=std_cat, is_image=True)
                         else:
                             synced_image_paths[url] = dest_rel
+                        if operation is not None:
+                            from .util_preview import MediaReplacement
+                            MediaReplacement.generated(operation, fid if image_mode == 'gdrive' else '')
                     return url, changed
 
                 target_filename = f"{filename_base}.jpg"
@@ -2030,6 +2364,16 @@ class MetaUtil:
                             # DB가 사이트 주소이거나 주소가 다른 경우 로컬 서버 주소로 DB 갱신
                             return image_result(expected_url, True)
 
+                if image_mode in ('gdrive', 'image_server'):
+                    from .util_preview import MediaReplacement
+                    operation = cls.prepare_storage_replacement(code, std_cat, image_mode, dest_rel, media_type, sort_idx)
+                    if operation is not None:
+                        file_operations.append(operation)
+                        if skip_existing and operation['had_original']:
+                            # An earlier soft/cache lookup was inconclusive. Do not overwrite.
+                            return None, False
+                        MediaReplacement.stage(operation)
+
                 # Rebuilding TPDB movie covers must keep the same front/back layout as initial scraping.
                 original_thumb = (getattr(item, 'original', None) or {}).get('thumb') or {}
                 back_cover = original_thumb.get('back_cover')
@@ -2039,6 +2383,12 @@ class MetaUtil:
                     if merged:
                         try:
                             if image_mode == 'gdrive':
+                                if defer_gdrive_images:
+                                    fd, queued = tempfile.mkstemp(prefix='sync_cover_', suffix='.jpg', dir=tmp_dir)
+                                    os.close(fd)
+                                    shutil.copyfile(merged, queued)
+                                    pending_gdrive_images[dest_rel] = (queued, media_type, sort_idx)
+                                    return None, False
                                 file_id = cls.upload_image_to_gdrive(merged, dest_rel, category=std_cat, overwrite=not skip_existing)
                                 if file_id:
                                     MetaPreviewUtil.register_remote_file(dest_rel, file_id, category=std_cat, is_image=True)
@@ -2064,12 +2414,15 @@ class MetaUtil:
                                 if img_obj:
                                     cls.save_normalized_jpeg(img_obj, tmp_file)
                                     img_obj.close()
+                            if defer_gdrive_images:
+                                pending_gdrive_images[dest_rel] = (tmp_file, media_type, sort_idx)
+                                return None, False
                             uploaded_fid = cls.upload_image_to_gdrive(tmp_file, dest_rel, category=std_cat, overwrite=not skip_existing)
                             if uploaded_fid:
                                 MetaPreviewUtil.register_remote_file(dest_rel, uploaded_fid, category=std_cat, is_image=True)
                                 return image_result(cls.format_gdrive_thumbnail_url(uploaded_fid), True)
                     finally:
-                        if os.path.exists(tmp_file):
+                        if os.path.exists(tmp_file) and not any(value[0] == tmp_file for value in pending_gdrive_images.values()):
                             try: os.remove(tmp_file)
                             except Exception: pass
                     return None, False
@@ -2083,6 +2436,10 @@ class MetaUtil:
                             if img_obj:
                                 cls.save_normalized_jpeg(img_obj, local_dest)
                                 img_obj.close()
+                            else:
+                                return None, False
+                        if not os.path.isfile(local_dest) or os.path.getsize(local_dest) == 0:
+                            return None, False
                         MetaPreviewUtil.register_local_file(local_dest)
                         return image_result(expected_url, True)
                     return None, False
@@ -2115,6 +2472,37 @@ class MetaUtil:
                     if not matches_user:
                         return candidate
                 return ''
+
+            if image_mode == 'gdrive':
+                # Prepare both ordinary covers before opening the upload connection.
+                # Reused/user files stay out of the transfer directory entirely.
+                defer_gdrive_images = True
+                try:
+                    for kind, enabled, order, suffix in (('poster', sync_poster, 0, 'p'), ('landscape', sync_landscape, 1, 'pl')):
+                        if not enabled:
+                            continue
+                        media = next((m for m in sorted(item.media_files, key=cls.is_user_media, reverse=True)
+                                      if m.media_type == kind and cls.media_in_storage(m, image_mode)), None)
+                        if media is not None and cls.is_user_media(media):
+                            continue
+                        current = (item.poster_url or '') if kind == 'poster' else (media.url if media else extra_info.get('landscape_url', ''))
+                        source = official_source(kind, orig_thumb.get(kind), current)
+                        try:
+                            prepared_image_results[(kind, order)] = perform_image_sync(source, f'{stem}_{suffix}', kind, current, order)
+                        except Exception as exc:
+                            logger.warning('[MetaUtil] %s 이미지 준비 실패 (%s): %s', kind, code, exc)
+                            prepared_image_results[(kind, order)] = (None, False)
+                finally:
+                    defer_gdrive_images = False
+                if pending_gdrive_images:
+                    uploaded = cls.upload_images_to_gdrive({path: value[0] for path, value in pending_gdrive_images.items()},
+                        category=std_cat, overwrite=not skip_existing, replacements=file_operations, code=code)
+                    for relative, file_id in uploaded.items():
+                        _, kind, order = pending_gdrive_images[relative]
+                        url = cls.format_gdrive_thumbnail_url(file_id)
+                        synced_image_paths[url] = relative
+                        prepared_image_results[(kind, order)] = (url, True)
+                cls.finish_media_replacements([entry for entry in file_operations if entry['status'] != 'generated'], False)
 
             # 이미지 자산 동기화 (개인 저장소 모드일 때만 수행)
             if image_mode in ['gdrive', 'image_server']:
@@ -2225,6 +2613,9 @@ class MetaUtil:
                         if synced_arts_count > 0:
                             changes.append(f'팬아트 {synced_arts_count}장 동기화')
 
+            if failures:
+                logger.warning('[MetaUtil] 일부 이미지 실패, 성공한 미디어만 DB 반영 (%s): %s', code, ', '.join(failures))
+
             # 공식 트레일러 영상 자산 동기화
             if sync_trailer and MetaPreviewUtil.is_trailer_download_enabled(std_cat):
                 target_storage = MetaPreviewUtil.get_setting("preview_storage_type", std_cat, default="local")
@@ -2320,6 +2711,7 @@ class MetaUtil:
                             item_dict=trailer_item,
                             use_dir_cache=use_dir_cache
                         )
+                    file_operations.extend(trailer_item['extra_info'].pop('_media_replacements', []))
                     if t_succ:
                         extra_info = trailer_item['extra_info']
                         item.extra_info = extra_info
@@ -2356,8 +2748,11 @@ class MetaUtil:
                 item.updated_time = datetime.now()
                 with batch_stage(logger, 'DB commit', code):
                     commit_storage_record(sess, item, snapshot, ('media_files',))
+                files_committed = True
 
             detail_msg = ", ".join(changes) if changes else "변경 없음"
+            if failures:
+                detail_msg += " (미디어 실패: " + ", ".join(failures) + ")"
             return {
                 'ret': 'success',
                 'is_updated': is_modified,
@@ -2372,6 +2767,10 @@ class MetaUtil:
             logger.error(f"[MetaUtil] sync_item_media_to_storage 오류 ({code}): {exc}")
             return {'ret': 'error', 'msg': str(exc), 'is_updated': False}
         finally:
+            cls.finish_media_replacements(file_operations, files_committed)
+            for temporary, _, _ in pending_gdrive_images.values():
+                if os.path.exists(temporary):
+                    os.remove(temporary)
             sess.remove()
 
 

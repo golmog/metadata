@@ -703,7 +703,8 @@ function injectDbModals() {
                     </button>
                     <div class="dropdown-menu shadow">
                       <a class="dropdown-item btn_modal_crop text-light font-weight-bold" href="#">✏️ 포스터 크롭 에디터</a>
-                      <a class="dropdown-item btn_modal_refresh_image_only text-primary font-weight-bold" href="#">🔄 이미지/미디어 재동기화</a>
+                      <a class="dropdown-item btn_modal_refresh_image_only text-primary font-weight-bold" href="#" data-media-action="reuse">🔄 이미지/미디어 동기화</a>
+                      <a class="dropdown-item btn_modal_refresh_image_only text-warning font-weight-bold" href="#" data-media-action="replace">🔁 이미지/미디어 재처리</a>
                     </div>
                   </div>
 
@@ -1155,9 +1156,14 @@ function update_modal_image_preview($modal) {
             $spinner.stop(true, true).fadeIn(120);
             $img.css('opacity', '0.55').show();
 
-            $img.off('load.prev_img error.prev_img').on('load.prev_img error.prev_img', function() {
+            $img.off('load.prev_img error.prev_img').on('load.prev_img', function() {
                 $spinner.stop(true, true).fadeOut(140);
-                $img.css('opacity', '1');
+                $noImg.hide();
+                $img.css('opacity', '1').show();
+            }).on('error.prev_img', function() {
+                $spinner.stop(true, true).hide();
+                $img.hide();
+                $noImg.show();
             });
 
             $img.attr('src', cur.url).attr('data-src', cur.url).data('src', cur.url);
@@ -2171,8 +2177,9 @@ function make_item_list(data) {
             var gallery_attr = encodeURIComponent(JSON.stringify(item_gallery));
 
             var img_html = '';
-            if (row.poster_url && row.poster_url.trim() !== '') {
-                img_html = '<img src="' + row.poster_url + '" class="enlarge-img shadow-sm" loading="lazy" data-gallery="' + gallery_attr + '" data-src="' + row.poster_url + '" title="클릭하여 갤러리 크게 보기">';
+            var listImageUrl = getDisplayMediaUrl(list_p_url || list_pl_url || row.poster_url || jd.landscape_url || '', row.site);
+            if (listImageUrl) {
+                img_html = '<img src="' + listImageUrl + '" class="enlarge-img shadow-sm" loading="lazy" data-gallery="' + gallery_attr + '" data-src="' + listImageUrl + '" title="클릭하여 갤러리 크게 보기">';
             } else {
                 img_html = '<div class="d-flex align-items-center justify-content-center rounded text-muted no-image-box w-100">No Image</div>';
             }
@@ -2214,7 +2221,8 @@ function make_item_list(data) {
             str += '      </button>';
             str += '      <div class="dropdown-menu dropdown-menu-right shadow">';
             str += '        <a class="dropdown-item btn_crop_modal" href="#" data-idx="' + i + '" data-category="' + (row.category || '') + '">✏️ 포스터 크롭 에디터</a>';
-            str += '        <a class="dropdown-item btn_refresh_image_only text-primary font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔄 이미지/미디어 재동기화</a>';
+            str += '        <a class="dropdown-item btn_refresh_image_only text-primary font-weight-bold" href="#" data-media-action="reuse" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔄 이미지/미디어 동기화</a>';
+            str += '        <a class="dropdown-item btn_refresh_image_only text-warning font-weight-bold" href="#" data-media-action="replace" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔁 이미지/미디어 재처리</a>';
             str += '      </div>';
             str += '    </div>';
 
@@ -2613,7 +2621,11 @@ function renderPersonModalContent(p, $modal) {
             tableHtml += '  <td class="align-middle text-center">' + subImgTag + '</td>';
             tableHtml += '  <td class="align-middle font-weight-bold ' + (isMaster ? 'text-primary' : 'text-white') + '">' + sId + (isMaster ? ' <span class="badge badge-primary px-1" style="font-size: 0.72rem;">대표</span>' : '') + '</td>';
             tableHtml += '  <td class="align-middle text-light">' + subNameOrg + subNameKo + '</td>';
-            tableHtml += '  <td class="align-middle text-center"><button type="button" class="btn btn-sm btn-outline-info font-weight-bold py-1 px-2 btn_open_sub_person_modal" data-sub-actor="' + subItemJsonAttr + '" style="font-size: 0.75rem; white-space: nowrap;">🔗 상세</button></td>';
+            tableHtml += '  <td class="align-middle text-center">';
+            if (!isMaster) {
+                tableHtml += '<button type="button" class="btn btn-sm btn-outline-info font-weight-bold py-1 px-2 btn_open_sub_person_modal" data-sub-actor="' + subItemJsonAttr + '" style="font-size: 0.75rem; white-space: nowrap;">🔗 상세</button>';
+            }
+            tableHtml += '</td>';
             tableHtml += '  <td class="align-middle text-center" style="white-space: nowrap;">';
             if (!isMaster) {
                 tableHtml += '    <button type="button" class="btn btn-sm btn-outline-primary font-weight-bold py-1 px-2 mr-1 btn_person_sub_set_master" data-person-id="' + p.id + '" data-sub-id="' + sId + '" style="font-size: 0.75rem;">★ 대표 지정</button>';
@@ -2770,15 +2782,16 @@ function renderDbEditModalContent(row, $modal) {
         raw_trailer_url = orig_data.trailer;
     }
 
-    var final_p_url = row.poster_url || '';
-    var final_pl_url = '';
+    var storedImages = jd.stored_images;
+    var final_p_url = storedImages ? (storedImages.poster_url || '') : (jd.poster_url || row.poster_url || '');
+    var final_pl_url = storedImages ? (storedImages.landscape_url || '') : (jd.landscape_url || '');
     var final_trailer_url = '';
 
     if (jd.thumb && Array.isArray(jd.thumb)) {
         var p_th = jd.thumb.find(function(t){ return t && t.aspect === 'poster'; });
-        if (p_th && p_th.value) final_p_url = p_th.value;
+        if (!storedImages && p_th && p_th.value) final_p_url = p_th.value;
         var pl_th = jd.thumb.find(function(t){ return t && t.aspect === 'landscape'; });
-        if (pl_th && pl_th.value) final_pl_url = pl_th.value;
+        if (!storedImages && pl_th && pl_th.value) final_pl_url = pl_th.value;
     }
 
     if (jd.extras && Array.isArray(jd.extras)) {
@@ -3647,6 +3660,14 @@ $(document).on('click', '#btn_view_db_json', function(e){
 
     var payload = normalizeDbEditPayload(row, jd, $modal);
     var jsonOutput = JSON.parse(JSON.stringify(payload));
+    if (!(jsonOutput.thumb || []).some(function(t) { return t.aspect === 'poster' && t.value; })) {
+        var displayLandscape = (jsonOutput.thumb || []).find(function(t) { return t.aspect === 'landscape' && t.value; });
+        if (displayLandscape) {
+            jsonOutput.thumb = (jsonOutput.thumb || []).concat([Object.assign({}, displayLandscape, {aspect: 'poster'})]);
+            jsonOutput.poster_url = displayLandscape.value;
+        }
+    }
+    delete jsonOutput.stored_images;
     var isWestern = (row.category === 'WESTERN' || (typeof sub !== 'undefined' && sub === 'western'));
     var includeMale = (typeof window.western_json_include_male !== 'undefined') ? window.western_json_include_male : false;
 
@@ -4272,6 +4293,13 @@ $(document).on('click', '.btn_remove_actor', function(e){
     }
 });
 
+// Explicit menu actions apply only to this request and never change shared settings.
+function requestImageMediaRefresh(code, category, action, callback) {
+    globalSendCommand('db_refresh_image_only', String(code), category, action === 'replace' ? 'replace' : 'reuse', function(ret) {
+        callback(ret || {ret: 'error', msg: '동기화 응답을 받지 못했습니다.'});
+    });
+}
+
 $(document).off('click', '.btn_refresh_image_only').on('click', '.btn_refresh_image_only', function(e){
     e.preventDefault();
     var $dropdown = $(this).closest('.dropdown');
@@ -4280,10 +4308,12 @@ $(document).off('click', '.btn_refresh_image_only').on('click', '.btn_refresh_im
     var code = $(this).attr('data-code') || $(this).data('code');
     if (!code) return;
     var cat = $(this).attr('data-category') || $(this).data('category') || '';
-    if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 동기화를 요청합니다...', 'info');
+    var mediaAction = $(this).attr('data-media-action') === 'replace' ? 'replace' : 'reuse';
+    var operationLabel = mediaAction === 'replace' ? '재처리' : '동기화';
+    if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 ' + operationLabel + '를 요청합니다...', 'info');
 
-    globalSendCommand('db_refresh_image_only', String(code), cat, null, function(ret){
-        if (typeof notify === 'function') notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
+    requestImageMediaRefresh(code, cat, mediaAction, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || operationLabel + ' 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret.ret === 'success') {
             window.globalRequestSearch(null, true);
         }
@@ -4301,12 +4331,14 @@ $(document).on('click', '.btn_modal_refresh_image_only', function(e){
     if (!code) return;
     var row = $modal.data('row_data') || {};
     var cat = row.category || get_list_context().category || '';
-    if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 동기화를 요청합니다...', 'info');
+    var mediaAction = $(this).attr('data-media-action') === 'replace' ? 'replace' : 'reuse';
+    var operationLabel = mediaAction === 'replace' ? '재처리' : '동기화';
+    if (typeof notify === 'function') notify('[' + code + '] 이미지/미디어 ' + operationLabel + '를 요청합니다...', 'info');
 
-    setModalLoadingState($modal, true, '이미지 및 미디어 재동기화 중...', $toggleBtn);
+    setModalLoadingState($modal, true, '이미지 및 미디어 ' + operationLabel + ' 중...', $toggleBtn);
 
-    globalSendCommand('db_refresh_image_only', String(code), cat, null, function(ret){
-        if (typeof notify === 'function') notify(ret.msg || '동기화 완료', ret.ret === 'success' ? 'success' : 'warning');
+    requestImageMediaRefresh(code, cat, mediaAction, function(ret){
+        if (typeof notify === 'function') notify(ret.msg || operationLabel + ' 완료', ret.ret === 'success' ? 'success' : 'warning');
         if (ret && ret.ret === 'success') {
             reloadDbEditModalData(code, cat, $modal, function(){
                 setModalLoadingState($modal, false, '', $toggleBtn);

@@ -338,8 +338,9 @@ class ModuleRoute(PluginModuleBase):
                 return redirect(ret)    
 
             elif sub in ["jav_image", "jav_image_un"]:
-                image_url = unquote_plus(request.args.get("url")) if request.args.get("url") else None
-                mode = unquote_plus(request.args.get("mode")) if request.args.get("mode") else None
+                # Flask already decoded the outer query; preserve signed URL bytes.
+                image_url = request.args.get("url")
+                mode = request.args.get("mode")
                 site = request.args.get("site")
                 path = request.args.get("path")
                 
@@ -413,11 +414,16 @@ class ModuleRoute(PluginModuleBase):
                 target_site_cls = self._get_site_class(site)
                 return target_site_cls.jav_video(video_url)
 
-        except HTTPException:
+        except HTTPException as e:
+            if sub in ('jav_image', 'jav_image_un'):
+                # FF's outer plugin route catches raised exceptions without a response.
+                return e.get_response(req.environ)
             raise
-        except Exception as e: 
+        except Exception as e:
             logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
+            if sub in ('jav_image', 'jav_image_un'):
+                return Response(status=500)
 
 
     def _get_site_class(self, site):
