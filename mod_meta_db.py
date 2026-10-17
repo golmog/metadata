@@ -1615,7 +1615,7 @@ class ModuleMetaDb(PluginModuleBase):
         debut_val = str(a_extra.get('debut') or a_extra.get('career_start_year') or '').strip()
         agency_val = str(a_extra.get('agency') or '').strip()
         blood_val = str(a_extra.get('blood') or '').strip().upper().replace('형', '')
-        country_val = str(a_extra.get('country') or ('미국' if person_domain == 'WESTERN' else '일본')).strip()
+        country_val = str(a_extra.get('country') or actor_data.get('country') or ('일본' if person_domain == 'JAV' else '')).strip()
 
         raw_gender = str(actor_data.get('gender') or a_extra.get('gender') or ('female' if person_domain == 'JAV' else '')).strip().lower()
         gender_val = 'male' if raw_gender in ['m', 'male', '남', '남성'] else 'female'
@@ -1694,6 +1694,7 @@ class ModuleMetaDb(PluginModuleBase):
             'agency': agency_val,
             'blood': blood_val,
             'info_url': info_url_candidate,
+            'gender': gender_val,
             'country': country_val
         }
 
@@ -1754,14 +1755,24 @@ class ModuleMetaDb(PluginModuleBase):
 
         else:
             # 기존 레코드 존재 시 수동 수정 데이터(manual_data)를 제외한 공백 물리 컬럼 보강
-            _, _, manual_data = cls.normalize_person_extra(p_rec.extra_info, person=p_rec)
-
-            if not p_rec.gender and gender_val: p_rec.gender = gender_val
+            _, source_data, manual_data = cls.normalize_person_extra(p_rec.extra_info, person=p_rec)
+            stored_gender = str(source_data.get('gender') or raw_gender).strip().lower()
+            fill_gender = ('male' if stored_gender in ('m', 'male', '남', '남성') else 'female') if stored_gender else gender_val
+            fill_country = str(source_data.get('country') or country_val).strip()
+            if 'gender' not in manual_data and not p_rec.gender and fill_gender:
+                p_rec.gender = fill_gender
+            if 'country' not in manual_data and not p_rec.country and fill_country:
+                p_rec.country = fill_country
+            # Keep the original profile available when a manual override is reset.
+            for field, value in (('gender', raw_gender), ('country', country_val)):
+                if value and not source_data.get(field):
+                    source_data[field] = gender_val if field == 'gender' else value
+            p_rec.source_data = source_data
             if 'height' not in manual_data and h_val and not p_rec.height: p_rec.height = h_val
-            if 'birth' not in manual_data and birth_val and not p_rec.birth_date:
+            if 'birth' not in manual_data and 'birth_date' not in manual_data and birth_val and not p_rec.birth_date:
                 p_rec.birth_date = birth_val
                 p_rec.birth_year = birth_year_val
-            if 'debut' not in manual_data and debut_val and not p_rec.debut_date: p_rec.debut_date = debut_val
+            if 'debut' not in manual_data and 'debut_date' not in manual_data and debut_val and not p_rec.debut_date: p_rec.debut_date = debut_val
             if 'body_size' not in manual_data and raw_body_size and not p_rec.body_size:
                 p_rec.body_size = raw_body_size
                 p_rec.bust = bust_val or p_rec.bust
@@ -1770,7 +1781,7 @@ class ModuleMetaDb(PluginModuleBase):
             if 'cup_size' not in manual_data and 'bra_size' not in manual_data and cup_val and not p_rec.cup_size:
                 p_rec.cup_size = cup_val
             if 'agency' not in manual_data and agency_val and not p_rec.agency: p_rec.agency = agency_val
-            if 'blood' not in manual_data and blood_val and not p_rec.blood_type: p_rec.blood_type = blood_val
+            if 'blood' not in manual_data and 'blood_type' not in manual_data and blood_val and not p_rec.blood_type: p_rec.blood_type = blood_val
             if 'info_url' not in manual_data and info_url_candidate and not p_rec.info_url: p_rec.info_url = info_url_candidate
 
             if a_local and not p_rec.local_path: p_rec.local_path = a_local
@@ -1804,6 +1815,7 @@ class ModuleMetaDb(PluginModuleBase):
         cls.sync_person_media_columns(p_rec)
         p_rec.thumb_url = cls.resolve_person_active_thumb(p_rec) or p_rec.thumb_url
         p_rec.has_photo = bool(p_rec.thumb_url)
+        p_rec.works_count = sum(len(v) for v in (p_rec.works or {}).values() if isinstance(v, list))
         return p_rec
 
     @staticmethod
@@ -2068,7 +2080,7 @@ class ModuleMetaDb(PluginModuleBase):
             item.original = clean_original
             merged_extra_info.pop('_storage_media', None)
             merged_extra_info.pop('unavailable_trailer', None)
-            item.extra_info = merged_extra_info
+            item.extra_info = copy.deepcopy(merged_extra_info)
             item.spec_data = copy.deepcopy(entity_dict.get('spec_data') or {})
             item.updated_time = datetime.now()
 
@@ -2300,6 +2312,7 @@ class ModuleMetaDb(PluginModuleBase):
 
                         works_dict[std_cat] = cat_works
                         central_person.works = works_dict
+                        central_person.works_count = sum(len(v) for v in works_dict.values() if isinstance(v, list))
 
                 final_idx = (central_person.person_idx if central_person else a_idx) or ''
                 final_name_org = (central_person.name_org if central_person else (actor_data.get('name_org') or ''))
@@ -2356,12 +2369,13 @@ class ModuleMetaDb(PluginModuleBase):
                                     p_target_works = copy.deepcopy(p_target.works)
                                     p_target_works[std_cat] = updated_w_list
                                     p_target.works = p_target_works
+                                    p_target.works_count = sum(len(v) for v in p_target_works.values() if isinstance(v, list))
                                     logger.info(f"[MetaDB Auto-Healing] 오매칭 해제: 인물 [{p_target.name_ko or p_target.name_org}]의 출연작에서 [{code}] 자동 삭제 완료")
                 except Exception as e_clean_prev:
                     logger.debug(f"[MetaDB Auto-Healing] 이전 배우 출연작 정리 예외: {e_clean_prev}")
 
             merged_extra_info['_actors'] = stored_actors
-            item.extra_info = merged_extra_info
+            item.extra_info = copy.deepcopy(merged_extra_info)
 
             # 장르 및 태그 매핑
             source_genres = orig_genres_list if orig_genres_list else genres_list
@@ -2478,7 +2492,7 @@ class ModuleMetaDb(PluginModuleBase):
                     })
 
                 merged_extra_info['fingerprints'] = sync_json_list
-                item.extra_info = merged_extra_info
+                item.extra_info = copy.deepcopy(merged_extra_info)
 
             nested_item.commit()
             if nested_person:
@@ -2911,54 +2925,10 @@ class ModuleMetaDb(PluginModuleBase):
             unique_cluster_count = len(merged_clusters)
             source_merged_count = max(0, raw_total_count - unique_cluster_count)
 
-            progress(phase='healing', status='서양 인물 결측치 확인 중', current=0, total=0)
-            western_healed_count = 0
-            try:
-                western_persons = sess.query(MetaPerson).filter(func.upper(MetaPerson.domain) == 'WESTERN').all()
-                for wp in western_persons:
-                    needs_commit = False
-
-                    # 기본 성별 및 국적 기본값 보정
-                    if not wp.gender and 'gender' not in (wp.manual_data or {}):
-                        w_extra = wp.extra_info if isinstance(wp.extra_info, dict) else {}
-                        g_cand = str(w_extra.get('gender') or '').lower()
-                        wp.gender = 'male' if g_cand in ['m', 'male', '남', '남성'] else 'female'
-                        needs_commit = True
-
-                    if not wp.country and 'country' not in (wp.manual_data or {}):
-                        wp.country = "미국"
-                        needs_commit = True
-
-                    # 썸네일 캐시 및 사진 등록 플래그 보정
-                    if not wp.thumb_url or wp.has_photo is None:
-                        act_thumb = wp.thumb_url or cls.resolve_person_active_thumb(wp)
-                        wp.thumb_url = act_thumb
-                        wp.has_photo = bool(act_thumb and str(act_thumb).strip())
-                        needs_commit = True
-
-                    # 소장 출연작 수 집계 보정
-                    if wp.works_count is None or wp.works_count == 0:
-                        w_dict = wp.works if isinstance(wp.works, dict) else {}
-                        calc_w_cnt = sum(len(w_list) for w_list in w_dict.values() if isinstance(w_list, list))
-                        if calc_w_cnt > 0:
-                            wp.works_count = calc_w_cnt
-                            needs_commit = True
-
-                    if needs_commit:
-                        western_healed_count += 1
-
-                if western_healed_count > 0:
-                    sess.commit()
-                    logger.info(f"[MetaDB ActorSync] 서양(WESTERN) 인물 DB 물리 컬럼 {western_healed_count}명 일괄 치유 완료")
-            except Exception as e_west_heal:
-                sess.rollback()
-                logger.error(f"[MetaDB ActorSync] 서양 인물 결측치 치유 예외: {e_west_heal}")
-
-            western_msg = f", 서양 인물 결측치 치유: {western_healed_count}명" if western_healed_count > 0 else ""
             msg = (
                 f"동기화 성공 ({file_ver}): 원본 {raw_total_count:,}건 중 {source_merged_count:,}건 중복 통합 ➔ "
                 f"고유 인물 {unique_cluster_count:,}명 반영 (신규: {inserted:,}건, 갱신: {updated:,}건, "
-                f"식별 충돌 제외: {ambiguous_count:,}건{western_msg}, 소요시간: {elapsed:.2f}초)"
+                f"식별 충돌 제외: {ambiguous_count:,}건, 소요시간: {elapsed:.2f}초)"
             )
             progress(phase='complete', status='배우 DB 동기화 완료', current=unique_cluster_count,
                      total=unique_cluster_count, inserted=inserted, updated=updated,
@@ -3649,7 +3619,7 @@ class ModuleMetaDb(PluginModuleBase):
                         'name_org': p.name_org or '',
                         'name_ko': p.name_ko or '',
                         'name_en': p.name_en or '',
-                        'gender': (p.extra_info or {}).get('gender', ''),
+                        'gender': p.gender or '',
                         'role': pm.role_name or '출연'
                     })
 
@@ -3697,7 +3667,7 @@ class ModuleMetaDb(PluginModuleBase):
                             if not p_rec and a_name_ko:
                                 p_rec = person_sess.query(MetaPerson).filter_by(domain=person_dom, name_ko=a_name_ko).first()
 
-                            p_gender = (p_rec.extra_info.get('gender') if (p_rec and p_rec.extra_info) else '') or a_entry.get('gender') or ''
+                            p_gender = (p_rec.gender or '') if p_rec else (a_entry.get('gender') or '')
                             display_name = (p_rec.name_ko or p_rec.name_org or '') if p_rec else (a_name_ko or a_name_org or '')
 
                             actor_extra_out = copy.deepcopy(a_entry.get('extra_info') or {})
@@ -4181,12 +4151,17 @@ class ModuleMetaDb(PluginModuleBase):
                 p_rec.site_img_url = current_site_img
                 is_healing_needed = True
 
+            # Count all retained works, including categories whose DB is unavailable.
+            retained_works_count = sum(len(v) for v in p_works.values() if isinstance(v, list))
+            if p_rec.works_count != retained_works_count:
+                is_healing_needed = True
+
             # 레거시 데이터가 실시간 데이터로 교정되었을 경우 DB에 즉시 영구 반영 (Healing Commit)
             if is_healing_needed:
                 try:
                     p_rec.works = p_works
                     p_rec.media_src = p_media
-                    p_rec.works_count = sum(len(v) for v in works_detailed.values())
+                    p_rec.works_count = retained_works_count
                     resolved_thumb = cls.resolve_person_active_thumb(p_rec)
                     p_rec.thumb_url = resolved_thumb
                     p_rec.has_photo = bool(resolved_thumb and str(resolved_thumb).strip())
@@ -4250,7 +4225,7 @@ class ModuleMetaDb(PluginModuleBase):
                 'media_src': p_media,
                 'works': p_works,
                 'works_detailed': works_detailed,
-                'works_count': sum(len(v) for v in works_detailed.values()),
+                'works_count': retained_works_count,
                 'extra_info': extra_data,
                 'source_data': source_data,
                 'manual_data': manual_data
@@ -4342,7 +4317,7 @@ class ModuleMetaDb(PluginModuleBase):
                 s_birth = str(performer_data.get('birth_date') or '').strip()
                 s_debut = str(performer_data.get('career_start_year') or '').strip()
                 s_height = cls._parse_integer(performer_data.get('height'))
-                s_country = str(performer_data.get('country') or '미국').strip()
+                s_country = str(performer_data.get('country') or '').strip()
                 s_info_url = f"https://stashdb.org/performers/{p_id_raw}" if p_id_raw else p_rec.info_url
                 s_aliases = performer_data.get('aliases') or []
 
@@ -4371,7 +4346,7 @@ class ModuleMetaDb(PluginModuleBase):
                 s_birth = str(extra_sub.get('birthday') or '').strip()
                 s_debut = str(extra_sub.get('career_start_year') or '').strip()
                 s_height = cls._parse_integer(extra_sub.get('height'))
-                s_country = str(extra_sub.get('birthplace_code') or extra_sub.get('nationality') or '미국').strip()
+                s_country = str(extra_sub.get('birthplace_code') or extra_sub.get('nationality') or '').strip()
                 s_info_url = f"https://theporndb.net/performers/{p_id_raw}" if p_id_raw else p_rec.info_url
                 s_aliases = performer_data.get('aliases') or []
 
@@ -4391,9 +4366,14 @@ class ModuleMetaDb(PluginModuleBase):
                 if primary_photo and primary_photo not in all_photos:
                     all_photos.insert(0, primary_photo)
 
+            if not s_gender:
+                s_gender = str(source_data.get('gender') or (p_rec.gender if 'gender' not in manual_data else '') or '').strip().lower()
             gender_norm = 'male' if s_gender in ['m', 'male', '남', '남성'] else 'female'
             m_by = re.search(r'\b(19\d{2}|20\d{2})\b', s_birth)
             s_by = int(m_by.group(1)) if m_by else None
+
+            if not s_country:
+                s_country = str(source_data.get('country') or (p_rec.country if 'country' not in manual_data else '') or '').strip()
 
             new_source = {
                 'name_org': s_name,

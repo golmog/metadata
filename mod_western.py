@@ -777,7 +777,7 @@ class ModuleWestern(PluginModuleBase):
                     'thumb': a_obj.get('thumb', ''),
                     'actor_idx': a_obj.get('actor_idx', '') or a_obj.get('person_idx', ''),
                     'role': a_obj.get('role', '출연'),
-                    'gender': (a_obj.get('extra_info') or {}).get('gender') or a_obj.get('gender', ''),
+                    'gender': a_obj.get('gender') if 'gender' in a_obj else (a_obj.get('extra_info') or {}).get('gender', ''),
                     'site_img_url': a_obj.get('site_img_url') or (a_obj.get('extra_info') or {}).get('site_img_url', ''),
                     'site_img_urls': a_obj.get('site_img_urls') or (a_obj.get('extra_info') or {}).get('site_img_urls', []),
                     'media_src': a_obj.get('media_src', {}),
@@ -792,7 +792,7 @@ class ModuleWestern(PluginModuleBase):
                     'thumb': getattr(a_obj, 'thumb', ''),
                     'actor_idx': getattr(a_obj, 'actor_idx', '') or getattr(a_obj, 'person_idx', ''),
                     'role': getattr(a_obj, 'role', '출연'),
-                    'gender': extra_d.get('gender') or getattr(a_obj, 'gender', ''),
+                    'gender': getattr(a_obj, 'gender', extra_d.get('gender', '')),
                     'extra_info': extra_d
                 })
 
