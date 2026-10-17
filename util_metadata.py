@@ -601,7 +601,6 @@ class MetaUtil:
                 cls.publish_user_workspace(target_folder, final_folder)
             item.updated_time = datetime.now()
             sess.commit()
-            ModuleMetaDb.checkpoint_wal()
 
             logger.info(f"[MetaUtil] 유저 포스터 저장 성공: [{std_cat}] {item.code} ➔ {new_poster_url}")
             return True, new_poster_url
@@ -756,7 +755,6 @@ class MetaUtil:
             item.updated_time = datetime.now()
             sess.add(item)
             sess.commit()
-            ModuleMetaDb.checkpoint_wal()
 
             logger.info(f"[MetaUtil] 원본 이미지 직접 저장 및 DB 즉시 반영 완료: [{std_cat}] {item.code} ➔ {target_filename}")
             return True, {
@@ -961,7 +959,6 @@ class MetaUtil:
             p_rec.has_photo = True
 
             sess.commit()
-            ModuleMetaDb.checkpoint_wal()
 
             logger.info(f"[MetaUtil] 인물 사진 저장 성공 완료 -> ID: {p_rec.person_idx}, URL: '{final_thumb_url}'")
             return True, final_thumb_url, p_rec
@@ -1889,7 +1886,6 @@ class MetaUtil:
             if is_modified:
                 item.updated_time = datetime.now()
                 sess.commit()
-                ModuleMetaDb.checkpoint_wal()
                 detail_msg = ", ".join(changes)
                 return {
                     'ret': 'success',
@@ -1922,16 +1918,20 @@ class MetaUtil:
         from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia
         from .util_preview import MetaPreviewUtil
         from support_site import SiteAvBase
+        from sqlalchemy.orm import lazyload
+        from .util_runtime import stage_storage_record, commit_storage_record, batch_stage
 
         sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
         if not sess:
             return {'ret': 'error', 'error_code': 'database_unavailable', 'msg': '세션 획득 실패', 'is_updated': False}
 
         try:
-            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            with batch_stage(logger, 'DB read', code):
+                item = sess.query(MetaItem).options(lazyload('*')).filter_by(code=code, category=std_cat).first()
             if not item:
                 return {'ret': 'error', 'error_code': 'not_found', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
 
+            snapshot = stage_storage_record(sess, item, ('media_files',))
             ui_code = item.ui_code or item.originaltitle or item.code
             title_for_log = str(item.title or ui_code).strip()
             if len(title_for_log) > 40:
@@ -1967,6 +1967,10 @@ class MetaUtil:
             synced_image_paths = {}
 
             def sync_single_image_asset(source_url, filename_base, media_type, current_url="", sort_idx=0):
+                with batch_stage(logger, 'image ' + media_type, code):
+                    return perform_image_sync(source_url, filename_base, media_type, current_url, sort_idx)
+
+            def perform_image_sync(source_url, filename_base, media_type, current_url="", sort_idx=0):
                 def image_result(url, changed):
                     if url:
                         if image_mode == 'gdrive':
@@ -2307,14 +2311,15 @@ class MetaUtil:
                     trailer_item['original'] = copy.deepcopy(orig_data)
                     if existing_video:
                         trailer_item['extra_info']['trailer_video'] = dict(existing_video)
-                    t_succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
-                        code,
-                        raw_tr_url,
-                        category=std_cat,
-                        force=not skip_existing,
-                        item_dict=trailer_item,
-                        use_dir_cache=use_dir_cache
-                    )
+                    with batch_stage(logger, 'trailer download/upload', code):
+                        t_succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
+                            code,
+                            raw_tr_url,
+                            category=std_cat,
+                            force=not skip_existing,
+                            item_dict=trailer_item,
+                            use_dir_cache=use_dir_cache
+                        )
                     if t_succ:
                         extra_info = trailer_item['extra_info']
                         item.extra_info = extra_info
@@ -2349,8 +2354,8 @@ class MetaUtil:
                         media.gdrive_fileid = matched.group(1) if matched else media.gdrive_fileid
                 ModuleMetaDb.sync_item_video_assets(item)
                 item.updated_time = datetime.now()
-                sess.commit()
-                ModuleMetaDb.checkpoint_wal()
+                with batch_stage(logger, 'DB commit', code):
+                    commit_storage_record(sess, item, snapshot, ('media_files',))
 
             detail_msg = ", ".join(changes) if changes else "변경 없음"
             return {
@@ -2435,6 +2440,16 @@ class MetaUtil:
 
     @classmethod
     def run_legacy_batch(cls, category, kind, options):
+        from .util_runtime import batch_database_limits
+        from .mod_meta_db import ModuleMetaDb
+        try:
+            with batch_database_limits(logger):
+                return cls._run_legacy_batch(category, kind, options)
+        finally:
+            ModuleMetaDb.checkpoint_wal()
+
+    @classmethod
+    def _run_legacy_batch(cls, category, kind, options):
         from framework import F
         from .setup import P
         cache = F.get_cache(f'{P.package_name}_legacy_batch_{category}_{kind}')
@@ -2464,6 +2479,7 @@ class MetaUtil:
 
     @classmethod
     def run_sync_worker(cls, category, sync_status, info_func=None, custom_root=None, auto_rescue=False):
+        from .util_runtime import cooperate
         from sqlalchemy.orm import sessionmaker, lazyload
         from .mod_meta_db import ModuleMetaDb, MetaItem
         registry, _, std_cat = ModuleMetaDb.get_session_and_domain(category)
@@ -2485,6 +2501,7 @@ class MetaUtil:
                     break
                 last_id = rows[-1].id
                 for record in rows:
+                    cooperate()
                     if sync_status.get('stop_flag'):
                         break
                     code = record.code
@@ -2505,7 +2522,6 @@ class MetaUtil:
                     logger.debug('[MetaWorker] [%s] %s: 동기화 결과=%s, 이미지 누락=%s',
                                  std_cat, code, result, missing)
                 sess.expunge_all()
-            ModuleMetaDb.checkpoint_wal()
             sync_status['status'] = '중단됨' if sync_status.get('stop_flag') else '완료'
         except Exception as exc:
             sess.rollback()
@@ -2521,6 +2537,7 @@ class MetaUtil:
     @classmethod
     def run_enrichment_worker(cls, category, enrich_status, info_func, delay=2.0):
         from sqlalchemy import and_, or_, exists
+        from .util_runtime import cooperate
         from sqlalchemy.orm import sessionmaker
         from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia
         registry, _, std_cat = ModuleMetaDb.get_session_and_domain(category)
@@ -2548,6 +2565,7 @@ class MetaUtil:
                 # End the read transaction before site refresh opens its own session.
                 sess.rollback()
                 for record in rows:
+                    cooperate()
                     if enrich_status.get('stop_flag'):
                         break
                     enrich_status['current'] += 1
@@ -2567,7 +2585,6 @@ class MetaUtil:
                                  enrich_status['current'], enrich_status['total'])
                     if enrich_status['current'] < enrich_status['total'] and not enrich_status.get('stop_flag'):
                         cls.wait_after_batch_site_request(site_activity, delay)
-            ModuleMetaDb.checkpoint_wal()
             enrich_status['status'] = '중단됨' if enrich_status.get('stop_flag') else '완료'
         except Exception as exc:
             logger.exception(f'[MetaWorker] [{std_cat}] 미디어 채우기 실패: {exc}')
