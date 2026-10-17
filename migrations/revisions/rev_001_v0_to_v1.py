@@ -14,6 +14,8 @@ from ...setup import logger
 class RevisionV0ToV1(BaseRevision):
     """v0 레거시에서 v1 정식 규격으로의 단독 마이그레이션 명세."""
 
+    BACKFILL_BATCH_SIZE = 100
+
     revision_id = "rev_001_v0_to_v1"
     from_version = 0
     to_version = 1
@@ -21,8 +23,8 @@ class RevisionV0ToV1(BaseRevision):
 
     def upgrade_schema(self, ops: DdlOperations, physical_name: str) -> None:
         """
-        초고속 스키마 구조 변경 (Fast DDL).
-        수 초 내에 컬럼 추가 및 인덱스 생성을 완료하고 락을 즉시 해제합니다.
+        스키마 구조 변경 (Fast DDL). 데이터 백필과 별도 트랜잭션으로 실행합니다.
+        인덱스 생성 시간은 DB 크기와 저장장치 성능에 따라 달라집니다.
         """
         # 공통 감사 원장(History) 테이블 생성
         if not ops.has_table("meta_schema_migration_history"):
@@ -141,14 +143,35 @@ class RevisionV0ToV1(BaseRevision):
         if 'meta_person' in tables:
             self._backfill_person_records(session, context, progress_callback)
 
+    @staticmethod
+    def _chunk_start(context, table, last_id):
+        logger.debug('[Migration Backfill] %s/%s: chunk start after id=%s',
+                     context.get('physical_name', ''), table, last_id)
+        return time.monotonic()
+
+    @staticmethod
+    def _chunk_complete(context, table, last_id, count, started):
+        logger.debug('[Migration Backfill] %s/%s: chunk committed rows=%s last_id=%s (%.3fs)',
+                     context.get('physical_name', ''), table, count, last_id,
+                     time.monotonic() - started)
+        from ...util_runtime import cooperate
+        cooperate()
+
     def _backfill_media_assets(self, session, context: dict, progress_callback=None):
         from ...mod_meta_db import MetaMedia, MetaItem
         from ...util_metadata import MetaUtil
+        from sqlalchemy.orm import lazyload, load_only
         last_id = context.get('positions', {}).get('meta_media', 0)
         while True:
             if context.get('stop_flag_checker', lambda: False)():
                 raise InterruptedError("사용자 요청으로 백필 작업이 중단되었습니다.")
-            rows = session.query(MetaMedia).join(MetaItem, MetaMedia.item_id == MetaItem.id).filter(MetaItem.category.in_(['JAV_CEN', 'JAV_UNCEN', 'WESTERN']), MetaMedia.id > last_id).order_by(MetaMedia.id).limit(500).all()
+            started = self._chunk_start(context, 'meta_media', last_id)
+            rows = session.query(MetaMedia).options(
+                lazyload('*'), load_only(MetaMedia.id, MetaMedia.url, MetaMedia.gdrive_fileid,
+                    MetaMedia.relative_path, MetaMedia.media_type, MetaMedia.is_user, MetaMedia.source)
+            ).join(MetaItem, MetaMedia.item_id == MetaItem.id).filter(
+                MetaItem.category.in_(['JAV_CEN', 'JAV_UNCEN', 'WESTERN']), MetaMedia.id > last_id
+            ).order_by(MetaMedia.id).limit(self.BACKFILL_BATCH_SIZE).all()
             if not rows:
                 break
             for media in rows:
@@ -167,17 +190,29 @@ class RevisionV0ToV1(BaseRevision):
             if context.get('checkpoint'):
                 context['checkpoint']('meta_media', last_id)
             session.expunge_all()
+            count = len(rows)
+            rows.clear()
+            self._chunk_complete(context, 'meta_media', last_id, count, started)
             if progress_callback:
                 progress_callback(last_id, last_id + 1, "미디어 자산 이전 중", context.get('physical_name', ''))
 
     def _backfill_item_video_assets(self, session, context, progress_callback=None):
-        from ...mod_meta_db import MetaItem, ModuleMetaDb
+        from ...mod_meta_db import MetaItem, MetaMedia, ModuleMetaDb
+        from sqlalchemy.orm import lazyload, load_only, selectinload
         last_id = context.get('positions', {}).get('meta_item_video', 0)
         while True:
             if context.get('stop_flag_checker', lambda: False)():
                 raise InterruptedError("사용자 요청으로 백필 작업이 중단되었습니다.")
-            rows = session.query(MetaItem).filter(MetaItem.category.in_(
-                ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']), MetaItem.id > last_id).order_by(MetaItem.id).limit(500).all()
+            started = self._chunk_start(context, 'meta_item_video', last_id)
+            # LIMIT bounds parent items only. Default joined collections would multiply
+            # images x actors x tags x fingerprints and repeat large JSON columns.
+            # This helper edits video rows only; leave all image relationships untouched.
+            rows = session.query(MetaItem).options(
+                lazyload('*'), load_only(MetaItem.id, MetaItem.category, MetaItem.extra_info),
+                selectinload(MetaItem.media_files.and_(MetaMedia.media_type.in_(('trailer', 'preview'))))
+            ).filter(MetaItem.category.in_(
+                ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']), MetaItem.id > last_id
+            ).order_by(MetaItem.id).limit(self.BACKFILL_BATCH_SIZE).all()
             if not rows:
                 break
             for item in rows:
@@ -198,18 +233,26 @@ class RevisionV0ToV1(BaseRevision):
             if context.get('checkpoint'):
                 context['checkpoint']('meta_item_video', last_id)
             session.expunge_all()
+            count = len(rows)
+            rows.clear()
+            self._chunk_complete(context, 'meta_item_video', last_id, count, started)
             if progress_callback:
                 progress_callback(last_id, last_id + 1, "영상 저장 경로 이전 중", context.get('physical_name', ''))
 
     def _backfill_person_records(self, session, context: dict, progress_callback=None):
         from ...mod_meta_db import MetaPerson, ModuleMetaDb
+        from sqlalchemy.orm import lazyload, defer
         last_id = context.get('positions', {}).get('meta_person', 0)
         total = session.query(MetaPerson).filter(MetaPerson.domain.in_(['JAV', 'WESTERN'])).count()
         processed = 0
         while True:
             if context.get('stop_flag_checker', lambda: False)():
                 raise InterruptedError("사용자 요청으로 백필 작업이 중단되었습니다.")
-            rows = session.query(MetaPerson).filter(MetaPerson.domain.in_(['JAV', 'WESTERN']), MetaPerson.id > last_id).order_by(MetaPerson.id).limit(500).all()
+            started = self._chunk_start(context, 'meta_person', last_id)
+            rows = session.query(MetaPerson).options(
+                lazyload('*'), defer(MetaPerson.works)
+            ).filter(MetaPerson.domain.in_(['JAV', 'WESTERN']), MetaPerson.id > last_id
+            ).order_by(MetaPerson.id).limit(self.BACKFILL_BATCH_SIZE).all()
             if not rows:
                 break
             for person in rows:
@@ -257,6 +300,8 @@ class RevisionV0ToV1(BaseRevision):
                 person.merged_details = copy.deepcopy(extra.get('merged_sub_actors') or person.merged_details or [])
                 person.merged_count = max(1, len(person.alt_indices))
                 person.works_count = sum(len(v) for v in (person.works or {}).values() if isinstance(v, list))
+                # The full works JSON is needed only for its count, not the rest of the chunk.
+                session.expire(person, ['works'])
                 person.media_src = media
                 ModuleMetaDb.sync_person_media_columns(person)
                 person.thumb_url = ModuleMetaDb.resolve_person_active_thumb(person)
@@ -271,6 +316,9 @@ class RevisionV0ToV1(BaseRevision):
             if context.get('checkpoint'):
                 context['checkpoint']('meta_person', last_id)
             session.expunge_all()
+            count = len(rows)
+            rows.clear()
+            self._chunk_complete(context, 'meta_person', last_id, count, started)
             if progress_callback:
                 progress_callback(processed, total, "인물 데이터 이전 중", context.get('physical_name', 'PERSON'))
 
