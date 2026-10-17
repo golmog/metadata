@@ -1843,6 +1843,20 @@ class ModuleMetaDb(PluginModuleBase):
         if not P.ModelSetting.get_bool("meta_db_use"):
             return False
 
+        if str(category or '').upper() in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and isinstance(entity_dict, dict):
+            from support_site import SiteAvBase
+            storage_error = SiteAvBase.image_storage_error(entity_dict)
+            if storage_error:
+                logger.error('[MetaDB] 이미지 처리 미완료로 DB 저장 중단 (%s): %s', entity_dict.get('code'), storage_error)
+                return False
+            # Receipts are transient pipeline state, never persistent profile data.
+            entity_dict = copy.deepcopy(entity_dict)
+            for record in [entity_dict] + list(entity_dict.get('actor') or []):
+                extra = record.get('extra_info') if isinstance(record, dict) else getattr(record, 'extra_info', None)
+                if isinstance(extra, dict):
+                    extra.pop('_image_storage_state', None)
+                    extra.pop('storage_error', None)
+
         cls.ensure_db_ready()
         sess, domain, std_cat = cls.get_session_and_domain(category)
         if not sess:
@@ -4442,6 +4456,8 @@ class ModuleMetaDb(PluginModuleBase):
                          'name_ko': p_rec.name_ko, 'actor_idx': p_rec.person_idx,
                          'thumb': primary_photo, 'media_src': media_d}
                 SiteAvBase.save_western_actor_image(actor, skip_existing=skip_existing_image)
+                if SiteAvBase.image_storage_error(actor):
+                    raise ValueError(SiteAvBase.image_storage_error(actor))
                 p_rec.media_src = actor.get('media_src', media_d)
                 cls.sync_person_media_columns(p_rec)
             p_rec.thumb_url = cls.resolve_person_active_thumb(p_rec)
@@ -5111,6 +5127,8 @@ class ModuleMetaDb(PluginModuleBase):
                         'media_src': p_media
                     }
                     SiteAvBase.save_western_actor_image(act_dummy)
+                    if SiteAvBase.image_storage_error(act_dummy):
+                        raise ValueError(SiteAvBase.image_storage_error(act_dummy))
                     if act_dummy.get('media_src'):
                         p_media = cls.normalize_person_media(act_dummy['media_src'], domain=p_rec.domain)
                         clean_local = p_media['official']['local_img_path']
@@ -5124,6 +5142,8 @@ class ModuleMetaDb(PluginModuleBase):
                         'media_src': p_media
                     }
                     SiteAvBase.save_actor_image(act_dummy)
+                    if SiteAvBase.image_storage_error(act_dummy):
+                        raise ValueError(SiteAvBase.image_storage_error(act_dummy))
                     if act_dummy.get('media_src'):
                         p_media = cls.normalize_person_media(act_dummy['media_src'], domain=p_rec.domain)
                         clean_local = p_media['official']['local_img_path']

@@ -299,6 +299,13 @@ class MetaUtil:
         if not local_tmp_path or not os.path.exists(local_tmp_path):
             return None
 
+        try:
+            with Image.open(local_tmp_path) as image:
+                image.verify()
+        except Exception as exc:
+            logger.error('[MetaUtil] 유효하지 않은 이미지는 업로드하지 않습니다: %s (%s)', local_tmp_path, exc)
+            return None
+
         from .util_preview import MetaPreviewUtil
 
         clean_rel = dest_rel_path.replace('\\', '/')
@@ -322,7 +329,7 @@ class MetaUtil:
         return fid
 
     @classmethod
-    def query_gdrive_remote_dir_files(cls, dest_rel_dir, category='JAV_CEN', code_lower=None):
+    def query_gdrive_remote_dir_files(cls, dest_rel_dir, category='JAV_CEN', code_lower=None, strict=False):
         """rclone lsjson으로 구글 드라이브 원격 대상 디렉토리의 파일 목록과 File ID를 직접 타겟팅 조회"""
         from .util_preview import MetaPreviewUtil
         cat_upper = str(category or 'JAV_CEN').upper()
@@ -337,6 +344,8 @@ class MetaUtil:
         ).strip()
 
         if not raw_upload_remote:
+            if strict:
+                raise ValueError('GDrive 이미지 리모트 경로가 설정되지 않았습니다.')
             return {}
 
         remote_dir = MetaPreviewUtil.build_rclone_target_remote_path(raw_upload_remote, dest_rel_path=dest_rel_dir)
@@ -351,8 +360,17 @@ class MetaUtil:
 
         try:
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12)
+            if strict and res.returncode != 0:
+                missing_dir = res.returncode == 3 and 'directory not found' in str(res.stderr or '').lower()
+                if missing_dir:
+                    return {}
+                raise RuntimeError('GDrive 이미지 폴더 목록 조회에 실패했습니다.')
+            if strict and res.returncode == 0 and not res.stdout.strip():
+                raise RuntimeError('GDrive 이미지 폴더 목록 응답이 비어 있습니다.')
             if res.returncode == 0 and res.stdout.strip():
                 items = json.loads(res.stdout.strip())
+                if strict and not isinstance(items, list):
+                    raise ValueError('GDrive 이미지 폴더 목록 응답 형식이 올바르지 않습니다.')
                 class ObservedFileMap(dict):
                     pass
                 file_map = ObservedFileMap()
@@ -361,6 +379,10 @@ class MetaUtil:
                     if isinstance(item, dict) and not item.get('IsDir'):
                         fname = item.get('Name') or item.get('Path')
                         fid = item.get('ID') or item.get('id')
+                        if strict and fname and str(fname).lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) and item.get('Size') == 0:
+                            raise RuntimeError('GDrive에 비어 있는 이미지 파일이 있습니다: ' + str(fname))
+                        if strict and fname and str(fname).lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) and not fid:
+                            raise RuntimeError('GDrive 이미지 File ID가 없습니다: ' + str(fname))
                         if fname and fid:
                             file_map[fname.lower()] = fid
                             file_map.actual_names[str(fid)] = fname
@@ -369,6 +391,8 @@ class MetaUtil:
                 return file_map
         except Exception as e:
             logger.debug(f"[MetaUtil] 구글 드라이브 원격 디렉토리 조회 예외 ({remote_dir}): {e}")
+            if strict:
+                raise
 
         return {}
 
@@ -1343,6 +1367,11 @@ class MetaUtil:
         if not fresh_media or (not fresh_media.get('thumb') and not (fresh_media.get('original') or {}).get('thumb')):
             return {'ret': 'warning', 'msg': f"[{ui_code}] 원격 사이트에서 미디어 정보를 가져오지 못했습니다.", 'title_log': title_log, 'is_updated': False}
 
+        from support_site import SiteAvBase
+        if SiteAvBase.image_storage_error(fresh_media):
+            return {'ret': 'error', 'error_code': 'image_storage_incomplete',
+                    'msg': SiteAvBase.image_storage_error(fresh_media), 'is_updated': False}
+
         cached_json['thumb'] = fresh_media.get('thumb', [])
         cached_json['fanart'] = fresh_media.get('fanart', [])
 
@@ -1431,7 +1460,13 @@ class MetaUtil:
         if not fresh_data:
             return {'ret': 'warning', 'msg': f"[{ui_code}] 출처 사이트에서 정보를 가져오지 못했습니다.", 'is_updated': False}
 
-        ModuleMetaDb.save_metadata(category, fresh_data)
+        from support_site import SiteAvBase
+        if SiteAvBase.image_storage_error(fresh_data):
+            return {'ret': 'error', 'error_code': 'image_storage_incomplete',
+                    'msg': SiteAvBase.image_storage_error(fresh_data), 'is_updated': False}
+
+        if not ModuleMetaDb.save_metadata(category, fresh_data):
+            return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
         title_log = fresh_data.get('title', '')
         logger.info(f"[{module.name}] [{code}] 메타데이터 갱신 완료: {title_log}")
         return {'ret': 'success', 'msg': f"[{ui_code}] 메타데이터 갱신 완료!\n{title_log}", 'title_log': title_log, 'is_updated': True, 'data': fresh_data}
@@ -1495,7 +1530,13 @@ class MetaUtil:
         if not fresh_data:
             return {'ret': 'warning', 'msg': f"[{ui_code}] 상세 정보(Info)를 가져오지 못했습니다.", 'is_updated': False}
 
-        ModuleMetaDb.save_metadata(category, fresh_data)
+        from support_site import SiteAvBase
+        if SiteAvBase.image_storage_error(fresh_data):
+            return {'ret': 'error', 'error_code': 'image_storage_incomplete',
+                    'msg': SiteAvBase.image_storage_error(fresh_data), 'is_updated': False}
+
+        if not ModuleMetaDb.save_metadata(category, fresh_data):
+            return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
         title_log = fresh_data.get('title', '')
         site_tag = best_item.get('site_key', '').upper()
         msg = f"[{ui_code}] 자동 재검색 갱신 완료! ({site_tag})\n{title_log}"
@@ -1564,6 +1605,11 @@ class MetaUtil:
 
         if not fresh_data:
             return {'ret': 'warning', 'msg': '최신 정보를 가져오지 못했습니다.', 'title_log': title_for_log, 'is_updated': False}
+
+        from support_site import SiteAvBase
+        if SiteAvBase.image_storage_error(fresh_data):
+            return {'ret': 'error', 'error_code': 'image_storage_incomplete',
+                    'msg': SiteAvBase.image_storage_error(fresh_data), 'is_updated': False}
 
         changes = []
 
@@ -1662,7 +1708,8 @@ class MetaUtil:
         is_updated = (len(changes) > 0)
 
         if is_updated:
-            ModuleMetaDb.save_metadata(category, fresh_data)
+            if not ModuleMetaDb.save_metadata(category, fresh_data):
+                return {'ret': 'error', 'msg': '이미지 및 메타데이터를 DB에 저장하지 못했습니다.', 'is_updated': False}
 
             sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
             if sess:
@@ -2083,6 +2130,10 @@ class MetaUtil:
                             if img_obj:
                                 cls.save_normalized_jpeg(img_obj, local_dest)
                                 img_obj.close()
+                            else:
+                                return None, False
+                        if not os.path.isfile(local_dest) or os.path.getsize(local_dest) == 0:
+                            return None, False
                         MetaPreviewUtil.register_local_file(local_dest)
                         return image_result(expected_url, True)
                     return None, False
@@ -2224,6 +2275,12 @@ class MetaUtil:
 
                         if synced_arts_count > 0:
                             changes.append(f'팬아트 {synced_arts_count}장 동기화')
+
+            if failures:
+                logger.error('[MetaUtil] 이미지 저장소 동기화 미완료, DB 변경 취소 (%s): %s', code, ', '.join(failures))
+                return {'ret': 'error', 'error_code': 'image_storage_incomplete',
+                        'msg': '이미지 처리가 완료되지 않아 DB를 변경하지 않았습니다.',
+                        'is_updated': False, 'changes': [], 'failures': failures}
 
             # 공식 트레일러 영상 자산 동기화
             if sync_trailer and MetaPreviewUtil.is_trailer_download_enabled(std_cat):

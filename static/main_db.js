@@ -1155,9 +1155,14 @@ function update_modal_image_preview($modal) {
             $spinner.stop(true, true).fadeIn(120);
             $img.css('opacity', '0.55').show();
 
-            $img.off('load.prev_img error.prev_img').on('load.prev_img error.prev_img', function() {
+            $img.off('load.prev_img error.prev_img').on('load.prev_img', function() {
                 $spinner.stop(true, true).fadeOut(140);
-                $img.css('opacity', '1');
+                $noImg.hide();
+                $img.css('opacity', '1').show();
+            }).on('error.prev_img', function() {
+                $spinner.stop(true, true).hide();
+                $img.hide();
+                $noImg.show();
             });
 
             $img.attr('src', cur.url).attr('data-src', cur.url).data('src', cur.url);
