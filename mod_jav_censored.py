@@ -96,6 +96,7 @@ class ModuleJavCensored(PluginModuleBase):
             # 이미지 서버
             f"{self.name}_image_server_url": f"{F.SystemModelSetting.get('ddns')}/images",
             f"{self.name}_image_server_local_path": "/data/images",
+            f"{self.name}_image_server_file_mode": "0644",
             f"{self.name}_image_server_save_format": "/jav/cen/{label_1}/{label}",
             f"{self.name}_image_gdrive_remote_path": "",
             f"{self.name}_image_gdrive_folder_id": "",
@@ -210,6 +211,14 @@ class ModuleJavCensored(PluginModuleBase):
         try:
             change_list = []
             form_keys = set(req.form.keys())
+            permission_key = 'jav_censored_image_server_file_mode'
+            normalized_mode = None
+            if permission_key in form_keys:
+                try:
+                    normalized_mode = format(SiteAvBase.parse_image_file_mode(req.form[permission_key]), '04o')
+                except ValueError as exc:
+                    logger.warning('[ImageServer] %s', exc)
+                    return jsonify(False)
 
             # 1. 폼에 전송된 모든 텍스트/라디오/체크된 항목 갱신
             for key in form_keys:
@@ -217,6 +226,8 @@ class ModuleJavCensored(PluginModuleBase):
                     continue
                 if key in self.db_default:
                     val = req.form[key].strip()
+                    if key == permission_key:
+                        val = normalized_mode
                     if P.ModelSetting.set(key, val):
                         change_list.append(key)
 
