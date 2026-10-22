@@ -27,6 +27,9 @@ from sqlalchemy.pool import NullPool, QueuePool
 from sqlalchemy import event, inspect
 
 from .setup import *
+from .util_runtime import storage_logger
+
+logger = storage_logger(logger)
 from support import SupportYaml
 from framework import db
 from .util_metadata import MetaUtil
@@ -1842,22 +1845,34 @@ class ModuleMetaDb(PluginModuleBase):
         return bool(new_id and new_id == (str(asset.get('gdrive_fileid') or '').strip() or file_id(old_url)))
 
     @classmethod
-    def save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None):
+    def save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None, _completion_receipt=None):
         entries = (entity_dict.get('extra_info') or {}).get('_media_replacements') or [] if isinstance(entity_dict, dict) else []
+        outcome = {'state': 'not_attempted'}
+        warnings = []
         try:
-            success = cls._save_metadata(category, entity_dict, target_session, target_person_session)
+            success = cls._save_metadata(category, entity_dict, target_session, target_person_session, _storage_outcome=outcome)
         except Exception:
-            MetaUtil.finish_media_replacements(entries, False)
+            warnings = MetaUtil.finish_media_replacements(entries, None if outcome['state'] == 'unknown' else outcome['state'] == 'committed')
             raise
+        finally:
+            if isinstance(_completion_receipt, dict):
+                _completion_receipt['commit_state'] = outcome['state']
+                if outcome['state'] == 'unknown':
+                    _completion_receipt.update(state='blocked', error_code='commit_outcome_unknown')
         if entries:
             if success and target_session is not None:
                 MetaUtil.defer_media_replacements(target_session, entries)
             else:
-                MetaUtil.finish_media_replacements(entries, bool(success))
+                warnings = MetaUtil.finish_media_replacements(entries, None if outcome['state'] == 'unknown' else bool(success))
+        if warnings and isinstance(_completion_receipt, dict):
+            _completion_receipt.update(cleanup_pending=True, warnings=warnings)
+            if _completion_receipt.get('state') == 'finished':
+                _completion_receipt['state'] = 'finished_with_warnings'
         return success
 
     @classmethod
-    def _save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None):
+    def _save_metadata(cls, category, entity_dict, target_session=None, target_person_session=None, _storage_outcome=None):
+        outcome = _storage_outcome if _storage_outcome is not None else {'state': 'not_attempted'}
         if not P.ModelSetting.get_bool("meta_db_use"):
             return False
 
@@ -1994,7 +2009,7 @@ class ModuleMetaDb(PluginModuleBase):
 
             raw_trailer_url = ''
             for ex in orig_extras:
-                if isinstance(ex, dict) and ex.get('content_url'):
+                if isinstance(ex, dict) and str(ex.get('content_type', 'trailer')).lower() == 'trailer' and ex.get('content_url'):
                     raw_trailer_url = ex['content_url']
                     break
 
@@ -2003,7 +2018,7 @@ class ModuleMetaDb(PluginModuleBase):
 
             if not raw_trailer_url:
                 for ex_item in extras_list:
-                    if isinstance(ex_item, dict) and ex_item.get('content_url'):
+                    if isinstance(ex_item, dict) and str(ex_item.get('content_type', 'trailer')).lower() == 'trailer' and ex_item.get('content_url'):
                         c_url = ex_item['content_url']
                         if 'url=' in c_url:
                             try:
@@ -2014,12 +2029,26 @@ class ModuleMetaDb(PluginModuleBase):
                         elif c_url.startswith('http') and 'metadata/normal' not in c_url:
                             raw_trailer_url = c_url
 
-            clean_original_extras = []
-            if raw_trailer_url:
-                clean_original_extras.append({
-                    'content_url': raw_trailer_url,
-                    'content_type': 'trailer'
-                })
+            clean_original_extras = [copy.deepcopy(ex) for ex in orig_extras
+                if isinstance(ex, dict) and ex.get('content_url')]
+            from .util_preview import MetaPreviewUtil
+            for ex in clean_original_extras:
+                source_url = MetaPreviewUtil.trailer_source_url(ex['content_url'])
+                matching = next((entry for entry in extras_list if isinstance(entry, dict)
+                    and MetaPreviewUtil.trailer_source_url(entry.get('content_url')) == source_url), {})
+                for key in ('title', 'mode', 'premiered', 'thumb'):
+                    if not ex.get(key) and matching.get(key) is not None:
+                        ex[key] = copy.deepcopy(matching[key])
+            for ex in extras_list:
+                if (isinstance(ex, dict) and ex.get('content_url')
+                        and str(ex.get('content_type', 'trailer')).lower() != 'trailer'
+                        and not any(saved.get('content_url') == ex['content_url'] for saved in clean_original_extras)):
+                    clean_original_extras.append(copy.deepcopy(ex))
+            if raw_trailer_url and not any(str(ex.get('content_type', 'trailer')).lower() == 'trailer'
+                    for ex in clean_original_extras):
+                clean_original_extras.append(MetaPreviewUtil.video_extra(raw_trailer_url,
+                    next((ex.get('title', '') for ex in extras_list if isinstance(ex, dict)
+                        and str(ex.get('content_type', 'trailer')).lower() == 'trailer'), ''), extras_list))
 
             clean_original = {
                 'title': str(orig_dict.get('title') or entity_dict.get('originaltitle') or originaltitle or '').strip(),
@@ -2090,13 +2119,25 @@ class ModuleMetaDb(PluginModuleBase):
 
             # DB 및 extra_info에는 항상 순수 정규 URL만 깨끗하게 저장
             merged_extra_info = copy.deepcopy(item.extra_info or {})
+            merged_extra_info.pop('source_video_path', None)
             merged_extra_info.pop('_image_storage_state', None)
             merged_extra_info.pop('storage_error', None)
             input_extra_info = copy.deepcopy(entity_dict.get('extra_info') or {})
+            input_extra_info.pop('source_video_path', None)
             if isinstance(input_extra_info, dict):
                 input_extra_info.pop('actor_cache', None)
                 for k_extra, v_extra in input_extra_info.items():
                     if v_extra is not None: merged_extra_info[k_extra] = v_extra
+
+            if std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and 'thumb' in entity_dict and not image_storage_incomplete:
+                transforms = copy.deepcopy(input_extra_info.get('image_transforms') or {})
+                if not any(isinstance(thumb, dict) and thumb.get('aspect') == 'poster' and
+                           '/metadata/normal/jav_image?' in str(thumb.get('value') or '') for thumb in thumbs_list):
+                    transforms.pop('poster', None)
+                if transforms:
+                    merged_extra_info['image_transforms'] = transforms
+                else:
+                    merged_extra_info.pop('image_transforms', None)
 
             # 정규화된 최신 이미지 주소가 이전 extra_info 값에 의해 덮어씌워지지 않도록 최종 확정 반영
             if resolved_landscape_url:
@@ -2560,7 +2601,14 @@ class ModuleMetaDb(PluginModuleBase):
                 nested_person.commit()
 
             if target_session is None:
+                from sqlalchemy import event
+                actual_session = s() if hasattr(s, 'registry') else s
+                def committed(session):
+                    outcome['state'] = 'committed'
+                event.listen(actual_session, 'after_commit', committed, once=True)
+                outcome['state'] = 'unknown'
                 s.commit()
+                outcome['state'] = 'committed'
                 if person_sess and is_internal_person_sess and person_sess is not s:
                     person_sess.commit()
             return True
@@ -2569,15 +2617,21 @@ class ModuleMetaDb(PluginModuleBase):
             logger.error(f"[MetaDB] save_metadata 실패 ({code}): {e}")
             logger.error(traceback.format_exc())
             if target_session is None:
-                s.rollback()
-                if person_sess and is_internal_person_sess and person_sess is not s:
-                    person_sess.rollback()
-            return False
+                for cleanup_session in (s, person_sess if is_internal_person_sess and person_sess is not s else None):
+                    if cleanup_session is not None:
+                        try:
+                            cleanup_session.rollback()
+                        except Exception:
+                            logger.exception('[MetaDB] save_metadata rollback 정리 보류 (%s)', code)
+            return outcome['state'] == 'committed'
         finally:
-            if target_session is None:
-                s.remove()
-            if person_sess and is_internal_person_sess and person_sess is not s:
-                person_sess.remove()
+            for cleanup_session in (s if target_session is None else None,
+                                    person_sess if is_internal_person_sess and person_sess is not s else None):
+                if cleanup_session is not None:
+                    try:
+                        cleanup_session.remove()
+                    except Exception:
+                        logger.exception('[MetaDB] save_metadata 세션 정리 보류 (%s)', code)
 
     @classmethod
     def _schema_write_guard(cls, category, operation):
@@ -3072,29 +3126,45 @@ class ModuleMetaDb(PluginModuleBase):
         return 'JAV_CEN'
 
 
+    @staticmethod
+    def normalize_batch_request(category, codes):
+        if category is not None and not isinstance(category, str):
+            raise ValueError('category는 문자열이어야 합니다.')
+        raw = str(category or '').strip().upper()
+        aliases = {'JAV_CENSORED': 'JAV_CEN', 'CENSORED': 'JAV_CEN',
+                   'JAV_UNCENSORED': 'JAV_UNCEN', 'UNCENSORED': 'JAV_UNCEN', 'WEST': 'WESTERN'}
+        target = aliases.get(raw, raw) if raw else 'JAV_CEN'
+        if target not in DOMAIN_MAP:
+            raise ValueError('지원하지 않는 category입니다.')
+        if isinstance(codes, str):
+            text_codes = codes.strip()
+            try:
+                requested = json.loads(text_codes)
+            except ValueError:
+                if not text_codes or any(char in text_codes for char in '[]{}"'):
+                    raise ValueError('codes JSON 형식 오류') from None
+                requested = re.split(r'[\s,]+', text_codes)
+        else:
+            requested = codes
+        if not isinstance(requested, (list, tuple, set)) or any(not isinstance(code, str) for code in requested):
+            raise ValueError('codes는 문자열 코드 목록 또는 지원하는 목록 문자열이어야 합니다.')
+        clean = [code.strip() for code in requested if code.strip()]
+        if not clean:
+            raise ValueError('조회할 codes가 없습니다.')
+        return target, clean, len(requested)
+
+    @staticmethod
+    def _is_av_internal_code(code):
+        return bool(re.match(r'^(?:C[BDTMJ]|E[A-Z]|W[SP])', str(code or ''), re.I))
+
     @classmethod
     def get_metadata_batch(cls, category, codes, options=None):
         """
         요청된 복수의 코드(최대 100건)에 대해 단일 SQL 쿼리로 메타데이터를 일괄 조회하여
         {요청코드: 메타데이터} 딕셔너리로 반환합니다.
         """
-        if not codes:
-            return {}
-
+        target_cat, clean_codes, _ = cls.normalize_batch_request(category, codes)
         cls.ensure_db_ready()
-
-        # 카테고리 명칭 정규화
-        cat_raw = str(category or '').strip().upper()
-        if cat_raw in ['JAV_CENSORED', 'JAV_CEN', 'CENSORED']:
-            target_cat = 'JAV_CEN'
-        elif cat_raw in ['JAV_UNCENSORED', 'JAV_UNCEN', 'UNCENSORED']:
-            target_cat = 'JAV_UNCEN'
-        elif cat_raw in ['WESTERN', 'WEST']:
-            target_cat = 'WESTERN'
-        elif cat_raw in DOMAIN_MAP:
-            target_cat = cat_raw
-        else:
-            target_cat = 'JAV_CEN'
 
         sess, domain, std_cat = cls.get_session_and_domain(target_cat)
         if not sess:
@@ -3104,21 +3174,6 @@ class ModuleMetaDb(PluginModuleBase):
         max_batch_size = 100
 
         try:
-            # 입력 코드 리스트 정제 및 최대 배치 크기 제한
-            if isinstance(codes, str):
-                try:
-                    parsed_codes = json.loads(codes)
-                    clean_codes = [str(c).strip() for c in parsed_codes if str(c).strip()] if isinstance(parsed_codes, list) else []
-                except Exception:
-                    clean_codes = [c.strip() for c in re.split(r'[\s,\n]+', codes) if c.strip()]
-            elif isinstance(codes, (list, set, tuple)):
-                clean_codes = [str(c).strip() for c in codes if str(c).strip()]
-            else:
-                clean_codes = []
-
-            if not clean_codes:
-                return {}
-
             if len(clean_codes) > max_batch_size:
                 logger.debug(f"[MetaDB Batch Info] 요청된 코드 수({len(clean_codes)}건)가 최대 한도({max_batch_size}건)를 초과하여 상위 {max_batch_size}건만 처리합니다.")
                 clean_codes = clean_codes[:max_batch_size]
@@ -3141,9 +3196,11 @@ class ModuleMetaDb(PluginModuleBase):
 
             # 매핑 색인 사전 구축 (대소문자 및 코드 변형 대응)
             item_lookup = {}
+            exact_lookup = {}
             for item in items:
                 entity_dict = cls.to_entity_dict(item)
                 final_data = MetaUtil.finalize_info_return(entity_dict, extra_opts=opts, category=std_cat)
+                exact_lookup[item.code] = final_data
 
                 for key_variant in [item.code, item.ui_code, item.originaltitle]:
                     if key_variant:
@@ -3154,11 +3211,13 @@ class ModuleMetaDb(PluginModuleBase):
             # 원본 요청 코드 키를 보존하며 결과 딕셔너리 조립
             result_dict = {}
             for req_code in clean_codes:
-                matched_meta = (
+                matched_meta = exact_lookup.get(req_code)
+                if not matched_meta and not (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and cls._is_av_internal_code(req_code)):
+                    matched_meta = (
                     item_lookup.get(req_code) or
                     item_lookup.get(req_code.lower()) or
                     item_lookup.get(req_code.upper())
-                )
+                    )
                 if matched_meta:
                     result_dict[req_code] = matched_meta
 
@@ -3166,8 +3225,7 @@ class ModuleMetaDb(PluginModuleBase):
             return result_dict
 
         except Exception as e:
-            logger.error(f"[MetaDB Batch Info] 오류 발생 ({std_cat}): {e}")
-            logger.error(traceback.format_exc())
+            logger.exception('[MetaDB Batch Info] 조회 실패: category=%s', std_cat)
             raise RuntimeError('메타 DB 일괄 조회에 실패했습니다.') from e
         finally:
             sess.remove()
@@ -3177,15 +3235,11 @@ class ModuleMetaDb(PluginModuleBase):
         if options is not None and not isinstance(options, dict):
             return jsonify({'ret': 'error', 'error_code': 'invalid_request', 'msg': 'options는 JSON 객체여야 합니다.'}), 400
         try:
-            data = self.get_metadata_batch(category, codes, options=options)
-            if isinstance(codes, str):
-                try:
-                    requested = json.loads(codes)
-                except ValueError:
-                    requested = re.split(r'[\s,]+', codes.strip())
-            else:
-                requested = codes
-            total_requested = len(requested) if isinstance(requested, (list, tuple, set)) else 0
+            target, clean, total_requested = self.normalize_batch_request(category, codes)
+        except ValueError as exc:
+            return jsonify({'ret': 'error', 'error_code': 'invalid_request', 'msg': str(exc)}), 400
+        try:
+            data = self.get_metadata_batch(target, clean, options=options)
             return jsonify({'ret': 'success', 'category': category, 'total_requested': total_requested,
                             'total_found': len(data), 'data': data}), 200
         except Exception:
@@ -3208,6 +3262,7 @@ class ModuleMetaDb(PluginModuleBase):
         allowed_options = ('skip_existing', 'poster', 'landscape', 'fanart', 'trailer') if operation == 'media_sync' else ('skip_existing',)
         if any(key not in allowed_options for key in options) or any(type(value) is not bool for value in options.values()):
             return error('invalid_request', '지원하는 옵션만 JSON boolean으로 지정하세요.')
+        result = None
         try:
             if operation == 'media_sync':
                 category = str(params.get('category') or '').strip().upper()
@@ -3241,6 +3296,8 @@ class ModuleMetaDb(PluginModuleBase):
             if result.get('ret') != 'success':
                 code = result.get('error_code') or 'storage_sync_failed'
                 status = {'not_found': 404, 'ambiguous_person': 409, 'schema_not_writable': 409,
+                          'storage_conflict': 409, 'storage_lookup_failed': 502, 'storage_asset_incomplete': 502,
+                          'commit_outcome_unknown': 503,
                           'unsupported_domain': 400, 'download_failed': 502, 'upload_failed': 502}.get(code, 500)
                 result.update(error_code=code)
                 if status == 500:
@@ -3250,11 +3307,16 @@ class ModuleMetaDb(PluginModuleBase):
             return jsonify(result), 200
         except Exception:
             logger.exception('[MetaDB API] 단건 저장소 동기화 실패 (%s)', operation)
+            if isinstance(result, dict) and result.get('commit_state') in ('committed', 'unknown'):
+                result['cleanup_pending'] = True
+                result.setdefault('warnings', []).append('response_preparation_failed')
+                status = 503 if result['commit_state'] == 'unknown' else 502 if result.get('failures') else 200
+                return jsonify(result), status
             return error('storage_sync_failed', '저장소 동기화에 실패했습니다. FF 로그를 확인하세요.', 500)
 
     @classmethod
     def sync_person_image_to_storage(cls, person_idx=None, domain=None, skip_existing=True,
-                                     use_dir_cache=True, *, person_id=None):
+                                     use_dir_cache=True, *, person_id=None, source_url=None):
         """Sync one official cache. Public identity is domain + person_idx, never a name."""
         from sqlalchemy.orm import sessionmaker
         from .util_preview import MetaPreviewUtil
@@ -3262,9 +3324,12 @@ class ModuleMetaDb(PluginModuleBase):
         from sqlalchemy import cast, Text
         from tempfile import mkstemp
         from .util_runtime import stage_storage_record, commit_storage_record, batch_stage
+        from .util_preview import MediaReplacement
 
+        result = {'ret': 'success', 'is_updated': False, 'changes': []}
         def failure(code, message):
-            return {'ret': 'error', 'error_code': code, 'msg': message, 'is_updated': False, 'changes': []}
+            result.update(ret='error', error_code=code, msg=message, is_updated=False, changes=[])
+            return result
         allowed, message = cls._schema_write_guard('PERSON', '인물 이미지 저장소 동기화')
         if not allowed:
             return failure('schema_not_writable', message)
@@ -3273,6 +3338,10 @@ class ModuleMetaDb(PluginModuleBase):
             return failure('database_unavailable', '인물 DB 세션 획득 실패')
         sess = sessionmaker(bind=registry.get_bind(), expire_on_commit=False)()
         staging = None
+        subject = {}
+        operation = None
+        committed = False
+        sess.info['storage_commit_state'] = 'not_attempted'
         try:
             query = sess.query(MetaPerson)
             if person_id is not None:
@@ -3296,26 +3365,62 @@ class ModuleMetaDb(PluginModuleBase):
                 return failure('ambiguous_person', '인물 코드가 여러 레코드에 연결되어 있습니다.')
             person = matches[0]
             snapshot = stage_storage_record(sess, person)
+            subject = MediaReplacement.acquire_subject(os.path.join(path_data, 'db', 'media_replacements'),
+                                                       person.domain, person.person_idx)
+            current = sess.query(MetaPerson).filter_by(id=person.id).first()
+            if person_id is None:
+                candidates = sess.query(MetaPerson).filter(func.upper(MetaPerson.domain) == str(domain).upper(), or_(
+                    func.lower(MetaPerson.person_idx) == requested,
+                    func.lower(cast(MetaPerson.alt_indices, Text)).contains(requested, autoescape=True))).all()
+                canonical_matches = [p.id for p in candidates if requested in
+                    {str(value).strip().casefold() for value in [p.person_idx] + list(p.alt_indices or [])}]
+                if canonical_matches != [person.id]:
+                    from .util_runtime import StorageConflict
+                    raise StorageConflict('잠금 획득 중 인물 코드 매핑이 변경되었습니다.')
+            current_snapshot = stage_storage_record(sess, current) if current is not None else None
+            requested = str(person_idx or person.person_idx).strip().casefold()
+            if (current_snapshot != snapshot or current is None or requested not in
+                    {str(value).strip().casefold() for value in [current.person_idx] + list(current.alt_indices or [])}):
+                from .util_runtime import StorageConflict
+                raise StorageConflict('잠금 획득 중 인물 식별 또는 DB 정보가 변경되었습니다.')
+            person = current
             dom = str(person.domain or '').upper()
             if dom not in ('JAV', 'WESTERN'):
                 return failure('unsupported_domain', 'AV 인물만 동기화할 수 있습니다.')
             prefix = 'western' if dom == 'WESTERN' else 'jav_censored'
             mode = P.ModelSetting.get(f'{prefix}_actor_image_mode') or ('site' if dom == 'WESTERN' else 'gds')
-            result = {'ret': 'success', 'person_idx': person.person_idx, 'domain': dom,
+            result.update({'ret': 'success', 'person_idx': person.person_idx, 'domain': dom,
                       'requested_person_idx': person_idx or person.person_idx, 'storage_type': mode,
-                      'is_updated': False, 'changes': []}
+                      'is_updated': False, 'changes': []})
             if mode not in ('gdrive', 'image_server'):
                 result.update(skipped=True, reason='storage_mode_not_enabled', msg='개인 이미지 저장소 모드가 아닙니다.')
                 return result
             before = (copy.deepcopy(person.media_src), person.official_cached_gdrive_fileid,
                       person.official_cached_local_path, person.official_remote_path, person.thumb_url, person.has_photo)
             media = cls.person_media(person)
+            if source_url:
+                media['official']['site_img_url'] = source_url
             relative_path = SiteAvBase.actor_storage_relative_path(person, dom, mode)
+            folder = os.path.join(path_data, 'db', 'media_replacements')
+            target = (MetaPreviewUtil.build_rclone_target_remote_path(
+                P.ModelSetting.get('jav_censored_image_gdrive_remote_path'), relative_path) if mode == 'gdrive' else
+                os.path.join(P.ModelSetting.get('jav_censored_image_server_local_path') or '/data/images',
+                             relative_path.replace('/', os.path.sep)))
+            MediaReplacement.assert_available(folder, target)
+            def begin_replacement(old_id=''):
+                nonlocal operation
+                owner = dict(subject, subject_type='person', person_id=person.id,
+                    person_idx=person.person_idx, person_domain=person.domain, old_id=old_id)
+                operation = MetaUtil.prepare_storage_replacement(person.person_idx, dom, mode,
+                    relative_path, 'official', subject=owner)
+                MediaReplacement.stage(operation)
             def prepare_image():
                 nonlocal staging
                 source = ('https://drive.google.com/thumbnail?id=' + media['official']['google_fileid'] + '&sz=s0'
                           if dom == 'JAV' and media['official'].get('google_fileid') else '')
                 source = source or media['official'].get('site_img_url') or person.site_img_url
+                if source_url:
+                    source = source_url
                 source = source or next(iter(media['official'].get('site_img_urls') or []), '')
                 if not source:
                     result.update(skipped=True, reason='source_unavailable', msg='다운로드 가능한 공식 이미지가 없습니다.')
@@ -3334,17 +3439,19 @@ class ModuleMetaDb(PluginModuleBase):
             uploaded = False
             if mode == 'gdrive':
                 fid = MetaPreviewUtil.get_remote_file_id(relative_path, category=dom, is_image=True,
-                                                       use_dir_cache=use_dir_cache) if skip_existing else None
-                if fid:
+                                                       use_dir_cache=use_dir_cache)
+                if fid and skip_existing:
                     relative_path = MetaPreviewUtil.get_recorded_remote_path(fid, relative_path, category=dom, is_image=True)
                 else:
                     prepared = prepare_image()
                     if prepared is not None:
                         return prepared
+                    begin_replacement(fid or '')
                     with batch_stage(logger, 'Person image upload', person.person_idx):
                         fid = MetaUtil.upload_image_to_gdrive(staging, relative_path, category=dom, overwrite=not skip_existing)
                     if not fid:
                         return failure('upload_failed', '공식 이미지 업로드에 실패했습니다.')
+                    MediaReplacement.generated(operation, fid)
                     MetaPreviewUtil.register_remote_file(relative_path, fid, category=dom, is_image=True)
                     uploaded = True
                 media['official']['official_cached_google_fileid'] = fid
@@ -3352,13 +3459,16 @@ class ModuleMetaDb(PluginModuleBase):
             else:
                 root = P.ModelSetting.get('jav_censored_image_server_local_path') or '/data/images'
                 target = os.path.join(root, relative_path.replace('/', os.path.sep))
-                if not (skip_existing and MetaPreviewUtil.has_local_file(target, use_cache=use_dir_cache)):
+                exists = MetaPreviewUtil.has_local_file(target, use_cache=use_dir_cache)
+                if not (skip_existing and exists):
                     prepared = prepare_image()
                     if prepared is not None:
                         return prepared
+                    begin_replacement()
                     SiteAvBase.publish_image_file(staging, target)
                     if not os.path.isfile(target):
                         return failure('download_failed', '인물 이미지 저장 결과 파일을 확인할 수 없습니다.')
+                    MediaReplacement.generated(operation)
                     MetaPreviewUtil.register_local_file(target)
                     uploaded = True
                 media['official']['cached_local_img_path'] = relative_path
@@ -3369,28 +3479,280 @@ class ModuleMetaDb(PluginModuleBase):
             after = (person.media_src, person.official_cached_gdrive_fileid, person.official_cached_local_path,
                      person.official_remote_path, person.thumb_url, person.has_photo)
             changed = before != after
-            if changed:
-                with batch_stage(logger, 'Person DB commit', person.person_idx):
-                    commit_storage_record(sess, person, snapshot)
             result.update(is_updated=changed or uploaded, skipped=not (changed or uploaded),
                           changes=([('GDrive 이미지 저장' if mode == 'gdrive' else '로컬 이미지 저장')] if uploaded else []) +
                                   (['인물 이미지 DB 연동'] if changed else []),
                           relative_path=relative_path,
                           google_fileid=person.official_cached_gdrive_fileid if mode == 'gdrive' else '',
                           msg='동기화 완료' if changed or uploaded else '기존 이미지 유지')
+            if changed or uploaded:
+                with batch_stage(logger, 'Person DB commit', person.person_idx):
+                    commit_storage_record(sess, person, snapshot)
+                committed = True
+            result['commit_state'] = 'committed' if committed else 'not_attempted'
             logger.debug('[MetaDB PersonSync] [%s/%s] %s: %s', dom, person.person_idx, mode, result['msg'])
             return result
-        except Exception:
-            sess.rollback()
+        except Exception as exc:
+            state = sess.info.get('storage_commit_state', 'not_attempted')
+            if state == 'committed':
+                committed = True
+                result.update(commit_state='committed', cleanup_pending=True, warnings=['post_commit_error'])
+                return result
+            try:
+                sess.rollback()
+            except Exception:
+                logger.exception('[MetaDB PersonSync] 세션 rollback 실패 (%s)', domain)
             logger.exception('[MetaDB PersonSync] 인물 저장소 동기화 실패 (%s/%s)', domain, person_idx or person_id)
-            return failure('storage_sync_failed', '인물 이미지 동기화 중 오류가 발생했습니다.')
+            if state == 'unknown':
+                failure('commit_outcome_unknown', 'DB 반영 결과를 확인할 수 없습니다. 자동 재시도하지 마세요.')
+                result['commit_state'] = 'unknown'
+                return result
+            code = getattr(exc, 'error_code', 'storage_conflict' if isinstance(exc, FileExistsError) else 'storage_sync_failed')
+            return failure(code, '인물 이미지 동기화 중 오류가 발생했습니다.')
         finally:
+            state = sess.info.get('storage_commit_state', 'not_attempted')
+            warnings = MetaUtil.finish_media_replacements([operation], True if committed else None if state == 'unknown' else False)
             if staging and os.path.exists(staging):
                 try:
                     os.remove(staging)
                 except OSError:
                     logger.warning('[MetaDB PersonSync] 임시 이미지 정리 실패')
-            sess.close()
+                    warnings.append('temporary_cleanup_failed')
+            try:
+                sess.close()
+            except Exception:
+                logger.exception('[MetaDB PersonSync] 세션 정리 실패 (%s)', domain)
+                warnings.append('session_cleanup_failed')
+            if not operation or not os.path.isfile(operation['journal']):
+                try:
+                    MediaReplacement.release_subject(subject)
+                except Exception:
+                    logger.exception('[MetaDB PersonSync] 인물 잠금 정리 보류 (%s)', domain)
+                    warnings.append('subject_cleanup_pending')
+            if warnings:
+                result['warnings'] = list(dict.fromkeys(result.get('warnings', []) + warnings))
+                result['cleanup_pending'] = True
+
+    @classmethod
+    def sync_registered_actor_image(cls, actor, domain, skip_existing=None):
+        """Keep registered-actor scraper/UI writes on the same protected cache path."""
+        if not P.ModelSetting.get_bool('meta_db_use'):
+            return False
+        from sqlalchemy.orm import sessionmaker
+        from .util_runtime import StorageLookupError, StorageConflict
+        from support_site import SiteAvBase
+        get = actor.get if isinstance(actor, dict) else lambda key, default=None: getattr(actor, key, default)
+        idx = str(get('actor_idx') or get('person_idx') or '').strip()
+        if not idx:
+            return False
+        registry, _, _ = cls.get_session_and_domain('PERSON')
+        if registry is None:
+            raise StorageLookupError('인물 저장소의 등록 여부를 확인할 수 없습니다.')
+        requested = idx.casefold()
+        with sessionmaker(bind=registry.get_bind())() as read:
+            rows = read.query(MetaPerson).filter(func.upper(MetaPerson.domain) == domain,
+                or_(func.lower(MetaPerson.person_idx) == requested,
+                    func.lower(cast(MetaPerson.alt_indices, Text)).contains(requested, autoescape=True))).all()
+            matches = [row for row in rows if requested in
+                {str(value).strip().casefold() for value in [row.person_idx] + list(row.alt_indices or [])}]
+            if not matches:
+                return False
+            if len(matches) != 1:
+                raise StorageConflict('인물 코드가 여러 레코드에 연결되어 있습니다.')
+            canonical = matches[0].person_idx
+        source = str(get('site_img_url') or get('thumb') or get('thumb_url') or '')
+        if (not source.startswith(('http://', 'https://')) or cls.is_local_server_url(source)
+                or '/metadata/normal/' in source or 'drive.google.com/' in source or MetaUtil.is_user_media({'url': source})):
+            source = None
+        keep = not P.ModelSetting.get_bool('jav_censored_image_server_rewrite') if skip_existing is None else skip_existing
+        result = cls.sync_person_image_to_storage(canonical, domain, skip_existing=keep,
+                                                  use_dir_cache=False, source_url=source)
+        if result.get('ret') != 'success':
+            SiteAvBase.set_image_storage_state(actor, 'failed', result.get('error_code', 'storage_sync_failed'))
+            return True
+        if result.get('reason') == 'storage_mode_not_enabled':
+            return False
+        with sessionmaker(bind=registry.get_bind())() as read:
+            person = read.query(MetaPerson).filter_by(domain=domain, person_idx=canonical).one()
+            media = cls.person_media(person)
+            thumb = cls.resolve_person_active_thumb(person)
+        if isinstance(actor, dict):
+            actor.update(media_src=media, thumb=thumb)
+        else:
+            actor.media_src = media
+            actor.thumb = thumb
+        SiteAvBase.set_image_storage_state(actor, 'complete')
+        return True
+
+    @classmethod
+    def complete_item_media(cls, code, category, media_path, metadata=None):
+        """Complete videos at a confirmed local path without scraping metadata again."""
+        from .util_preview import MetaPreviewUtil, MediaReplacement
+        from .util_runtime import stage_storage_record, commit_storage_record
+        blocked_codes = ('commit_outcome_unknown', 'storage_conflict', 'storage_lookup_failed', 'storage_asset_incomplete')
+        def blocked(report):
+            return report.get('commit_state') == 'unknown' or report.get('error_code') in blocked_codes
+        def settle(entries, report, commit):
+            if not blocked(report):
+                return MetaUtil.finish_media_replacements(entries, commit)
+            warnings = []
+            for entry in entries:
+                try:
+                    MediaReplacement.mark_pending(entry, commit_unknown=(
+                        report.get('commit_state') == 'unknown' or report.get('error_code') == 'commit_outcome_unknown'))
+                except Exception:
+                    logger.exception('[MetaDB] 미디어 보완 복구 증거 보존 보류 (%s)', code)
+                warnings.append('media_cleanup_pending')
+            return warnings
+        if not media_path or not os.path.isfile(media_path):
+            return {'ret': 'warning', 'msg': '확정된 영상 파일이 존재하지 않습니다.'}
+        if not P.ModelSetting.get_bool('meta_db_use') or not P.ModelSetting.get_bool('meta_db_save'):
+            data = copy.deepcopy(metadata or {})
+            if not data:
+                return {'ret': 'warning', 'msg': '미디어를 보완할 메타데이터가 없습니다.'}
+            report = MetaPreviewUtil.complete_media(data, category, media_path)
+            warnings = settle((data.get('extra_info') or {}).pop('_media_replacements', []), report, True)
+            result = {'ret': 'warning' if report['failures'] else 'success',
+                      'data': copy.deepcopy(metadata) if blocked(report) else data, 'failures': report['failures']}
+            if report.get('error_code'):
+                result['error_code'] = report['error_code']
+            if report.get('commit_state') == 'unknown':
+                result['commit_state'] = 'unknown'
+            if warnings:
+                result.update(warnings=warnings, cleanup_pending=True)
+            return result
+        cls.ensure_db_ready()
+        if not cls._ensure_meta_db_writable(category):
+            return {'ret': 'warning', 'msg': '메타 DB가 쓰기 가능한 상태가 아닙니다.'}
+        registry, _, std_cat = cls.get_session_and_domain(category)
+        if registry is None:
+            return {'ret': 'warning', 'msg': '메타 DB 세션 획득 실패'}
+        session = sessionmaker(bind=registry.get_bind(), expire_on_commit=False)()
+        entries = []
+        committed = False
+        data = None
+        report = {}
+        result = {'ret': 'warning', 'msg': '미디어 보완을 완료하지 못했습니다.'}
+        session.info['storage_commit_state'] = 'not_attempted'
+        try:
+            item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            if item is None and metadata and P.ModelSetting.get_bool('meta_db_save'):
+                session.rollback()
+                from support_site import SiteUtil
+                plot = metadata.get('plot') or ''
+                allowed = not P.ModelSetting.get_bool('meta_db_save_only_translated') or not plot or SiteUtil.is_include_hangul(plot)
+                if allowed and cls.save_metadata(std_cat, metadata):
+                    item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            if item is None:
+                return {'ret': 'warning', 'msg': '저장 정책에 따라 메타 DB 등록이 생략되어 미디어 보완을 실행하지 않았습니다.'}
+            data = cls.to_entity_dict(item)
+            data['original'] = copy.deepcopy(item.original or {})
+            snapshot = stage_storage_record(session, item, ('media_files',))
+            report = MetaPreviewUtil.complete_media(data, std_cat, str(media_path))
+            extra = data.get('extra_info') or {}
+            entries = extra.pop('_media_replacements', [])
+            if blocked(report):
+                result = {'ret': 'warning', 'failures': report.get('failures') or {},
+                          'error_code': report.get('error_code') or 'commit_outcome_unknown'}
+                if report.get('commit_state') == 'unknown':
+                    result['commit_state'] = 'unknown'
+                session.rollback()
+                return result
+            updated_extra = copy.deepcopy(item.extra_info or {})
+            for key in ('source_video_path', 'trailer_video', 'preview_clip', 'media_errors'):
+                if key in extra:
+                    updated_extra[key] = copy.deepcopy(extra[key])
+                else:
+                    updated_extra.pop(key, None)
+            item.extra_info = updated_extra
+            item.original = copy.deepcopy(data.get('original') or {})
+            cls.sync_item_video_assets(item)
+            item.updated_time = datetime.now()
+            result = {'ret': 'warning' if report['failures'] else 'success', 'data': data, 'failures': report['failures']}
+            if report.get('error_code'):
+                result['error_code'] = report['error_code']
+            commit_storage_record(session, item, snapshot, ('media_files',))
+            committed = True
+            return result
+        except Exception as exc:
+            state = session.info.get('storage_commit_state', 'not_attempted')
+            if state == 'committed':
+                committed = True
+                result.setdefault('warnings', []).append('post_commit_error')
+                return result
+            try:
+                session.rollback()
+            except Exception:
+                logger.exception('[MetaDB] 미디어 보완 세션 rollback 정리 보류 (%s)', code)
+            logger.exception('[MetaDB] 최종 영상 경로 미디어 보완 실패 (%s): %s', code, exc)
+            result = {'ret': 'warning', 'msg': '미디어 보완을 완료하지 못했습니다.',
+                      'error_code': 'commit_outcome_unknown' if state == 'unknown' else getattr(exc, 'error_code', 'media_completion_failed'),
+                      'commit_state': state}
+            return result
+        finally:
+            if not entries and data:
+                entries = (data.get('extra_info') or {}).pop('_media_replacements', [])
+            state = session.info.get('storage_commit_state', 'not_attempted')
+            warnings = settle(entries, report, True if committed else None if state == 'unknown' else False)
+            try:
+                session.close()
+            except Exception:
+                logger.exception('[MetaDB] 미디어 보완 세션 정리 보류 (%s)', code)
+                warnings.append('session_cleanup_pending')
+            if warnings:
+                result.setdefault('warnings', []).extend(warnings)
+                result['cleanup_pending'] = True
+
+    @classmethod
+    def update_item_source_path(cls, code, category, media_path):
+        """Legacy caller compatibility: clear old source paths without storing a new one."""
+        if not media_path:
+            return {'ret': 'warning', 'msg': '영상 경로가 없습니다.'}
+        if not P.ModelSetting.get_bool('meta_db_use') or not P.ModelSetting.get_bool('meta_db_save'):
+            return {'ret': 'success'}
+        cls.ensure_db_ready()
+        if not cls._ensure_meta_db_writable(category):
+            return {'ret': 'warning', 'msg': '메타 DB가 쓰기 가능한 상태가 아닙니다.'}
+        registry, _, std_cat = cls.get_session_and_domain(category)
+        if registry is None:
+            return {'ret': 'warning', 'msg': '메타 DB 세션 획득 실패'}
+        session = sessionmaker(bind=registry.get_bind(), expire_on_commit=False)()
+        result = {'ret': 'success'}
+        session.info['storage_commit_state'] = 'not_attempted'
+        try:
+            item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            if item is None:
+                return {'ret': 'success'}  # Respect metadata save policies.
+            from .util_runtime import stage_storage_record, commit_storage_record
+            snapshot = stage_storage_record(session, item)
+            extra = copy.deepcopy(item.extra_info or {})
+            if 'source_video_path' in extra:
+                extra.pop('source_video_path', None)
+                item.extra_info = extra
+                item.updated_time = datetime.now()
+                commit_storage_record(session, item, snapshot)
+            return result
+        except Exception as exc:
+            state = session.info.get('storage_commit_state', 'not_attempted')
+            if state == 'committed':
+                result.setdefault('warnings', []).append('post_commit_error')
+                return result
+            try:
+                session.rollback()
+            except Exception:
+                logger.exception('[MetaDB] 이전 원본 경로 rollback 정리 보류 (%s)', code)
+            logger.exception('[MetaDB] 이전 원본 영상 경로 정보 정리 실패 (%s)', code)
+            result = {'ret': 'warning', 'msg': '이전 원본 영상 경로 정보 정리에 실패했습니다.',
+                      'error_code': 'commit_outcome_unknown' if state == 'unknown' else 'source_path_cleanup_failed',
+                      'commit_state': state}
+            return result
+        finally:
+            try:
+                session.close()
+            except Exception:
+                logger.exception('[MetaDB] 이전 원본 경로 세션 정리 보류 (%s)', code)
+                result.setdefault('warnings', []).append('session_cleanup_pending')
+                result['cleanup_pending'] = True
 
     @classmethod
     def sync_item_video_assets(cls, item):
@@ -3424,6 +3786,7 @@ class ModuleMetaDb(PluginModuleBase):
         include_original = P.ModelSetting.get_bool("meta_db_include_original")
 
         raw_extra = copy.deepcopy(item.extra_info or {})
+        raw_extra.pop('source_video_path', None)
         raw_extra.pop('unavailable_trailer', None)
         raw_original = copy.deepcopy(getattr(item, 'original', {}) or {})
         if not isinstance(raw_original, dict):
@@ -3578,6 +3941,17 @@ class ModuleMetaDb(PluginModuleBase):
                 ''
             )
 
+        if current_image_mode == 'ff_proxy':
+            from urllib.parse import urlencode
+            transforms = raw_extra.get('image_transforms') or {}
+            transform = transforms.get('poster') if isinstance(transforms, dict) else None
+            if (isinstance(transform, dict) and not media_poster and
+                    cls._is_http_url(transform.get('url')) and
+                    (transform.get('mode') == 'smart_crop' or
+                     re.fullmatch(r'crop_[a-z0-9_.]+', str(transform.get('mode') or '')))):
+                resolved_p_url = (F.SystemModelSetting.get('ddns') or '').rstrip('/') + '/metadata/normal/jav_image?' + urlencode({
+                    'site': transform.get('site') or item.site, 'url': transform['url'], 'mode': transform['mode']})
+
         # 최대 아트 수 제한
         raw_max_arts = P.ModelSetting.get("jav_censored_art_count") or "0"
         try:
@@ -3612,12 +3986,9 @@ class ModuleMetaDb(PluginModuleBase):
                 raw_extra['preview_clip'], item, video_type='preview', category=item.category
             )
             if preview_stream_url:
-                d['extras'].append({
-                    'mode': 'mp4',
-                    'title': f"[Preview] {item.title or item.tagline or item.originaltitle}",
-                    'content_url': preview_stream_url,
-                    'content_type': 'trailer'
-                })
+                d['extras'].append(MetaPreviewUtil.video_extra(preview_stream_url,
+                    f"[Preview] {item.title or item.tagline or item.originaltitle}",
+                    [raw_extra['preview_clip'].get('extra')]))
                 has_video_extra = True
 
         # 저장된 공식 트레일러 영상 (프리뷰 클립이 없을 때 차선 적용)
@@ -3626,12 +3997,10 @@ class ModuleMetaDb(PluginModuleBase):
                 raw_extra['trailer_video'], item, video_type='trailer', category=item.category
             )
             if trailer_stream_url:
-                d['extras'].append({
-                    'mode': 'mp4',
-                    'title': item.tagline or item.title or item.originaltitle,
-                    'content_url': trailer_stream_url,
-                    'content_type': 'trailer'
-                })
+                d['extras'].append(MetaPreviewUtil.video_extra(trailer_stream_url,
+                    item.tagline or item.title or item.originaltitle,
+                    [raw_extra['trailer_video']['extra']] if isinstance(raw_extra['trailer_video'].get('extra'), dict)
+                    else raw_original.get('extras')))
                 has_video_extra = True
 
         # 원격 원본 트레일러 스트림 URL (로컬/GDrive 저장 영상이 전혀 없을 때만 적용)
@@ -3640,7 +4009,7 @@ class ModuleMetaDb(PluginModuleBase):
             orig_extras = raw_original.get('extras') or []
             if isinstance(orig_extras, list):
                 for ex in orig_extras:
-                    if isinstance(ex, dict) and ex.get('content_url'):
+                    if isinstance(ex, dict) and str(ex.get('content_type', 'trailer')).lower() == 'trailer' and ex.get('content_url'):
                         raw_video_url = ex['content_url']
                         break
 
@@ -3662,7 +4031,11 @@ class ModuleMetaDb(PluginModuleBase):
                 else:
                     final_trailer_url = raw_video_url
 
-                d['extras'].append({'mode': 'mp4', 'title': item.tagline or item.title, 'content_url': final_trailer_url, 'content_type': 'trailer'})
+                d['extras'].append(MetaPreviewUtil.video_extra(final_trailer_url,
+                    item.tagline or item.title, orig_extras))
+
+        d['extras'].extend(copy.deepcopy(ex) for ex in raw_original.get('extras') or []
+            if isinstance(ex, dict) and str(ex.get('content_type', 'trailer')).lower() != 'trailer')
 
         # 배우 다중 저장소 복원 및 역추적 자가 치유(Self-Healing)
         actors_bridge = (
@@ -6041,6 +6414,136 @@ class ModuleMetaDb(PluginModuleBase):
 
 
     @classmethod
+    def get_delete_plan(cls, targets):
+        """Build a reviewable inventory; input selects DB records, never arbitrary files."""
+        import hashlib
+        if isinstance(targets, str):
+            targets = json.loads(targets)
+        if not isinstance(targets, list) or not targets or len(targets) > 1000:
+            raise ValueError('삭제할 항목을 1~1000개 선택하세요.')
+        cls.ensure_db_ready()
+        records, files, seen = [], {}, set()
+        for target in targets:
+            person = target.get('kind') == 'person'
+            category = 'PERSON' if person else str(target.get('category') or '').upper()
+            if not person and category not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                raise ValueError('AV 카테고리를 지정해야 합니다.')
+            identifier = str(int(target['id'])) if person else str(target.get('code') or '').strip()
+            key = (category, identifier)
+            if not identifier or key in seen:
+                continue
+            seen.add(key)
+            sess, _, _ = cls.get_session_and_domain(category)
+            if sess is None:
+                raise RuntimeError('DB 세션 생성 실패: ' + category)
+            try:
+                model = MetaPerson if person else MetaItem
+                query = sess.query(model).options(lazyload('*'))
+                record = query.filter_by(id=int(identifier)).first() if person else query.filter_by(code=identifier, category=category).first()
+                if record is None:
+                    raise ValueError('삭제할 DB 항목이 없습니다: ' + identifier)
+                if person and str(record.domain).upper() not in ('JAV', 'WESTERN'):
+                    raise ValueError('AV 인물만 삭제할 수 있습니다.')
+                descriptor = dict(kind='person' if person else 'item', category=category, id=record.id,
+                    code=identifier, title=(record.name_ko or record.name_org) if person else (record.originaltitle or record.title),
+                    updated=str(record.updated_time or ''))
+                records.append(descriptor)
+                for asset in MetaUtil.collect_delete_assets(record, person=person):
+                    if asset['key'] not in files:
+                        asset['owners'] = []
+                        files[asset['key']] = asset
+                    files[asset['key']]['owners'].append(identifier)
+            finally:
+                sess.remove()
+        # Shared assets still needed by unselected records must remain available.
+        item_codes = {r['code'] for r in records if r['kind'] == 'item'}
+        person_ids = {r['id'] for r in records if r['kind'] == 'person'}
+        for asset in files.values():
+            fid, relative = asset['file_id'], asset['relative_path']
+            if item_codes:
+                for category in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                    sess, _, _ = cls.get_session_and_domain(category)
+                    if sess is None:
+                        raise RuntimeError('공유 파일 참조 확인 실패: ' + category)
+                    try:
+                        condition = MetaMedia.gdrive_fileid == fid if fid else and_(
+                            MetaMedia.relative_path == relative, or_(MetaMedia.gdrive_fileid == '', MetaMedia.gdrive_fileid.is_(None)))
+                        shared = sess.query(MetaMedia.id).join(MetaItem).filter(
+                            MetaItem.category == category, ~MetaItem.code.in_(item_codes), condition).first() if fid or relative else None
+                        if shared:
+                            asset['retained'] = '다른 영상 DB 항목에서 사용하는 공유 파일'
+                            break
+                    finally:
+                        sess.remove()
+            if person_ids:
+                sess, _, _ = cls.get_session_and_domain('PERSON')
+                if sess is None:
+                    raise RuntimeError('공유 인물 이미지 참조 확인 실패')
+                try:
+                    if fid:
+                        condition = or_(MetaPerson.official_cached_gdrive_fileid == fid, MetaPerson.custom_gdrive_fileid == fid)
+                    else:
+                        condition = and_(MetaPerson.domain == ('WESTERN' if asset['category'] == 'WESTERN' else 'JAV'),
+                            or_(MetaPerson.official_cached_local_path == relative, MetaPerson.custom_local_path == relative))
+                    if (fid or relative) and sess.query(MetaPerson.id).filter(~MetaPerson.id.in_(person_ids), condition).first():
+                        asset['retained'] = '다른 인물 DB 항목에서 사용하는 공유 파일'
+                finally:
+                    sess.remove()
+        entries = sorted(files.values(), key=lambda a: a['key'])
+        records.sort(key=lambda r: (r['category'], r['code']))
+        signature = hashlib.sha256(json.dumps([records, entries], sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        return dict(records=records, files=entries, token=signature)
+
+    @classmethod
+    def confirm_delete_plan(cls, targets, mode, token):
+        if mode not in ('db', 'all'):
+            return {'ret':'error', 'msg':'삭제 범위를 선택하세요.'}
+        plan = cls.get_delete_plan(targets)
+        if not token or token != plan['token']:
+            return {'ret':'error', 'msg':'DB 또는 저장소 설정이 변경되었습니다. 삭제 목록을 다시 확인하세요.'}
+        for category in {r['category'] for r in plan['records']}:
+            allowed, message = cls._schema_write_guard(category, '메타데이터 삭제')
+            if not allowed:
+                return {'ret':'error', 'msg':message}
+        if mode == 'all':
+            blocked = [f for f in plan['files'] if f['blocked'] and not f['retained']]
+            if blocked:
+                return {'ret':'error', 'msg':'삭제할 파일 경로/저장소 설정을 먼저 확인하세요.', 'files':blocked}
+            errors = []
+            try:
+                for asset in plan['files']:
+                    try:
+                        MetaUtil.delete_owned_asset(asset)
+                    except Exception as exc:
+                        logger.exception('[MetaDB Delete] 파일 삭제 실패: %s', asset['path'] or asset['file_id'])
+                        errors.append(dict(path=asset['path'] or asset['file_id'], error=str(exc)))
+            finally:
+                from .util_preview import MetaPreviewUtil
+                MetaPreviewUtil.clear_dir_cache()
+            if errors:
+                return {'ret':'error', 'msg':'일부 파일을 삭제하지 못해 DB는 유지했습니다. 삭제된 파일은 되돌릴 수 없습니다.', 'files':errors}
+        count = 0
+        for category in sorted({r['category'] for r in plan['records']}):
+            sess, _, _ = cls.get_session_and_domain(category)
+            try:
+                model = MetaPerson if category == 'PERSON' else MetaItem
+                for descriptor in [r for r in plan['records'] if r['category'] == category]:
+                    record = sess.query(model).options(lazyload('*')).filter_by(id=descriptor['id']).with_for_update(of=model).first()
+                    if record is None or str(record.updated_time or '') != descriptor['updated']:
+                        raise RuntimeError('삭제 도중 DB 항목이 변경되었습니다. 목록을 다시 확인하세요.')
+                    sess.delete(record)
+                sess.commit()
+                count += sum(r['category'] == category for r in plan['records'])
+            except Exception:
+                sess.rollback()
+                logger.exception('[MetaDB Delete] DB 삭제 실패 (%s)', category)
+                return {'ret':'error', 'msg':'DB 삭제 실패. 완료 %d건. 목록을 새로 고친 뒤 재시도하세요.' % count}
+            finally:
+                sess.remove()
+        logger.info('[MetaDB Delete] 선택 삭제 완료: mode=%s records=%d files=%d', mode, count, len(plan['files']))
+        return {'ret':'success', 'msg':'%d건의 DB 데이터%s 삭제했습니다.' % (count, '와 관련 미디어를' if mode == 'all' else '만')}
+
+    @classmethod
     def delete_record(cls, code, category=None):
         cls.ensure_db_ready()
         sess, domain, std_cat = cls.get_session_and_domain(category)
@@ -6565,11 +7068,9 @@ class ModuleMetaDb(PluginModuleBase):
         batch_key = 'person' if (str(batch_type).lower() == 'person' or refresh_mode in ['person_image_sync', 'works_sync']) else 'item'
         job_status = self.batch_status[batch_key]
         batch_opts = dict(batch_options or {})
-        if refresh_mode == 'media_sync':
-            # Show the effective defaults once, including options omitted by older clients.
-            for key in ('media_sync_skip_existing', 'media_sync_poster',
-                        'media_sync_landscape', 'media_sync_fanart', 'media_sync_trailer'):
-                batch_opts.setdefault(key, True)
+        if refresh_mode in ('media_sync', 'media_reprocess'):
+            # These modes share the modal pipeline; legacy storage-only switches do not apply.
+            batch_opts = {key: value for key, value in batch_opts.items() if not key.startswith('media_sync_')}
 
         option_labels = {
             'person_skip_existing': '기존 인물 이미지 처리 생략',
@@ -6577,23 +7078,18 @@ class ModuleMetaDb(PluginModuleBase):
             'western_skip_existing': '기존 Western 이미지 처리 생략',
             'works_sync_clean_orphan': '오매칭 출연작 자동 정제',
             'missing_include_media': '이미지/미디어 동기화 포함',
-            'media_sync_image': '이미지 재동기화',
-            'media_sync_force': '기존 미디어 강제 재처리',
             'in_place_skip_media': '이미지/미디어 처리 생략',
-            'auto_search_under_95': '95점 미만 항목만 대상',
-            'media_sync_skip_existing': '기존 미디어 존재 시 처리 생략',
-            'media_sync_poster': '포스터 동기화',
-            'media_sync_landscape': '가로커버 동기화',
-            'media_sync_fanart': '팬아트 동기화',
-            'media_sync_trailer': '트레일러 영상 동기화'
+            'auto_search_under_95': '95점 미만 항목만 대상'
         }
         configured_options = [
             f"{label}: {'ON' if bool(batch_opts.get(key)) else 'OFF'}"
             for key, label in option_labels.items()
             if key in batch_opts
         ]
-        if refresh_mode == 'media_sync':
+        if refresh_mode in ('media_sync', 'media_reprocess'):
+            configured_options.append('기존 일반 미디어 재사용: ' + ('ON' if refresh_mode == 'media_sync' else 'OFF'))
             configured_options.append('사용자 이미지 보호: ON')
+            configured_options.append('기존 프리뷰 보호: ON')
         option_summary = ', '.join(configured_options) if configured_options else '없음'
         def broadcast_start_config():
             self._broadcast_batch_log(
@@ -6957,7 +7453,7 @@ class ModuleMetaDb(PluginModuleBase):
                 self._broadcast_batch_log(f"인물 색인 적재 완료 ({dom}: 총 {len(memory_person_indices[dom].by_idx):,}명 색인화)", batch_type=batch_key)
 
         effective_delay = max(0, delay)
-        if refresh_mode in ('local_sync', 'media_sync', 'person_image_sync'):
+        if refresh_mode in ('local_sync', 'person_image_sync'):
             delay_desc = '없음(사이트 검색·정보 조회 없음)'
         else:
             delay_desc = f'{effective_delay}초(사이트 검색·정보 조회 시에만)'
@@ -7126,10 +7622,13 @@ class ModuleMetaDb(PluginModuleBase):
                         idx_engine = memory_person_indices.get(target_dom)
                         res = MetaUtil.sync_local_data(target_mod, code, cat, memory_index=idx_engine)
 
-                    elif refresh_mode == 'media_sync':
-                        res = MetaUtil.sync_item_media_to_storage(
-                            target_mod, code, cat, batch_opts=batch_opts, use_dir_cache=True
+                    elif refresh_mode in ('media_sync', 'media_reprocess'):
+                        res = MetaUtil.refresh_image_only(
+                            target_mod, code, cat, site_activity=site_activity,
+                            storage_action='replace' if refresh_mode == 'media_reprocess' else 'reuse'
                         )
+                        if res and res.get('media_warning'):
+                            res['detail_msg'] = '일부 미디어 실패: ' + str(res['media_warning'])
 
                     elif refresh_mode == 'missing':
                         res = MetaUtil.heal_metadata(target_mod, code, cat, site_activity=site_activity)
@@ -8177,7 +8676,11 @@ class ModuleMetaDb(PluginModuleBase):
 
     def process_command(self, command, arg1, arg2, arg3, req):
         try:
-            if command == 'person_search':
+            if command == 'db_delete_preview':
+                return jsonify({'ret':'success', 'data':self.get_delete_plan(arg1)})
+            elif command == 'db_delete_confirm':
+                return jsonify(self.confirm_delete_plan(arg1, arg2, arg3))
+            elif command == 'person_search':
                 kw = arg1 or ''
                 domain = arg2 or 'ALL'
                 opts = {}
@@ -8865,12 +9368,17 @@ class ModuleMetaDb(PluginModuleBase):
 
             elif command == 'db_refresh_image_only':
                 code = arg1
+                body = req.get_json(silent=True) if req.is_json else {}
+                media_path = req.values.get('media_path')
+                if media_path is None and isinstance(body, dict):
+                    media_path = body.get('media_path')
                 target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
                 mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
                 target_mod = P.get_module(mod_name)
                 if not target_mod:
                     return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
-                return jsonify(MetaUtil.refresh_image_only(target_mod, code, target_cat, storage_action=arg3 or None))
+                return jsonify(MetaUtil.refresh_image_only(target_mod, code, target_cat,
+                                                          storage_action=arg3 or None, media_path=media_path))
 
             elif command == 'db_refresh_in_place':
                 code = arg1
@@ -9021,6 +9529,8 @@ class ModuleMetaDb(PluginModuleBase):
 
                 categories_to_try = [target_cat]
                 for c_cand in ['JAV_CEN', 'JAV_UNCEN', 'WESTERN', 'MOVIE', 'KTV', 'FTV']:
+                    if raw_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                        break
                     if c_cand not in categories_to_try:
                         categories_to_try.append(c_cand)
 
@@ -9048,13 +9558,16 @@ class ModuleMetaDb(PluginModuleBase):
                     try:
                         # code, ui_code, originaltitle 필드와 100% 완전 일치하는 레코드만 엄격하게 조회
                         item = sess.query(MetaItem).filter(
+                            MetaItem.category == std_cat, MetaItem.code == target_code).first()
+                        if item is None and not (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and self._is_av_internal_code(target_code)):
+                            item = sess.query(MetaItem).filter(
                             MetaItem.category == std_cat,
                             or_(
                                 func.lower(MetaItem.code).in_(match_targets),
                                 func.lower(MetaItem.ui_code).in_(match_targets),
                                 func.lower(MetaItem.originaltitle).in_(match_targets)
                             )
-                        ).first()
+                            ).first()
 
                         if item:
                             found_item = item
@@ -9402,19 +9915,11 @@ class ModuleMetaDb(PluginModuleBase):
                 if not isinstance(body_json, dict):
                     body_json = {}
 
-                category = (
-                    body_json.get("category") or
-                    req.values.get("category") or
-                    req.values.get("cat") or
-                    "JAV_CEN"
-                )
+                category = body_json.get('category', body_json.get('cat',
+                    req.values.get('category', req.values.get('cat', 'JAV_CEN'))))
 
-                raw_codes = (
-                    body_json.get("codes") or
-                    req.values.get("codes") or
-                    body_json.get("code") or
-                    req.values.get("code")
-                )
+                raw_codes = body_json.get('codes', body_json.get('code',
+                    req.values.get('codes', req.values.get('code'))))
 
                 if not raw_codes:
                     return jsonify({'ret': 'error', 'msg': '조회할 코드 목록(codes)이 전달되지 않았습니다.'}), 400
@@ -9451,5 +9956,5 @@ class ModuleMetaDb(PluginModuleBase):
                     return meta_module.process_command("delete_preview_clip", code, cat, params.get("video_type") or req.values.get("video_type", ""), req)
 
         except Exception as e:
-            logger.error(f"Exception in process_api (sub={sub}): {e}")
-            return jsonify({'ret': 'exception', 'msg': str(e)}), 500
+            logger.exception('[MetaDB API] 요청 처리 실패: sub=%s', sub)
+            return jsonify({'ret': 'exception', 'msg': '메타 DB API 요청 처리에 실패했습니다.'}), 500

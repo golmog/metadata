@@ -50,7 +50,7 @@
     {{ macros.setting_checkbox('meta_db_save', '새 메타데이터 DB 자동 저장', value=arg['meta_db_save'], desc=['새롭게 파싱되거나 번역된 메타데이터를 DB에 자동으로 저장합니다.']) }}
     {{ macros.setting_checkbox('meta_db_save_only_translated', '번역 완료된 메타데이터만 DB에 저장', value=arg['meta_db_save_only_translated'], desc=['ON: 번역이 성공적으로 완료된 메타데이터만 DB에 저장하며, 번역 실패 또는 번역 생략 수집 시에는 저장을 건너뜁니다.']) }}
     {{ macros.setting_checkbox('meta_db_include_original', '번역 전 원문 텍스트 보관 (original)', value=arg['meta_db_include_original'], desc=['ON: 제목, 줄거리, 제작사 등의 번역 전 원본 텍스트를 DB와 JSON에 백업 보관합니다. (재번역 및 오프라인 복구 시 유용)', 'OFF: 원문 백업을 제외하고 최종 번역 데이터만 저장합니다.']) }}
-    {{ macros.setting_checkbox('meta_db_delete_user_images', 'DB 삭제 시 유저 포스터(_user)도 함께 삭제', value=arg['meta_db_delete_user_images'], desc=['ON: DB 데이터 삭제 시 수동으로 크롭/업로드한 유저 이미지(_user) 파일까지 디스크에서 완전히 삭제합니다.']) }}
+    {{ macros.setting_checkbox('meta_db_delete_user_images', 'DB 삭제 시 유저 포스터(_user)도 함께 삭제', value=arg['meta_db_delete_user_images'], desc=['ON: DB 데이터 삭제 시 수동으로 크롭/업로드한 유저 이미지(_user) 파일까지 디스크에서 완전히 삭제합니다.', '영상·인물 목록의 개별/선택 삭제는 확인창에서 선택한 삭제 범위가 우선합니다.']) }}
     {{ macros.setting_checkbox('meta_db_use_ff_proxy', '메타 DB 외부 이미지/트레일러 FF Proxy 사용', value=arg['meta_db_use_ff_proxy'], desc=['목록과 모달에 표시되는 외부 이미지 및 트레일러에만 적용됩니다.', 'DB와 JSON에 저장되는 원본 URL은 변경하지 않습니다. JAV/Western 모두 적용됩니다.']) }}
     {{ macros.setting_input_textarea('meta_db_image_url_mapping', '웹 리스트 이미지 주소 치환', value=arg['meta_db_image_url_mapping'], row='2', desc=['웹 리스트에서 이미지가 열리지 않을 때(localhost, 사설 IP 등) 주소를 치환하여 불러옵니다.', '형식: [기존주소]|[치환주소] (엔터로 여러 개 등록 가능)']) }}
     {{ macros.m_hr() }}

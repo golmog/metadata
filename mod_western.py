@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import copy
 import re
 import traceback
 import threading
@@ -492,8 +493,15 @@ class ModuleWestern(PluginModuleBase):
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, cleaned_keyword)
                 if valid_db_records:
                     for record in valid_db_records:
-                        db_item = self._create_search_item_from_dict(record['json_data'], 105)
+                        payload = dict(record.get('json_data') or {})
+                        for key in ('code', 'site', 'site_key', 'poster_url', 'category'):
+                            if record.get(key):
+                                payload[key] = record[key]
+                        if not payload.get('code') or not payload.get('site'):
+                            continue
+                        db_item = self._create_search_item_from_dict(payload, 105)
                         item_dict = db_item.as_dict()
+                        item_dict['site_key'] = payload.get('site_key') or payload['site']
                         item_dict['original_score'] = 105
                         item_dict['is_db_cached'] = True
                         all_results.append(item_dict)
@@ -581,7 +589,7 @@ class ModuleWestern(PluginModuleBase):
         try: db_item.year = int(jd.get('year', 1900))
         except: db_item.year = 1900
         
-        poster_url = ""
+        poster_url = jd.get('poster_url') or ""
         for t in jd.get('thumb', []):
             if isinstance(t, dict) and t.get('aspect') == 'poster':
                 poster_url = t.get('value', '')
@@ -632,6 +640,7 @@ class ModuleWestern(PluginModuleBase):
     def info(self, code, keyword=None, extra_opts=None, **kwargs):
         opts = dict(extra_opts or {})
         opts.update(kwargs)
+        opts['_parallel_media'] = True
 
         skip_trans = opts.get('skip_trans', False)
         media_path = opts.get('media_path', None)
@@ -659,46 +668,44 @@ class ModuleWestern(PluginModuleBase):
         
         # 캐시 히트 시: DB 마스터는 보존하고 반환 직전 임시 가공 적용
         if use_db and not bypass_cache:
-            cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
+            cached_json = copy.deepcopy(ModuleMetaDb.get_metadata(code, category=self.category))
 
             if cached_json:
                 if not ModuleMetaDb._ensure_meta_db_writable(self.category):
                     logger.debug(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 캐시 읽기 전용 즉시 반환: {code}")
                     return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
-                is_db_untranslated = False
-                db_plot = cached_json.get('plot', '')
-                if db_plot and not skip_trans:
-                    if not SiteUtil.is_include_hangul(db_plot):
-                        is_db_untranslated = True
+                logger.info(f"[{self.name}] DB 캐시 로드: {code} -> {cached_json.get('title', '')}")
 
-                if not is_db_untranslated:
-                    logger.info(f"[{self.name}] DB 캐시 로드: {code} -> {cached_json.get('title', '')}")
+                include_male_opt = P.ModelSetting.get_bool(f"{self.name}_json_include_male")
+                if include_male_opt is None:
+                    include_male_opt = P.ModelSetting.get_bool(f"{self.name}_include_male") or False
 
-                    include_male_opt = P.ModelSetting.get_bool(f"{self.name}_json_include_male")
-                    if include_male_opt is None:
-                        include_male_opt = P.ModelSetting.get_bool(f"{self.name}_include_male") or False
+                if not include_male_opt and cached_json.get('actor'):
+                    females_only = [a for a in cached_json['actor'] if str(a.get('gender')).lower() == 'female']
+                    if females_only:
+                        cached_json['actor'] = females_only
 
-                    if not include_male_opt and cached_json.get('actor'):
-                        females_only = [a for a in cached_json['actor'] if str(a.get('gender')).lower() == 'female']
-                        if females_only:
-                            cached_json['actor'] = females_only
+                # 기존 등록 코드에 새 로컬 파일의 지문이 누락되어 있다면 자동 학습 보강
+                media_path_opt = opts.get('media_path')
+                if media_path_opt and os.path.exists(media_path_opt):
+                    local_oshash = SiteAvBase.calculate_oshash(media_path_opt)
+                    if local_oshash:
+                        ModuleMetaDb.append_fingerprint(code, self.category, 'OSHASH', local_oshash, source='user')
 
-                    # 기존 등록 코드에 새 로컬 파일의 지문이 누락되어 있다면 자동 학습 보강
-                    media_path_opt = opts.get('media_path')
-                    if media_path_opt and os.path.exists(media_path_opt):
-                        local_oshash = SiteAvBase.calculate_oshash(media_path_opt)
-                        if local_oshash:
-                            ModuleMetaDb.append_fingerprint(code, self.category, 'OSHASH', local_oshash, source='user')
-
-                    return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+                if opts.get('media_path') and os.path.isfile(opts['media_path']):
+                    completed = ModuleMetaDb.complete_item_media(cached_json.get('code') or code, self.category, opts['media_path'], metadata=cached_json)
+                    MetaUtil.note_media_completion(opts, completed, opts['media_path'])
+                    if completed.get('data'):
+                        cached_json.update({key: completed['data'][key] for key in ('extra_info', 'extras', 'original') if key in completed['data']})
+                return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
         if use_db and not ModuleMetaDb._ensure_meta_db_writable(self.category):
             logger.warning(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 신규 메타데이터 생성(스크래핑/번역) 원천 차단: {code}")
             return None
 
         data = None
-        scrape_opts = {'skip_trans': skip_trans, 'media_path': media_path}
+        scrape_opts = dict(opts)
 
         try:
             MetaUtil.mark_batch_site_request(opts)
@@ -903,69 +910,8 @@ class ModuleWestern(PluginModuleBase):
             site_log = ret.get('site', 'unknown').upper()
             logger.info(f"[{site_log} Success] Code: {code}, Title: {title_log} ({year_log})")
 
-        # 기존 영상 파일 자동 감지 및 흡수
         from .util_preview import MetaPreviewUtil
-        MetaPreviewUtil.check_and_adopt_existing_video(ret, category=self.category,
-            reuse_gdrive=opts.get('reuse_existing_media', False), existing_item=opts.get('_existing_media_item'),
-            reprocess=opts.get('reuse_existing_media') is False)
-
-        media_path = opts.get('media_path')
-        if media_path and os.path.exists(media_path):
-            if 'extra_info' not in ret or not isinstance(ret['extra_info'], dict):
-                ret['extra_info'] = {}
-            ret['extra_info']['source_video_path'] = media_path
-
-        code_val = ret.get('code') or code
-        cat_val = self.category
-
-        raw_trailer_url = None
-        for ex in (ret.get('original', {}).get('extras') or []):
-            if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
-                raw_trailer_url = ex['content_url']
-                break
-        if not raw_trailer_url:
-            for ex in (ret.get('extras') or []):
-                if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
-                    c_url = ex['content_url']
-                    if 'mode=preview_' not in c_url:
-                        raw_trailer_url = c_url
-                        break
-
-        trailer_download_success = False
-        if raw_trailer_url and MetaPreviewUtil.is_trailer_download_enabled(cat_val):
-            if not (ret.get('extra_info', {}) or {}).get('trailer_video'):
-                logger.info(f"[{self.name}] 공식 트레일러 감지 -> 영상 동기 아카이빙 시작: {code_val}")
-                succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
-                    code_val, raw_trailer_url, cat_val, force=not opts.get('reuse_existing_media', False), item_dict=ret
-                )
-                if succ:
-                    trailer_download_success = True
-
-        if media_path and os.path.exists(media_path) and MetaPreviewUtil.is_auto_create_enabled(cat_val) and not opts.get('preserve_preview'):
-            has_preview = bool((ret.get('extra_info', {}) or {}).get('preview_clip'))
-            has_trailer_video = bool((ret.get('extra_info', {}) or {}).get('trailer_video'))
-            if opts.get('reprocess_existing_preview') or (not has_preview and not has_trailer_video and not trailer_download_success):
-                logger.info(f"[{self.name}] 공식 트레일러 부재/다운로드 실패 감지 -> 프리뷰 클립 동기 생성 시작: {code_val}")
-                MetaPreviewUtil.process_preview_workflow(
-                    code_val, media_path, cat_val, force=True, item_dict=ret
-                )
-
-        ret_extra = ret.get('extra_info', {}) or {}
-        stream_url = None
-        video_prefix = ""
-        if ret_extra.get('preview_clip'):
-            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['preview_clip'], ret, video_type='preview', category=cat_val)
-            video_prefix = "[Preview] "
-        elif ret_extra.get('trailer_video'):
-            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['trailer_video'], ret, video_type='trailer', category=cat_val)
-
-        if stream_url:
-            ret['extras'] = [{
-                'mode': 'mp4',
-                'title': video_prefix + (ret.get('title') or ret.get('tagline') or ret.get('originaltitle')),
-                'content_url': stream_url,
-                'content_type': 'trailer'
-            }]
+        MetaPreviewUtil.complete_media(ret, self.category, opts.get('media_path'), options=opts)
 
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
         should_save = use_db and save_db and ret
@@ -978,7 +924,9 @@ class ModuleWestern(PluginModuleBase):
                     should_save = False
 
         if should_save:
-            ModuleMetaDb.save_metadata(self.category, ret)
+            receipt = opts.get('_media_completion')
+            ModuleMetaDb.save_metadata(self.category, ret, **(
+                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}))
 
         final_clean_actors = []
         candidate_actors = actors_for_db_save
@@ -1061,7 +1009,8 @@ class ModuleWestern(PluginModuleBase):
 
             if sub == "info":
                 code = req.args.get("code")
-                data = self.info(code)
+                media_path = req.values.get("media_path") or req.values.get("path")
+                data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
                 if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)

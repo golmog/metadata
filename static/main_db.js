@@ -181,7 +181,13 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
         data: postData,
         dataType: "json",
         success: function (data) { if (callback) callback(data); },
-        error: function (request, status, error) { console.warn('[AJAX Error]:', command, status, error); }
+        error: function (request, status, error) {
+            console.warn('[AJAX Error]:', command, status, error);
+            if ((command === 'db_delete_preview' || command === 'db_delete_confirm') && callback) {
+                callback({ret:'error', uncertain:command === 'db_delete_confirm',
+                    msg:command === 'db_delete_confirm' ? '삭제 응답을 받지 못했습니다. 처리가 진행 중이거나 완료되었을 수 있으므로 목록을 새로 고쳐 확인하세요.' : '관련 파일 목록을 불러오지 못했습니다.'});
+            }
+        }
     });
 };
 
@@ -762,6 +768,7 @@ function injectDbModals() {
               </div>
               <div class="modal-body p-0 d-flex justify-content-center align-items-center flex-grow-1" style="background: #000; overflow: hidden; min-height: 0;">
                 <video id="video_preview_player" controls autoplay playsinline style="width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; background: #000; display: block;" src=""></video>
+                <div id="video_key_feedback" role="status" aria-live="polite" aria-atomic="true"></div>
               </div>
             </div>
           </div>
@@ -1615,27 +1622,9 @@ function renderBatchDynamicOptions() {
             optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_missing_include_media" style="cursor: pointer;">이미지/미디어 동기화 포함 (기존 미디어 존재 시 재처리 스킵)</label>';
             optionsHtml += '</div>';
         } else if (mode === 'media_sync') {
-            descText = '💡 외부 사이트 재스크래핑 없이 메타 DB에 등록된 원본 URL을 바탕으로 포스터, 랜드스케이프, 팬아트 및 트레일러 영상을 개인 저장소(구글 드라이브 / 로컬 디렉토리)에 일괄 다운로드/업로드하여 동기화합니다.';
-            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
-            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_skip_existing" data-opt-key="media_sync_skip_existing" checked>';
-            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_skip_existing" style="cursor: pointer;">기존 미디어 존재 시 처리 생략 (구글 드라이브는 File ID만 갱신)</label>';
-            optionsHtml += '</div>';
-            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
-            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_poster" data-opt-key="media_sync_poster" checked>';
-            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_poster" style="cursor: pointer;">포스터 동기화</label>';
-            optionsHtml += '</div>';
-            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
-            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_landscape" data-opt-key="media_sync_landscape" checked>';
-            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_landscape" style="cursor: pointer;">가로커버 동기화</label>';
-            optionsHtml += '</div>';
-            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
-            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_fanart" data-opt-key="media_sync_fanart" checked>';
-            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_fanart" style="cursor: pointer;">팬아트 갤러리 동기화</label>';
-            optionsHtml += '</div>';
-            optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
-            optionsHtml += '  <input type="checkbox" class="custom-control-input" id="opt_media_sync_trailer" data-opt-key="media_sync_trailer" checked>';
-            optionsHtml += '  <label class="custom-control-label small font-weight-bold text-light" for="opt_media_sync_trailer" style="cursor: pointer;">공식 트레일러 영상 동기화</label>';
-            optionsHtml += '</div>';
+            descText = '💡 모달의 이미지/미디어 동기화와 동일하게 출처 사이트에서 이미지 정보를 다시 가져옵니다. 기존 미디어는 재사용하고, 없는 이미지는 탐색·크롭·저장합니다. 사용자 이미지와 기존 프리뷰는 보호합니다.';
+        } else if (mode === 'media_reprocess') {
+            descText = '💡 모달의 이미지/미디어 재처리와 동일하게 출처 사이트에서 이미지 정보를 다시 가져와 기존 일반 이미지와 공식 트레일러를 다시 처리합니다. 사용자 이미지와 기존 프리뷰는 보호하며, 저장 방식과 이미지 처리 설정을 따릅니다.';
         } else if (mode === 'in_place') {
             descText = '💡 현재 출처 사이트의 최신 웹페이지 정보로 메타데이터 전체를 새로고침합니다.';
             optionsHtml += '<div class="custom-control custom-checkbox mr-3 mb-1">';
@@ -3504,16 +3493,7 @@ $(document).on('click', '.btn_person_reset_user', function(e){
 $(document).on('click', '.btn_delete_person', function(e){
     e.preventDefault();
     var pid = $(this).data('id');
-    if (confirm("정말 이 인물 데이터를 삭제하시겠습니까?")) {
-        globalSendCommand('person_delete', pid, null, null, function(ret){
-            if (ret.ret === 'success') {
-                notify('삭제되었습니다.', 'success');
-                window.globalRequestSearch(null, true);
-            } else {
-                notify('삭제 실패', 'warning');
-            }
-        });
-    }
+    openMetadataDeleteModal([{kind:'person', id:pid}]);
 });
 
 $(document).on('click', '#btn_person_db_clear', function(e){
@@ -3784,6 +3764,8 @@ $(document).off('click', '#btn_open_meta_info_url').on('click', '#btn_open_meta_
 
 function openVideoPlayerModal(targetUrl, title) {
     if (!targetUrl) return;
+    resetVideoPointerInput();
+    clearVideoKeyFeedback();
     var player = document.getElementById('video_preview_player');
     var $modal = $('#videoPreviewModal');
     $('#video_preview_modal_title').text('[' + (title || '예고편 비디오') + '] 예고편 비디오');
@@ -3979,6 +3961,7 @@ document.addEventListener('volumechange', function(e){
 // 타임라인 슬라이더나 뮤트 클릭/드래그 후 네이티브 컨트롤 포커스를 해제하고 모달로 포커스 복원
 $(document).on('mouseup pointerup touchend', '#videoPreviewModal video, #videoPreviewModal .modal-body', function(){
     setTimeout(function(){
+        if (videoControlsTimer !== null || (videoPointerDrag && videoPointerDrag.active)) return;
         var player = document.getElementById('video_preview_player');
         if (player && document.activeElement === player) {
             player.blur();
@@ -3991,6 +3974,7 @@ $(document).on('mouseup pointerup touchend', '#videoPreviewModal video, #videoPr
 document.addEventListener('seeked', function(e){
     if (e.target && e.target.id === 'video_preview_player') {
         setTimeout(function(){
+            if (videoControlsTimer !== null || (videoPointerDrag && videoPointerDrag.active)) return;
             if (document.activeElement === e.target) {
                 e.target.blur();
             }
@@ -3999,25 +3983,273 @@ document.addEventListener('seeked', function(e){
     }
 }, true);
 
-// 모달 활성화 시 스페이스바로 재생/일시정지 토글 지원
-$(document).on('keydown', '#videoPreviewModal', function(e){
-    if (e.key === ' ' || e.keyCode === 32) {
-        var activeTag = (document.activeElement && document.activeElement.tagName || '').toLowerCase();
-        if (activeTag !== 'input' && activeTag !== 'textarea') {
-            e.preventDefault();
-            var player = document.getElementById('video_preview_player');
-            if (player) {
-                if (player.paused) {
-                    player.play();
-                } else {
-                    player.pause();
-                }
-            }
-        }
+var videoKeyFeedbackTimer = null;
+var videoControlsTimer = null;
+
+function clearVideoKeyFeedback() {
+    clearTimeout(videoKeyFeedbackTimer);
+    videoKeyFeedbackTimer = null;
+    clearTimeout(videoControlsTimer);
+    videoControlsTimer = null;
+    var feedback = document.getElementById('video_key_feedback');
+    if (feedback) {
+        feedback.classList.remove('visible');
+        feedback.textContent = '';
     }
+}
+
+function revealVideoControls(player) {
+    clearTimeout(videoControlsTimer);
+    // Native controls reveal themselves on focus. Refresh focus for repeated
+    // keys so the browser also restarts its controls auto-hide timer.
+    if (document.activeElement === player) player.blur();
+    player.focus({preventScroll: true});
+    videoControlsTimer = setTimeout(function() {
+        videoControlsTimer = null;
+        if (videoPointerDrag && videoPointerDrag.active) return;
+        if (document.activeElement === player && $('#videoPreviewModal').hasClass('show')) {
+            player.blur();
+            $('#videoPreviewModal').trigger('focus');
+        }
+    }, 2500);
+}
+
+function showVideoKeyFeedback(message) {
+    var feedback = document.getElementById('video_key_feedback');
+    if (!feedback || !$('#videoPreviewModal').hasClass('show')) return;
+    clearTimeout(videoKeyFeedbackTimer);
+    feedback.textContent = message;
+    feedback.classList.add('visible');
+    videoKeyFeedbackTimer = setTimeout(function() {
+        feedback.classList.remove('visible');
+        videoKeyFeedbackTimer = null;
+    }, 900);
+}
+
+// Mouse-only fine controls; native controls keep the bottom 70px of the video.
+var videoPointerDrag = null;
+var videoWheelInput = {axis: null, amount: 0, timer: null, last: 0};
+var videoDragClickUntil = 0;
+
+function isTopVideoPlayer(player) {
+    var modal = document.getElementById('videoPreviewModal');
+    return player && player.id === 'video_preview_player' && modal && modal.contains(player) &&
+        $(modal).hasClass('show') && (typeof activeModalStack === 'undefined' || !activeModalStack.length ||
+        activeModalStack[activeModalStack.length - 1] === modal);
+}
+
+function isVideoPicturePoint(player, e) {
+    if (!isTopVideoPlayer(player) || e.target !== player || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    var rect = player.getBoundingClientRect();
+    if (!(player.videoWidth > 0 && player.videoHeight > 0)) return false;
+    var scale = Math.min(rect.width / player.videoWidth, rect.height / player.videoHeight);
+    var width = player.videoWidth * scale, height = player.videoHeight * scale;
+    var left = rect.left + (rect.width - width) / 2, top = rect.top + (rect.height - height) / 2;
+    return e.clientX >= left && e.clientX <= left + width && e.clientY >= top &&
+        e.clientY < Math.min(top + height, rect.bottom - 70);
+}
+
+function canSeekVideo(player) {
+    return Number.isFinite(player.duration) && player.duration > 0 && Number.isFinite(player.currentTime);
+}
+
+function showVideoPointerSeek(target, before) {
+    var ticks = Math.round(target * 10);
+    var label = String(Math.floor(ticks / 600) % 60).padStart(2, '0') + ':' +
+        ((ticks % 600) / 10).toFixed(1).padStart(4, '0');
+    if (ticks >= 36000) label = String(Math.floor(ticks / 36000)).padStart(2, '0') + ':' + label;
+    var delta = target - before;
+    showVideoKeyFeedback(label + ' (' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + '초)');
+}
+
+function resetVideoWheelInput() {
+    clearTimeout(videoWheelInput.timer);
+    videoWheelInput = {axis: null, amount: 0, timer: null, last: 0};
+}
+
+function resetVideoPointerInput() {
+    var drag = videoPointerDrag;
+    videoPointerDrag = null;
+    videoDragClickUntil = 0;
+    resetVideoWheelInput();
+    if (drag) {
+        clearTimeout(drag.timer);
+        if (drag.player.hasPointerCapture(drag.id)) drag.player.releasePointerCapture(drag.id);
+        clearVideoKeyFeedback();
+    }
+}
+
+document.addEventListener('wheel', function(e) {
+    var player = e.target;
+    if (!isVideoPicturePoint(player, e) || videoPointerDrag) return;
+    var axis = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 'x' : 'y';
+    var delta = axis === 'x' ? e.deltaX : e.deltaY;
+    if (!Number.isFinite(delta) || delta === 0 || (axis === 'x' && !canSeekVideo(player))) return;
+    if (axis === 'y' && ((delta > 0 && player.volume <= 0) ||
+            (delta < 0 && player.volume >= 1 && !player.muted))) return;
+    if (axis === 'x' && ((delta > 0 && player.currentTime <= 0) ||
+            (delta < 0 && player.currentTime >= player.duration))) return;
+    var now = Date.now();
+    if (videoWheelInput.axis !== axis || now - videoWheelInput.last > 180) resetVideoWheelInput();
+    videoWheelInput.axis = axis;
+    videoWheelInput.last = now;
+    // One detent: 100 pixels, 3 lines, or one page. Cap a burst at 3 units.
+    var pixels = delta * (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
+    videoWheelInput.amount = Math.max(-300, Math.min(300, videoWheelInput.amount + pixels));
+    e.preventDefault();
+    if (videoWheelInput.timer !== null || Math.abs(videoWheelInput.amount) < 100) return;
+    videoWheelInput.timer = setTimeout(function() {
+        videoWheelInput.timer = null;
+        var steps = Math.trunc(videoWheelInput.amount / 100);
+        videoWheelInput.amount -= steps * 100;
+        if (!isTopVideoPlayer(player) || document.hidden || !steps) return;
+        revealVideoControls(player);
+        if (axis === 'x') {
+            if (!canSeekVideo(player)) return;
+            var before = player.currentTime;
+            player.currentTime = Math.max(0, Math.min(player.duration, before - steps));
+            showVideoPointerSeek(player.currentTime, before);
+        } else {
+            player.volume = Math.max(0, Math.min(1, Math.round((player.volume - steps * 0.01) * 100) / 100));
+            if (steps < 0 && player.volume > 0) player.muted = false;
+            showVideoKeyFeedback('볼륨 ' + Math.round(player.volume * 100) + '%' + (player.muted ? ' (음소거)' : ''));
+        }
+    }, 80);
+}, {capture: true, passive: false});
+
+document.addEventListener('pointerdown', function(e) {
+    var player = e.target;
+    if (e.pointerType !== 'mouse' || e.button !== 0 || !isVideoPicturePoint(player, e) || !canSeekVideo(player)) return;
+    resetVideoPointerInput();
+    videoPointerDrag = {player: player, id: e.pointerId, x: e.clientX, y: e.clientY,
+        before: player.currentTime, target: player.currentTime, active: false, timer: null};
+}, true);
+
+document.addEventListener('pointermove', function(e) {
+    var drag = videoPointerDrag;
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!(e.buttons & 1) || !isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player) ||
+            e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) { resetVideoPointerInput(); return; }
+    var dx = e.clientX - drag.x;
+    if (!drag.active) {
+        if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(e.clientY - drag.y)) return;
+        drag.active = true;
+        drag.player.setPointerCapture(drag.id);
+        revealVideoControls(drag.player);
+    }
+    e.preventDefault();
+    drag.target = Math.max(0, Math.min(drag.player.duration, drag.before + dx / 10));
+    showVideoPointerSeek(drag.target, drag.before);
+    clearTimeout(videoKeyFeedbackTimer);
+    videoKeyFeedbackTimer = null;
+    if (drag.timer === null) {
+        drag.timer = setTimeout(function() {
+            drag.timer = null;
+            if (videoPointerDrag !== drag) return;
+            if (!isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player)) {
+                resetVideoPointerInput(); return;
+            }
+            var target = Math.max(0, Math.min(drag.player.duration, drag.target));
+            if (drag.player.currentTime !== target) drag.player.currentTime = target;
+        }, 60);
+    }
+}, true);
+
+document.addEventListener('pointerup', function(e) {
+    var drag = videoPointerDrag;
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.active || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey ||
+            !isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player)) {
+        resetVideoPointerInput(); return;
+    }
+    var target = Math.max(0, Math.min(drag.player.duration, drag.before + (e.clientX - drag.x) / 10));
+    clearTimeout(drag.timer);
+    videoPointerDrag = null;
+    if (drag.player.hasPointerCapture(drag.id)) drag.player.releasePointerCapture(drag.id);
+    videoDragClickUntil = Date.now() + 400;
+    e.preventDefault();
+    if (drag.player.currentTime !== target) drag.player.currentTime = target;
+    revealVideoControls(drag.player);
+    showVideoPointerSeek(target, drag.before);
+}, true);
+
+document.addEventListener('click', function(e) {
+    if (e.target && e.target.id === 'video_preview_player' && Date.now() < videoDragClickUntil) {
+        videoDragClickUntil = 0;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+}, true);
+
+['pointercancel', 'lostpointercapture'].forEach(function(name) {
+    document.addEventListener(name, function(e) {
+        if (videoPointerDrag && e.pointerId === videoPointerDrag.id) resetVideoPointerInput();
+    }, true);
 });
+document.addEventListener('loadstart', function(e) {
+    if (e.target && e.target.id === 'video_preview_player') resetVideoPointerInput();
+}, true);
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) resetVideoPointerInput();
+});
+window.addEventListener('blur', resetVideoPointerInput);
+$(document).on('hide.bs.modal', '#videoPreviewModal', resetVideoPointerInput);
+
+// 재생 모달 단축키: 스페이스 재생/정지, 좌우 5초 탐색, 상하 볼륨 5% 조절
+// Capture before native video controls consume arrows and apply their own steps.
+document.addEventListener('keydown', function(e){
+    var modal = document.getElementById('videoPreviewModal');
+    if (!modal || !modal.contains(e.target) || !$(modal).hasClass('show') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (typeof activeModalStack !== 'undefined' && activeModalStack.length && activeModalStack[activeModalStack.length - 1] !== modal) return;
+    var active = document.activeElement;
+    if (active && (active.isContentEditable || /^(input|textarea|select)$/i.test(active.tagName))) return;
+    var key = e.key || ({32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown'})[e.keyCode];
+    if ([' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(key) === -1) return;
+    var player = document.getElementById('video_preview_player');
+    if (!player) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    revealVideoControls(player);
+    if (key === ' ') {
+        if (player.paused) {
+            var playAttempt = player.play();
+            if (playAttempt && typeof playAttempt.then === 'function') {
+                playAttempt.then(function() {
+                    if (!player.paused) showVideoKeyFeedback('재생');
+                }).catch(function(err) {
+                    if (err.name !== 'AbortError') showVideoKeyFeedback('재생할 수 없습니다');
+                });
+            } else {
+                showVideoKeyFeedback('재생');
+            }
+        } else {
+            player.pause();
+            showVideoKeyFeedback('일시정지');
+        }
+    } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        if (Number.isFinite(player.duration) && player.duration > 0 && Number.isFinite(player.currentTime)) {
+            var beforeSeek = player.currentTime;
+            player.currentTime = Math.max(0, Math.min(player.duration, player.currentTime + (key === 'ArrowRight' ? 5 : -5)));
+            var seekDelta = Math.round((player.currentTime - beforeSeek) * 10) / 10;
+            var positionSeconds = Math.floor(player.currentTime);
+            var positionLabel = String(Math.floor(positionSeconds / 60) % 60).padStart(2, '0') + ':' + String(positionSeconds % 60).padStart(2, '0');
+            if (positionSeconds >= 3600) {
+                positionLabel = String(Math.floor(positionSeconds / 3600)).padStart(2, '0') + ':' + positionLabel;
+            }
+            showVideoKeyFeedback(positionLabel + ' (' + (seekDelta >= 0 ? '+' : '') + seekDelta + ')');
+        } else {
+            showVideoKeyFeedback('영상 탐색 준비 중');
+        }
+    } else {
+        player.volume = Math.max(0, Math.min(1, Math.round((player.volume + (key === 'ArrowUp' ? 0.05 : -0.05)) * 100) / 100));
+        if (key === 'ArrowUp' && player.volume > 0) player.muted = false;
+        showVideoKeyFeedback('볼륨 ' + Math.round(player.volume * 100) + '%' + (player.muted ? ' (음소거)' : ''));
+    }
+}, true);
 
 $(document).on('hidden.bs.modal', '#videoPreviewModal', function(){
+    resetVideoPointerInput();
+    clearVideoKeyFeedback();
     var player = document.getElementById('video_preview_player');
     if (player) {
         isVideoAudioRestoring = true;
@@ -4497,47 +4729,107 @@ $(document).on('change', '.meta-item-chk', function(){
 
 $(document).off('click', '#btn_delete_selected').on('click', '#btn_delete_selected', function(e){
     e.preventDefault();
-    var selectedCodes = [];
+    var targets = [];
     $('.meta-item-chk:checked').each(function(){
         var codeVal = $(this).val();
-        if (codeVal) selectedCodes.push(codeVal);
+        if (codeVal) targets.push({kind:'item', code:codeVal, category:$(this).attr('data-category') || get_list_context().category});
     });
 
-    if (selectedCodes.length === 0) {
+    if (targets.length === 0) {
         if (typeof notify === 'function') notify('삭제할 항목을 먼저 선택하세요.', 'warning');
         return;
     }
-
-    var confirmMsg = "선택한 " + selectedCodes.length + "개의 메타데이터를 삭제하시겠습니까?\n(설정에 따라 유저 이미지 파일도 디스크에서 삭제됩니다)";
-    if (!confirm(confirmMsg)) return;
-
-    var currentContext = get_list_context();
-    var targetCategory = currentContext.category;
-
-    globalSendCommand('db_delete_selected', JSON.stringify(selectedCodes), targetCategory, null, function(ret){
-        if (typeof notify === 'function') {
-            notify(ret.msg || '선택 항목 삭제 처리 완료', ret.ret === 'success' ? 'success' : 'warning');
-        }
-        if (ret && ret.ret === 'success') {
-            $('#check_all_meta').prop('checked', false);
-            window.globalRequestSearch(null, true);
-        }
-    });
+    openMetadataDeleteModal(targets);
 });
 
 $(document).off('click', '.btn_delete_db').on('click', '.btn_delete_db', function(e){
     e.preventDefault();
     var code = $(this).data('code');
     if (!code) return;
-    if (!confirm("['" + code + "'] 데이터를 정말 삭제하시겠습니까?")) return;
     var cat = $(this).attr('data-category') || $(this).data('category') || '';
-    globalSendCommand('db_delete', code, cat, null, function(ret){
-        if (typeof notify === 'function') notify(ret.msg || '삭제 요청이 처리되었습니다.', ret.ret === 'success' ? 'success' : 'warning');
-        if (ret.ret === 'success') {
-            window.globalRequestSearch(null, true);
-        }
-    });
+    openMetadataDeleteModal([{kind:'item', code:code, category:cat || get_list_context().category}]);
 });
+
+function openMetadataDeleteModal(targets) {
+    var $existing = $('#metadataDeleteModal');
+    if ($existing.length) return;
+    var $modal = $('<div class="modal fade metadata-delete-modal" id="metadataDeleteModal" tabindex="-1" role="dialog" aria-labelledby="metadataDeleteTitle">' +
+        '<div class="modal-dialog metadata-delete-dialog" role="document"><div class="modal-content metadata-delete-content">' +
+        '<div class="modal-header"><h5 class="modal-title" id="metadataDeleteTitle">데이터 삭제</h5>' +
+        '<button type="button" class="close" data-dismiss="modal" aria-label="닫기"><span aria-hidden="true">&times;</span></button></div>' +
+        '<div class="modal-body"><p class="delete-summary">관련 미디어 목록을 확인하고 있습니다.</p><div class="delete-targets small mb-2"></div>' +
+        '<p class="small text-muted">DB만 삭제하면 파일은 유지됩니다. 전체 삭제에는 사용자 이미지와 프리뷰도 포함됩니다. 원본 영상과 외부 사이트·GDS 이미지는 삭제하지 않습니다.</p>' +
+        '<div class="delete-error text-danger mb-2" role="alert"></div>' +
+        '<div class="delete-files"></div></div>' +
+        '<div class="modal-footer"><button type="button" class="btn btn-secondary" data-dismiss="modal">취소</button>' +
+        '<button type="button" class="btn btn-outline-danger delete-db" disabled>DB만 삭제</button>' +
+        '<button type="button" class="btn btn-danger delete-all" disabled>전체 삭제</button></div></div></div></div>').appendTo('body');
+    var payload = JSON.stringify(targets), plan = null, busy = false;
+    $modal.on('hide.bs.modal', function(e){ if (busy) e.preventDefault(); });
+    $modal.on('hidden.bs.modal', function(){
+        $modal.remove();
+        if ($('.modal.show').length) $('body').addClass('modal-open');
+    });
+    function loadPlan() {
+        plan = null;
+        $modal.find('.delete-db,.delete-all').prop('disabled', true);
+        globalSendCommand('db_delete_preview', payload, null, null, function(ret){
+            if (!$modal.parent().length) return;
+            if (!ret || ret.ret !== 'success') {
+                $modal.find('.delete-summary').text('삭제 목록을 불러오지 못했습니다.');
+                $modal.find('.delete-error').text((ret && ret.msg) || 'DB 조회 실패');
+                return;
+            }
+            plan = ret.data;
+            $modal.find('.delete-summary').text('DB ' + plan.records.length + '건 · 관련 미디어 ' + plan.files.length + '개');
+            var $targets = $modal.find('.delete-targets').empty();
+            plan.records.forEach(function(record){ $('<div></div>').text(record.title + ' [' + record.code + ']').appendTo($targets); });
+            var $files = $modal.find('.delete-files').empty();
+            if (!plan.files.length) $('<p class="text-muted">개인 저장소에 기록된 미디어가 없습니다.</p>').appendTo($files);
+            plan.files.forEach(function(file){
+                var mediaLabels = {poster:'포스터', landscape:'가로 커버', fanart:'팬아트', trailer:'트레일러', preview:'프리뷰', person:'인물 이미지'};
+                var label = (file.storage === 'gdrive' ? 'GDrive' : '로컬') + ' · ' + (mediaLabels[file.media_type] || file.media_type) +
+                    (file.is_user ? ' · 사용자 미디어' : '') + ' · ' + file.owners.join(', ');
+                var $entry = $('<div class="border rounded p-2 mb-2"></div>').appendTo($files);
+                $('<div class="small font-weight-bold"></div>').text(label).appendTo($entry);
+                $('<div class="small"></div>').text(file.path || file.relative_path || '경로 정보 없음').appendTo($entry);
+                if (file.file_id) $('<div class="small text-muted"></div>').text('파일 ID: ' + file.file_id).appendTo($entry);
+                if (file.retained || file.blocked) $('<div class="small"></div>').addClass(file.retained ? 'text-info' : 'text-danger')
+                    .text(file.retained ? '유지: ' + file.retained : '삭제 불가: ' + file.blocked).appendTo($entry);
+            });
+            $modal.find('.delete-db').prop('disabled', false);
+            $modal.find('.delete-all').prop('disabled', plan.files.some(function(f){ return f.blocked && !f.retained; }));
+        });
+    }
+    $modal.find('.delete-db,.delete-all').on('click', function(){
+        if (!plan || busy) return;
+        var mode = $(this).hasClass('delete-all') ? 'all' : 'db';
+        busy = true;
+        $modal.find('button').prop('disabled', true);
+        $modal.find('.delete-summary').text(mode === 'all' ? '관련 미디어와 DB를 삭제하고 있습니다.' : 'DB만 삭제하고 있습니다.');
+        globalSendCommand('db_delete_confirm', payload, mode, plan.token, function(ret){
+            busy = false;
+            $modal.find('button').prop('disabled', false);
+            if (ret && ret.ret === 'success') {
+                $modal.modal('hide');
+                notify(ret.msg, 'success');
+                $('#check_all_meta').prop('checked', false);
+                window.globalRequestSearch(null, true);
+            } else {
+                var errors = (ret && ret.files || []).map(function(f){return (f.path || f.file_id || '') + ': ' + (f.error || f.blocked || '');});
+                $modal.find('.delete-error').text(((ret && ret.msg) || '삭제 처리 실패') + (errors.length ? '\n' + errors.join('\n') : ''));
+                if (ret && ret.uncertain) {
+                    $modal.find('.delete-db,.delete-all').prop('disabled', true);
+                    $modal.find('.delete-summary').text('삭제 결과 확인이 필요합니다.');
+                } else {
+                    loadPlan();
+                }
+            }
+        });
+    });
+    $modal.modal({backdrop:'static', keyboard:false});
+    loadPlan();
+}
 
 function openCropModal(opts) {
     current_crop_target_type = opts.target || 'meta';
@@ -5288,6 +5580,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     var $activeModal = null;
 
     function getModalStorageConfig($modal) {
+        if ($modal.hasClass('metadata-delete-modal')) return null;
         var id = ($modal.attr('id') || '').toLowerCase();
         if (id.indexOf('person') !== -1) {
             return { key: 'person_edit_modal_geometry', defaultW: 880, defaultH: 580, minW: 600, minH: 400 };
@@ -5372,7 +5665,7 @@ $(document).on('click', '#btn_save_crop_result', function(e){
     $(document).on('mousedown', '.modal-header', function(e) {
         if ($(e.target).closest('button, input, a, select, textarea').length > 0) return;
         var $modal = $(this).closest('.modal');
-        if ($modal.length === 0 || $modal.attr('id') === 'imageEnlargeModal') return;
+        if ($modal.length === 0 || $modal.attr('id') === 'imageEnlargeModal' || $modal.hasClass('metadata-delete-modal')) return;
 
         var $dialog = $modal.find('.modal-dialog');
         var $content = $modal.find('.modal-content');

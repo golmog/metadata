@@ -701,6 +701,9 @@ class MetadataCopier:
             self.remember(origin, 'item', row['id'], target, old['id'])
             return 'skipped'
         values = self.clean_item(row) if self.sanitized else self.values(row)
+        if row['category'] in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+            values['extra_info'] = copy.deepcopy(values.get('extra_info') or {})
+            values['extra_info'].pop('source_video_path', None)
         parent_id = values.pop('parent_id', None)
         with target.begin_nested():
             if old:
@@ -714,7 +717,7 @@ class MetadataCopier:
                 if manual:
                     extra['manual_data'] = copy.deepcopy(manual)
                 # A missing source cache must not erase a recorded destination video.
-                for key in ('preview_clip', 'trailer_video', 'source_video_path'):
+                for key in ('preview_clip', 'trailer_video'):
                     if key not in extra and key in old_extra:
                         extra[key] = copy.deepcopy(old_extra[key])
                 values['extra_info'] = extra
