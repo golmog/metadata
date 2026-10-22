@@ -298,7 +298,8 @@ $(document).on('hidden.bs.modal', '.modal', function () {
 // 키보드 이벤트: ESC로 최상위 모달 닫기 및 갤러리 열림 시 좌우 방향키로 슬라이드 탐색
 document.addEventListener('keydown', function (e) {
     // 갤러리 모달이 최상단에 열려 있을 때 좌우 방향키로 이미지 넘기기
-    if ($('#imageEnlargeModal').hasClass('show') && window.enlarge_image_gallery.length > 1) {
+    if ($('#imageEnlargeModal').hasClass('show') && window.enlarge_image_gallery.length > 1 &&
+        (!activeModalStack.length || activeModalStack[activeModalStack.length - 1].id === 'imageEnlargeModal')) {
         if (e.key === 'ArrowLeft') {
             e.preventDefault();
             $('#btn_enlarge_prev').trigger('click');

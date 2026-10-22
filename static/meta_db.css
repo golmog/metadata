@@ -1,5 +1,70 @@
 /* static/meta_db.css */
 
+/* 삭제 확인창은 편집 모달의 저장된 크기·위치 및 리사이즈와 독립적으로 표시한다. */
+#metadataDeleteModal .metadata-delete-dialog {
+  width: calc(100% - 2rem);
+  max-width: 560px;
+  margin: 2rem auto;
+}
+
+#metadataDeleteModal .metadata-delete-content {
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: calc(100vh - 4rem);
+  resize: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#metadataDeleteModal .modal-header,
+#metadataDeleteModal .modal-footer {
+  padding: 0.75rem 1rem;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+#metadataDeleteModal .modal-title {
+  font-size: 1rem;
+}
+
+#metadataDeleteModal .modal-body {
+  padding: 0.75rem 1rem;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+#metadataDeleteModal .delete-summary {
+  margin-bottom: 0.5rem;
+}
+
+#metadataDeleteModal .delete-targets {
+  max-height: 10vh;
+  overflow-y: auto;
+}
+
+#metadataDeleteModal .delete-files {
+  max-height: 32vh;
+  overflow-y: auto;
+}
+
+#metadataDeleteModal .delete-error {
+  white-space: pre-line;
+}
+
+@media (max-width: 575.98px) {
+  #metadataDeleteModal .metadata-delete-dialog {
+    width: calc(100% - 1rem);
+    margin: 0.5rem auto;
+  }
+  #metadataDeleteModal .metadata-delete-content {
+    max-height: calc(100vh - 1rem);
+  }
+}
+
 #btn_toggle_setting.collapsed .text-expanded,
 #btn_toggle_batch.collapsed .text-expanded { display: none; }
 #btn_toggle_setting.collapsed .text-collapsed,
@@ -68,6 +133,31 @@
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
+}
+
+#videoPreviewModal .modal-body {
+  position: relative;
+}
+
+#video_key_feedback {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+#video_key_feedback.visible {
+  opacity: 1;
 }
 
 /* 이미지 및 썸네일 부드러운 전환 효과 */

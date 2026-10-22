@@ -10,6 +10,9 @@ from io import BytesIO
 from PIL import Image, UnidentifiedImageError
 
 from .setup import *
+from .util_runtime import storage_logger
+
+logger = storage_logger(logger)
 
 
 class ModuleRoute(PluginModuleBase):
@@ -104,10 +107,9 @@ class ModuleRoute(PluginModuleBase):
                             mimetype='application/json'
                         )
                     except Exception as e:
-                        logger.error(f"[Metadata Person API] Error: {e}")
-                        logger.error(traceback.format_exc())
+                        logger.exception('[Metadata Person API] 요청 처리 실패')
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'msg': str(e)}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'msg': '인물 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
                             status=500,
                             mimetype='application/json'
                         )
@@ -161,10 +163,9 @@ class ModuleRoute(PluginModuleBase):
                             mimetype='application/json'
                         )
                     except Exception as e:
-                        logger.error(f"[Metadata Meta API] Error: {e}")
-                        logger.error(traceback.format_exc())
+                        logger.exception('[Metadata Meta API] 요청 처리 실패')
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'success': False, 'msg': str(e)}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'success': False, 'msg': '메타 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
                             status=500,
                             mimetype='application/json'
                         )
@@ -298,8 +299,8 @@ class ModuleRoute(PluginModuleBase):
                             return
 
                 except UnidentifiedImageError as e:
-                    P.logger.error(f"image_proxy: PIL.UnidentifiedImageError for URL: {image_url}. Response Content-Type: {content_type_header}")
-                    P.logger.error(f"image_proxy: Error details: {e}")
+                    logger.error('image_proxy: image decode failed, type=%s', content_type_header)
+                    logger.exception('image_proxy: PIL.UnidentifiedImageError')
                     
                     try:
                         failed_image_path = os.path.join(path_data, "tmp", f"failed_image_{time.time()}.bin")

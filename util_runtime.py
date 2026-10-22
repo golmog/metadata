@@ -1,10 +1,108 @@
 """Cooperative batch execution without changing FlaskFarm's worker configuration."""
 import copy
+import logging
+import re
+import sys
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 _BATCH_DB_LIMITS = ContextVar('metadata_batch_db_limits', default=False)
+
+
+class StorageLookupError(RuntimeError):
+    error_code = 'storage_lookup_failed'
+
+
+class IncompleteStorageError(StorageLookupError):
+    error_code = 'storage_asset_incomplete'
+
+
+class StorageConflict(RuntimeError):
+    error_code = 'storage_conflict'
+
+
+def redact_diagnostic(value):
+    """Transform log copies only; never transform media references or journals."""
+    try:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, BaseException):
+            return type(value).__name__
+        if isinstance(value, dict):
+            return {str(key): ('[redacted]' if re.search(
+                r'(?i)(api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id)', str(key))
+                else redact_diagnostic(item)) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return type(value)(redact_diagnostic(item) for item in value)
+        text = str(value)
+        text = re.sub(r'(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\'\"]+', '[url]', text)
+        text = re.sub(r'(?i)\b(Bearer|Basic)\s+[^\s,;]+', r'\1 [redacted]', text)
+        text = re.sub(r'(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]+', r'\1[redacted]', text)
+        return re.sub(r'(?i)((?:api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id)'
+                      r'[\w-]*[\s\'\"]*[:=][\s\'\"]*)[^\s,;\'\"}\]]+', r'\1[redacted]', text)
+    except Exception:
+        return '[redaction failed]'
+
+
+class StorageLogger:
+    """Sanitize before dispatch, so every handler receives the same safe record."""
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
+
+    def _write(self, level, message, args, kwargs):
+        try:
+            if not self.wrapped.isEnabledFor(level):
+                return
+            exc = kwargs.pop('exc_info', None)
+            kwargs.pop('stack_info', None)
+            if 'extra' in kwargs:
+                kwargs['extra'] = redact_diagnostic(kwargs['extra'])
+            if 'Traceback (most recent call last)' in str(message):
+                message = '[traceback: %s]' % type(sys.exc_info()[1]).__name__
+            if exc:
+                info = sys.exc_info() if exc is True else exc
+                error = info[1] if isinstance(info, tuple) else exc
+                # Exception messages, source lines and chained messages may carry arbitrary secrets.
+                kinds = []
+                while error is not None and len(kinds) < 8:
+                    kinds.append(type(error).__name__)
+                    error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+                message = str(message) + ' [exceptions: ' + ' <- '.join(kinds) + ']'
+            # Keep string fragments intact until formatting: sanitizing a URL
+            # prefix alone can hide the scheme and expose its remaining token.
+            safe_args = tuple(arg if isinstance(arg, str) else redact_diagnostic(arg) for arg in args)
+            safe_message = str(message)
+            if safe_args:
+                safe_message = safe_message % safe_args
+            safe_message = redact_diagnostic(safe_message)
+            kwargs['stacklevel'] = int(kwargs.get('stacklevel', 1)) + 2
+            self.wrapped.log(level, safe_message, **kwargs)
+        except Exception:
+            # Do not fall back to the original message or traceback.
+            try:
+                self.wrapped.log(level, '[storage diagnostic unavailable]')
+            except Exception:
+                pass
+
+    def debug(self, message, *args, **kwargs): self._write(logging.DEBUG, message, args, kwargs)
+    def info(self, message, *args, **kwargs): self._write(logging.INFO, message, args, kwargs)
+    def warning(self, message, *args, **kwargs): self._write(logging.WARNING, message, args, kwargs)
+    warn = warning
+    def error(self, message, *args, **kwargs): self._write(logging.ERROR, message, args, kwargs)
+    def critical(self, message, *args, **kwargs): self._write(logging.CRITICAL, message, args, kwargs)
+    fatal = critical
+    def log(self, level, message, *args, **kwargs): self._write(level, message, args, kwargs)
+    def exception(self, message, *args, **kwargs):
+        kwargs['exc_info'] = True
+        self._write(logging.ERROR, message, args, kwargs)
+
+
+def storage_logger(logger):
+    return logger if isinstance(logger, StorageLogger) else StorageLogger(logger)
 
 
 def _gevent_active():
@@ -107,10 +205,18 @@ def stage_storage_record(session, record, relationships=()):
 
 def commit_storage_record(session, record, snapshot, relationships=()):
     from sqlalchemy.orm import lazyload
+    from sqlalchemy import event
+    session.info['storage_commit_state'] = 'not_attempted'
     model = type(record)
     # Avoid FOR UPDATE on nullable joined relationships in PostgreSQL.
     current = session.query(model).options(lazyload('*')).filter(model.id == record.id).populate_existing().with_for_update(of=model).first()
     if current is None or _record_snapshot(current, relationships) != snapshot:
-        raise RuntimeError('동기화 도중 DB 정보가 변경되었습니다. 최신 정보를 확인한 뒤 다시 실행하세요.')
+        raise StorageConflict('동기화 도중 DB 정보가 변경되었습니다. 최신 정보를 확인한 뒤 다시 실행하세요.')
     session.merge(record)
+    session.flush()
+    def committed(sess):
+        sess.info['storage_commit_state'] = 'committed'
+    event.listen(session, 'after_commit', committed, once=True)
+    session.info['storage_commit_state'] = 'unknown'
     session.commit()
+    session.info['storage_commit_state'] = 'committed'

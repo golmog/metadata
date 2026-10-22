@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import copy
 import re
 import shutil
 import traceback
@@ -1212,7 +1213,7 @@ class ModuleJavCensored(PluginModuleBase):
         site_key, extracted_code = None, None
         if 'dmm.co.jp' in hostname or 'dmm.com' in hostname:
             site_key = 'dmm'
-            m = re.search(r'[?&]id=(?P<code>[^&?]+)|/cid=(?P<code>[^/&?]+)', url)
+            m = re.search(r'(?:[?&]id=|/cid=)(?P<code>[^/&?#]+)', url)
             if m: extracted_code = m.group('code')
         elif 'mgstage.com' in hostname:
             site_key = 'mgstage'
@@ -1266,6 +1267,7 @@ class ModuleJavCensored(PluginModuleBase):
     def info(self, code, keyword=None, extra_opts=None, **kwargs):
         opts = dict(extra_opts or {})
         opts.update(kwargs)
+        opts['_parallel_media'] = True
 
         skip_trans = opts.get('skip_trans', False)
 
@@ -1312,7 +1314,7 @@ class ModuleJavCensored(PluginModuleBase):
         
         # 캐시 히트 시: DB 원본은 보존하고 반환 직전 임시 가공 적용
         if use_db and not bypass_cache:
-            cached_json = ModuleMetaDb.get_metadata(code, category=self.category)
+            cached_json = copy.deepcopy(ModuleMetaDb.get_metadata(code, category=self.category))
 
             if cached_json:
                 if not ModuleMetaDb._ensure_meta_db_writable(self.category):
@@ -1323,49 +1325,22 @@ class ModuleJavCensored(PluginModuleBase):
 
                 if not ps_url:
                     ps_url = original_thumb.get('ps_url') if isinstance(original_thumb, dict) else None
-                is_db_untranslated = False
-                db_plot = cached_json.get('plot', '')
-                if db_plot and not skip_trans:
-                    if not SiteUtil.is_include_hangul(db_plot):
-                        is_db_untranslated = True
-                        logger.info(f"[{self.name}] DB 캐시에 한글 번역이 없어 캐시를 건너뛰고 새로 번역을 수행합니다: {code}")
+                if cached_json.get('extras'):
+                    for extra in cached_json['extras']:
+                        if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
+                        elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
 
-                if not is_db_untranslated and not (site != 'javdb' and not ps_url):
-                    needs_enrichment = not cached_json.get('thumb')
-                    if needs_enrichment:
-                        logger.info(f"[{self.name}] 이미지/트레일러 누락 감지. Enrichment를 수행합니다...")
-                        fresh_opts = dict(opts, skip_trans=True, is_validating=False)
-                        if ps_url:
-                            fresh_opts['ps_url'] = ps_url
-                        fresh_data = self.info2(code, site, keyword, extra_opts=fresh_opts)
-                        if fresh_data:
-                            if fresh_data.get('thumb'):
-                                cached_json['thumb'] = fresh_data['thumb']
-                                cached_json['fanart'] = fresh_data.get('fanart', [])
-                            if fresh_data.get('poster_url'):
-                                cached_json['poster_url'] = fresh_data['poster_url']
-                            if fresh_data.get('landscape_url'):
-                                cached_json['landscape_url'] = fresh_data['landscape_url']
-
-                            if fresh_data.get('extra_info'):
-                                if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
-                                    cached_json['extra_info'] = {}
-                                for k_ei in ['landscape_url', 'poster_url', '_storage_media']:
-                                    if fresh_data['extra_info'].get(k_ei):
-                                        cached_json['extra_info'][k_ei] = fresh_data['extra_info'][k_ei]
-
-                    if cached_json.get('extras'):
-                        for extra in cached_json['extras']:
-                            if isinstance(extra, dict): extra['title'] = cached_json.get('title', '')
-                            elif hasattr(extra, 'title'): extra.title = cached_json.get('title', '')
-
-                    title_log = cached_json.get('title', 'No Title')
-                    year_log = cached_json.get('year', '????')
-                    site_log = cached_json.get('site', 'unknown').upper()
-                    ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
-                    logger.info(f"[Meta DB Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
-                    
-                    return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+                title_log = cached_json.get('title', 'No Title')
+                year_log = cached_json.get('year', '????')
+                site_log = cached_json.get('site', 'unknown').upper()
+                ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
+                logger.info(f"[Meta DB Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
+                if opts.get('media_path') and os.path.isfile(opts['media_path']):
+                    completed = ModuleMetaDb.complete_item_media(cached_json.get('code') or code, self.category, opts['media_path'], metadata=cached_json)
+                    MetaUtil.note_media_completion(opts, completed, opts['media_path'])
+                    if completed.get('data'):
+                        cached_json.update({key: completed['data'][key] for key in ('extra_info', 'extras', 'original') if key in completed['data']})
+                return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
 
         # 복원된 품번 키워드로 사이트 검색을 수행하여 썸네일 안전 탐색
         if not ps_url and site != 'javdb':
@@ -1394,6 +1369,11 @@ class ModuleJavCensored(PluginModuleBase):
 
         if ps_url:
             opts['ps_url'] = ps_url
+            cache = getattr(self.site_map.get(site), '_ps_url_cache', {}).get(code, {})
+            kinds = [cache.get('main_content_type'), 'videoa', 'vr', 'dvd', 'bluray', 'amateur']
+            matching_type = next((kind for kind in kinds if kind in ('videoa', 'vr', 'dvd', 'bluray', 'amateur') and cache.get(kind) == ps_url), None)
+            if matching_type and not opts.get('content_type'):
+                opts['content_type'] = matching_type
 
         if use_db and not ModuleMetaDb._ensure_meta_db_writable(self.category):
             logger.warning(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 신규 메타데이터 생성(스크래핑/번역) 원천 차단: {code}")
@@ -1642,75 +1622,9 @@ class ModuleJavCensored(PluginModuleBase):
             year_log = ret.get('year', '????')
             logger.info(f"[{site.upper()} Success] Code: {code}, Title: {title_log} ({year_log})")
 
-        # 기존 영상 파일 자동 감지 및 흡수
         from .util_preview import MetaPreviewUtil
-        MetaPreviewUtil.check_and_adopt_existing_video(ret, category=self.category,
-            reuse_gdrive=opts.get('reuse_existing_media', False), existing_item=opts.get('_existing_media_item'),
-            reprocess=opts.get('reuse_existing_media') is False)
+        MetaPreviewUtil.complete_media(ret, self.category, opts.get('media_path'), options=opts)
 
-        media_path = opts.get('media_path')
-        if media_path and os.path.exists(media_path):
-            if 'extra_info' not in ret or not isinstance(ret['extra_info'], dict):
-                ret['extra_info'] = {}
-            ret['extra_info']['source_video_path'] = media_path
-
-        code_val = ret.get('code') or code
-        cat_val = self.category
-
-        # 공식 원격 트레일러 URL 추출
-        raw_trailer_url = None
-        for ex in (ret.get('original', {}).get('extras') or []):
-            if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
-                raw_trailer_url = ex['content_url']
-                break
-        if not raw_trailer_url:
-            for ex in (ret.get('extras') or []):
-                if isinstance(ex, dict) and ex.get('content_type') == 'trailer' and ex.get('content_url'):
-                    c_url = ex['content_url']
-                    if 'mode=preview_' not in c_url:
-                        raw_trailer_url = c_url
-                        break
-
-        # 트레일러 영상 동기 다운로드 (옵션 ON & 아직 저장되지 않은 경우)
-        trailer_download_success = False
-        if raw_trailer_url and MetaPreviewUtil.is_trailer_download_enabled(cat_val):
-            if not (ret.get('extra_info', {}) or {}).get('trailer_video'):
-                logger.info(f"[{self.name}] 공식 트레일러 감지 -> 영상 동기 아카이빙 시작: {code_val}")
-                succ, t_res = MetaPreviewUtil.process_trailer_download_workflow(
-                    code_val, raw_trailer_url, cat_val, force=not opts.get('reuse_existing_media', False), item_dict=ret
-                )
-                if succ:
-                    trailer_download_success = True
-
-        # 프리뷰 클립 자동 생성 (옵션 ON & 원본 영상이 있고, 트레일러 저장이 실패했거나 공식 트레일러가 없는 경우)
-        if media_path and os.path.exists(media_path) and MetaPreviewUtil.is_auto_create_enabled(cat_val) and not opts.get('preserve_preview'):
-            has_preview = bool((ret.get('extra_info', {}) or {}).get('preview_clip'))
-            has_trailer_video = bool((ret.get('extra_info', {}) or {}).get('trailer_video'))
-            if opts.get('reprocess_existing_preview') or (not has_preview and not has_trailer_video and not trailer_download_success):
-                logger.info(f"[{self.name}] 공식 트레일러 부재/다운로드 실패 감지 -> 프리뷰 클립 동기 생성 시작: {code_val}")
-                MetaPreviewUtil.process_preview_workflow(
-                    code_val, media_path, cat_val, force=True, item_dict=ret
-                )
-
-        # 완성된 영상 스트림 주소로 extras 실시간 교체
-        ret_extra = ret.get('extra_info', {}) or {}
-        stream_url = None
-        video_prefix = ""
-        if ret_extra.get('preview_clip'):
-            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['preview_clip'], ret, video_type='preview', category=cat_val)
-            video_prefix = "[Preview] "
-        elif ret_extra.get('trailer_video'):
-            stream_url = MetaPreviewUtil.get_video_stream_url(ret_extra['trailer_video'], ret, video_type='trailer', category=cat_val)
-
-        if stream_url:
-            ret['extras'] = [{
-                'mode': 'mp4',
-                'title': video_prefix + (ret.get('title') or ret.get('tagline') or ret.get('originaltitle')),
-                'content_url': stream_url,
-                'content_type': 'trailer'
-            }]
-
-        # 영상 아카이빙 정보까지 모두 포함된 완전체 메타데이터를 DB에 1회 최종 저장
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
         should_save = use_db and save_db and ret
         if should_save:
@@ -1722,7 +1636,9 @@ class ModuleJavCensored(PluginModuleBase):
                     should_save = False
 
         if should_save:
-            ModuleMetaDb.save_metadata(self.category, ret)
+            receipt = opts.get('_media_completion')
+            ModuleMetaDb.save_metadata(self.category, ret, **(
+                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}))
 
         return MetaUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
 
@@ -1730,6 +1646,8 @@ class ModuleJavCensored(PluginModuleBase):
     def info2(self, code, site, keyword, ps_url=None, extra_opts=None, **kwargs):
         opts = dict(extra_opts or {})
         opts.update(kwargs)
+        if ps_url:
+            opts['ps_url'] = ps_url
 
         SiteClass = self.site_map.get(site, None)
         if SiteClass is None: return None
