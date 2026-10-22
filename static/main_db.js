@@ -3764,6 +3764,7 @@ $(document).off('click', '#btn_open_meta_info_url').on('click', '#btn_open_meta_
 
 function openVideoPlayerModal(targetUrl, title) {
     if (!targetUrl) return;
+    resetVideoPointerInput();
     clearVideoKeyFeedback();
     var player = document.getElementById('video_preview_player');
     var $modal = $('#videoPreviewModal');
@@ -3960,7 +3961,7 @@ document.addEventListener('volumechange', function(e){
 // 타임라인 슬라이더나 뮤트 클릭/드래그 후 네이티브 컨트롤 포커스를 해제하고 모달로 포커스 복원
 $(document).on('mouseup pointerup touchend', '#videoPreviewModal video, #videoPreviewModal .modal-body', function(){
     setTimeout(function(){
-        if (videoControlsTimer !== null) return;
+        if (videoControlsTimer !== null || (videoPointerDrag && videoPointerDrag.active)) return;
         var player = document.getElementById('video_preview_player');
         if (player && document.activeElement === player) {
             player.blur();
@@ -3973,7 +3974,7 @@ $(document).on('mouseup pointerup touchend', '#videoPreviewModal video, #videoPr
 document.addEventListener('seeked', function(e){
     if (e.target && e.target.id === 'video_preview_player') {
         setTimeout(function(){
-            if (videoControlsTimer !== null) return;
+            if (videoControlsTimer !== null || (videoPointerDrag && videoPointerDrag.active)) return;
             if (document.activeElement === e.target) {
                 e.target.blur();
             }
@@ -4005,6 +4006,7 @@ function revealVideoControls(player) {
     player.focus({preventScroll: true});
     videoControlsTimer = setTimeout(function() {
         videoControlsTimer = null;
+        if (videoPointerDrag && videoPointerDrag.active) return;
         if (document.activeElement === player && $('#videoPreviewModal').hasClass('show')) {
             player.blur();
             $('#videoPreviewModal').trigger('focus');
@@ -4023,6 +4025,175 @@ function showVideoKeyFeedback(message) {
         videoKeyFeedbackTimer = null;
     }, 900);
 }
+
+// Mouse-only fine controls; native controls keep the bottom 70px of the video.
+var videoPointerDrag = null;
+var videoWheelInput = {axis: null, amount: 0, timer: null, last: 0};
+var videoDragClickUntil = 0;
+
+function isTopVideoPlayer(player) {
+    var modal = document.getElementById('videoPreviewModal');
+    return player && player.id === 'video_preview_player' && modal && modal.contains(player) &&
+        $(modal).hasClass('show') && (typeof activeModalStack === 'undefined' || !activeModalStack.length ||
+        activeModalStack[activeModalStack.length - 1] === modal);
+}
+
+function isVideoPicturePoint(player, e) {
+    if (!isTopVideoPlayer(player) || e.target !== player || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    var rect = player.getBoundingClientRect();
+    if (!(player.videoWidth > 0 && player.videoHeight > 0)) return false;
+    var scale = Math.min(rect.width / player.videoWidth, rect.height / player.videoHeight);
+    var width = player.videoWidth * scale, height = player.videoHeight * scale;
+    var left = rect.left + (rect.width - width) / 2, top = rect.top + (rect.height - height) / 2;
+    return e.clientX >= left && e.clientX <= left + width && e.clientY >= top &&
+        e.clientY < Math.min(top + height, rect.bottom - 70);
+}
+
+function canSeekVideo(player) {
+    return Number.isFinite(player.duration) && player.duration > 0 && Number.isFinite(player.currentTime);
+}
+
+function showVideoPointerSeek(target, before) {
+    var ticks = Math.round(target * 10);
+    var label = String(Math.floor(ticks / 600) % 60).padStart(2, '0') + ':' +
+        ((ticks % 600) / 10).toFixed(1).padStart(4, '0');
+    if (ticks >= 36000) label = String(Math.floor(ticks / 36000)).padStart(2, '0') + ':' + label;
+    var delta = target - before;
+    showVideoKeyFeedback(label + ' (' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + '초)');
+}
+
+function resetVideoWheelInput() {
+    clearTimeout(videoWheelInput.timer);
+    videoWheelInput = {axis: null, amount: 0, timer: null, last: 0};
+}
+
+function resetVideoPointerInput() {
+    var drag = videoPointerDrag;
+    videoPointerDrag = null;
+    videoDragClickUntil = 0;
+    resetVideoWheelInput();
+    if (drag) {
+        clearTimeout(drag.timer);
+        if (drag.player.hasPointerCapture(drag.id)) drag.player.releasePointerCapture(drag.id);
+        clearVideoKeyFeedback();
+    }
+}
+
+document.addEventListener('wheel', function(e) {
+    var player = e.target;
+    if (!isVideoPicturePoint(player, e) || videoPointerDrag) return;
+    var axis = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 'x' : 'y';
+    var delta = axis === 'x' ? e.deltaX : e.deltaY;
+    if (!Number.isFinite(delta) || delta === 0 || (axis === 'x' && !canSeekVideo(player))) return;
+    if (axis === 'y' && ((delta > 0 && player.volume <= 0) ||
+            (delta < 0 && player.volume >= 1 && !player.muted))) return;
+    if (axis === 'x' && ((delta > 0 && player.currentTime <= 0) ||
+            (delta < 0 && player.currentTime >= player.duration))) return;
+    var now = Date.now();
+    if (videoWheelInput.axis !== axis || now - videoWheelInput.last > 180) resetVideoWheelInput();
+    videoWheelInput.axis = axis;
+    videoWheelInput.last = now;
+    // One detent: 100 pixels, 3 lines, or one page. Cap a burst at 3 units.
+    var pixels = delta * (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
+    videoWheelInput.amount = Math.max(-300, Math.min(300, videoWheelInput.amount + pixels));
+    e.preventDefault();
+    if (videoWheelInput.timer !== null || Math.abs(videoWheelInput.amount) < 100) return;
+    videoWheelInput.timer = setTimeout(function() {
+        videoWheelInput.timer = null;
+        var steps = Math.trunc(videoWheelInput.amount / 100);
+        videoWheelInput.amount -= steps * 100;
+        if (!isTopVideoPlayer(player) || document.hidden || !steps) return;
+        revealVideoControls(player);
+        if (axis === 'x') {
+            if (!canSeekVideo(player)) return;
+            var before = player.currentTime;
+            player.currentTime = Math.max(0, Math.min(player.duration, before - steps));
+            showVideoPointerSeek(player.currentTime, before);
+        } else {
+            player.volume = Math.max(0, Math.min(1, Math.round((player.volume - steps * 0.01) * 100) / 100));
+            if (steps < 0 && player.volume > 0) player.muted = false;
+            showVideoKeyFeedback('볼륨 ' + Math.round(player.volume * 100) + '%' + (player.muted ? ' (음소거)' : ''));
+        }
+    }, 80);
+}, {capture: true, passive: false});
+
+document.addEventListener('pointerdown', function(e) {
+    var player = e.target;
+    if (e.pointerType !== 'mouse' || e.button !== 0 || !isVideoPicturePoint(player, e) || !canSeekVideo(player)) return;
+    resetVideoPointerInput();
+    videoPointerDrag = {player: player, id: e.pointerId, x: e.clientX, y: e.clientY,
+        before: player.currentTime, target: player.currentTime, active: false, timer: null};
+}, true);
+
+document.addEventListener('pointermove', function(e) {
+    var drag = videoPointerDrag;
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!(e.buttons & 1) || !isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player) ||
+            e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) { resetVideoPointerInput(); return; }
+    var dx = e.clientX - drag.x;
+    if (!drag.active) {
+        if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(e.clientY - drag.y)) return;
+        drag.active = true;
+        drag.player.setPointerCapture(drag.id);
+        revealVideoControls(drag.player);
+    }
+    e.preventDefault();
+    drag.target = Math.max(0, Math.min(drag.player.duration, drag.before + dx / 10));
+    showVideoPointerSeek(drag.target, drag.before);
+    clearTimeout(videoKeyFeedbackTimer);
+    videoKeyFeedbackTimer = null;
+    if (drag.timer === null) {
+        drag.timer = setTimeout(function() {
+            drag.timer = null;
+            if (videoPointerDrag !== drag) return;
+            if (!isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player)) {
+                resetVideoPointerInput(); return;
+            }
+            var target = Math.max(0, Math.min(drag.player.duration, drag.target));
+            if (drag.player.currentTime !== target) drag.player.currentTime = target;
+        }, 60);
+    }
+}, true);
+
+document.addEventListener('pointerup', function(e) {
+    var drag = videoPointerDrag;
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.active || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey ||
+            !isTopVideoPlayer(drag.player) || !canSeekVideo(drag.player)) {
+        resetVideoPointerInput(); return;
+    }
+    var target = Math.max(0, Math.min(drag.player.duration, drag.before + (e.clientX - drag.x) / 10));
+    clearTimeout(drag.timer);
+    videoPointerDrag = null;
+    if (drag.player.hasPointerCapture(drag.id)) drag.player.releasePointerCapture(drag.id);
+    videoDragClickUntil = Date.now() + 400;
+    e.preventDefault();
+    if (drag.player.currentTime !== target) drag.player.currentTime = target;
+    revealVideoControls(drag.player);
+    showVideoPointerSeek(target, drag.before);
+}, true);
+
+document.addEventListener('click', function(e) {
+    if (e.target && e.target.id === 'video_preview_player' && Date.now() < videoDragClickUntil) {
+        videoDragClickUntil = 0;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+}, true);
+
+['pointercancel', 'lostpointercapture'].forEach(function(name) {
+    document.addEventListener(name, function(e) {
+        if (videoPointerDrag && e.pointerId === videoPointerDrag.id) resetVideoPointerInput();
+    }, true);
+});
+document.addEventListener('loadstart', function(e) {
+    if (e.target && e.target.id === 'video_preview_player') resetVideoPointerInput();
+}, true);
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) resetVideoPointerInput();
+});
+window.addEventListener('blur', resetVideoPointerInput);
+$(document).on('hide.bs.modal', '#videoPreviewModal', resetVideoPointerInput);
 
 // 재생 모달 단축키: 스페이스 재생/정지, 좌우 5초 탐색, 상하 볼륨 5% 조절
 // Capture before native video controls consume arrows and apply their own steps.
@@ -4077,6 +4248,7 @@ document.addEventListener('keydown', function(e){
 }, true);
 
 $(document).on('hidden.bs.modal', '#videoPreviewModal', function(){
+    resetVideoPointerInput();
     clearVideoKeyFeedback();
     var player = document.getElementById('video_preview_player');
     if (player) {
