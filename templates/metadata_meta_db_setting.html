@@ -498,7 +498,7 @@ $(document).ready(function(){
       $('#meta_db_schema_progress_target').text('-');
 
       $.ajax({
-        url: '/' + package_name + '/meta_api',
+        url: '/' + package_name + '/ajax/meta_db/command',
         type: 'POST',
         cache: false,
         global: false,
@@ -526,7 +526,7 @@ $(document).ready(function(){
       $btn.prop('disabled', true);
 
       $.ajax({
-        url: '/' + package_name + '/meta_api',
+        url: '/' + package_name + '/ajax/meta_db/command',
         type: 'POST',
         cache: false,
         global: false,
@@ -626,7 +626,7 @@ function refreshMetaDbMaintenanceStatus() {
   }
   metaDbMaintenancePolling = true;
   $.ajax({
-    url: '/' + package_name + '/meta_api', type: 'POST', cache: false, global: false,
+    url: '/' + package_name + '/ajax/meta_db/command', type: 'POST', cache: false, global: false,
     dataType: 'json', data: { command: 'meta_db_maintenance_status' },
     success: function(ret) {
       if (metaDbMaintenancePending) return;
@@ -671,7 +671,7 @@ function startMetaDbMaintenance(command, operation, args) {
   metaDbMaintenanceLastStatus = starting;
   updateMetaDbMaintenanceProgress(starting);
   $.ajax({
-    url: '/' + package_name + '/meta_api', type: 'POST', cache: false, global: false,
+    url: '/' + package_name + '/ajax/meta_db/command', type: 'POST', cache: false, global: false,
     dataType: 'json', data: $.extend({command: command}, args || {}),
     success: function(ret) {
       if (ret && ret.ret === 'success' && ret.data && ret.data.job_id) {

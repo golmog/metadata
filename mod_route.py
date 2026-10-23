@@ -66,6 +66,7 @@ class ModuleRoute(PluginModuleBase):
                     break
 
             if not person_api_exists:
+                @F.check_api
                 def person_api():
                     try:
                         from .mod_meta_db import ModuleMetaDb
@@ -125,6 +126,7 @@ class ModuleRoute(PluginModuleBase):
             meta_api_exists = any(rule.rule == meta_api_rule for rule in app.url_map.iter_rules())
 
             if not meta_api_exists:
+                @F.check_api
                 def meta_api():
                     try:
                         from .mod_meta_db import ModuleMetaDb
