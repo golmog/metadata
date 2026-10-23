@@ -139,7 +139,7 @@ function getSameOriginProxyUrl(url, site) {
 }
 
 // FlaskFarm AJAX 명령 단일 라우팅 제어 함수
-window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options) {
+var metadataSendCommand = window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options) {
     var pathname = window.location.pathname;
     var current_module_name = (typeof sub !== 'undefined' && sub) ? sub : get_current_module_sub();
     var is_person_page = get_list_context().type === 'person';
@@ -156,13 +156,15 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
         target_module = 'meta_db';
     }
 
-    var is_person_req = is_person_page || (typeof command === 'string' && command.indexOf('person_') === 0) || (options && options.category === 'PERSON');
+    var is_person_req = command !== 'get_meta_by_code' && (is_person_page ||
+        (typeof command === 'string' && command.indexOf('person_') === 0) || (options && options.category === 'PERSON'));
 
-    var request_url = is_person_req
-        ? ('/' + package_name + '/person_api')
-        : (is_meta_db_system_cmd
-            ? ('/' + package_name + '/meta_api')
-            : ('/' + package_name + '/ajax/' + target_module));
+    // Browser requests use FF's login-protected AJAX routes.
+    // person_api/meta_api are reserved for FF API-key clients.
+    var is_list_command = command === 'web_list' || command === 'list' || command === 'person_web_list';
+    var request_url = (is_person_req || is_meta_db_system_cmd)
+        ? ('/' + package_name + '/ajax/meta_db/' + (is_list_command ? 'list' : 'command'))
+        : ('/' + package_name + '/ajax/' + target_module);
 
     var postData = {
         sub: target_module,
@@ -174,7 +176,7 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
     postData.list_type = is_person_req ? 'person' : 'meta';
     if (options) $.extend(postData, options);
 
-    $.ajax({
+    return $.ajax({
         url: request_url,
         type: "POST",
         cache: false,
@@ -182,7 +184,7 @@ window.globalSendCommand = function(command, arg1, arg2, arg3, callback, options
         dataType: "json",
         success: function (data) { if (callback) callback(data); },
         error: function (request, status, error) {
-            console.warn('[AJAX Error]:', command, status, error);
+            if (command !== 'get_meta_by_code') console.warn('[AJAX Error]:', command, status, error);
             if ((command === 'db_delete_preview' || command === 'db_delete_confirm') && callback) {
                 callback({ret:'error', uncertain:command === 'db_delete_confirm',
                     msg:command === 'db_delete_confirm' ? '삭제 응답을 받지 못했습니다. 처리가 진행 중이거나 완료되었을 수 있으므로 목록을 새로 고쳐 확인하세요.' : '관련 파일 목록을 불러오지 못했습니다.'});
@@ -484,11 +486,9 @@ window.globalRequestSearch = function(page, preserveScroll) {
         current_search_xhr = null;
     }
 
-    var request_url = is_person_page
-        ? ('/' + package_name + '/person_api')
-        : (get_list_context().type === 'meta'
-            ? ('/' + package_name + '/meta_api')
-            : ('/' + package_name + '/ajax/' + target_module));
+    var request_url = (is_person_page || list_context.type === 'meta')
+        ? ('/' + package_name + '/ajax/meta_db/list')
+        : ('/' + package_name + '/ajax/' + target_module);
 
     current_search_xhr = $.ajax({
         url: request_url,
@@ -3019,32 +3019,93 @@ function renderDbEditModalContent(row, $modal) {
 }
 
 // 작품 모달 단일 공용 로더
-var isMovieModalLoading = false;
+var movieModalRequest = null;
 
-function loadAndOpenMovieModal(code, category, fallbackData, $targetModal) {
+function loadAndOpenMovieModal(code, category, $sourceModal) {
     if (!code) return;
-    if (isMovieModalLoading) return;
-    isMovieModalLoading = true;
+    var targetCat = category || get_list_context().category || 'JAV_CEN';
+    code = String(code);
+    targetCat = String(targetCat);
+    if (movieModalRequest && movieModalRequest.code === code && movieModalRequest.category === targetCat) return;
+    var previous = movieModalRequest;
+    var request = {code: code, category: targetCat, xhr: null};
+    movieModalRequest = request;
+    if (previous && previous.xhr) previous.xhr.abort();
 
-    var $modal = $targetModal || getOrCreateModal('#dbEditModal');
-    var targetCat = category || (fallbackData && fallbackData.category) || get_list_context().category || 'JAV_CEN';
-
-    // 반응 속도를 위해 캐시된 기본 데이터로 먼저 모달 오픈
-    if (fallbackData) {
-        renderDbEditModalContent(fallbackData, $modal);
-        $modal.modal('show');
+    $sourceModal = $sourceModal && $sourceModal.length ? $sourceModal : null;
+    function finish() {
+        if ($sourceModal) $sourceModal.off('hide.bs.modal.movieModalLoad', sourceClosed);
+        if (movieModalRequest === request) movieModalRequest = null;
     }
-
-    // 백엔드에서 힐링(Self-Healing) 및 관계 복원이 완료된 최신 메타데이터 수신
-    globalSendCommand('get_meta_by_code', String(code), String(targetCat), null, function(ret){
-        isMovieModalLoading = false;
-        if (ret && ret.ret === 'success' && ret.data) {
-            renderDbEditModalContent(ret.data, $modal);
-            $modal.modal('show');
-        } else if (!fallbackData) {
-            if (typeof notify === 'function') notify('[' + code + '] 작품 데이터를 조회하지 못했습니다.', 'warning');
+    function sourceClosed(e) {
+        if (e.target !== $sourceModal[0] || movieModalRequest !== request) return;
+        movieModalRequest = null;
+        if (request.xhr) request.xhr.abort();
+        finish();
+    }
+    function failed(stage, error, details) {
+        if (request.reported) return;
+        request.reported = true;
+        console.error('[MetaDB EditModal] ' + stage, {code: code, category: targetCat, details: details}, error);
+        var messages = {
+            server_lookup: '작품 정보를 조회하지 못했습니다. [서버 응답]',
+            invalid_response: '서버가 올바르지 않은 작품 데이터를 반환했습니다.',
+            transport: '서버 통신에 실패했습니다.',
+            client_contract: '편집 기능을 실행하는 중 오류가 발생했습니다.',
+            render: '작품 정보를 받았지만 편집 화면 구성에 실패했습니다.'
+        };
+        var message = messages[stage];
+        if (stage === 'transport') {
+            message += details.text_status === 'timeout' ? ' (시간 초과)' :
+                details.text_status === 'parsererror' ? ' (응답 형식 오류)' :
+                details.http_status ? ' (HTTP ' + details.http_status + ')' : ' (연결 오류)';
         }
-    });
+        if (typeof notify === 'function') notify(message, 'warning');
+    }
+    if ($sourceModal) $sourceModal.on('hide.bs.modal.movieModalLoad', sourceClosed);
+    try {
+        request.xhr = metadataSendCommand('get_meta_by_code', code, targetCat, null, function(ret) {
+            if (movieModalRequest !== request) return;
+            var $modal;
+            try {
+                if ($sourceModal && !$sourceModal.hasClass('show')) return;
+                if (ret && typeof ret === 'object' && typeof ret.ret === 'string' && ret.ret !== 'success') {
+                    failed('server_lookup', null, {ret: ret.ret === 'error' ? 'error' : 'unexpected', has_message: Boolean(ret.msg)});
+                    return;
+                }
+                if (!ret || ret.ret !== 'success' || !ret.data || typeof ret.data !== 'object' ||
+                        Array.isArray(ret.data) || typeof ret.data.code !== 'string' || !ret.data.code.trim()) {
+                    failed('invalid_response', null, {has_data: Boolean(ret && ret.data), data_type: typeof (ret && ret.data)});
+                    return;
+                }
+                // Create a nested clone only once a complete detail response exists.
+                $modal = getOrCreateModal('#dbEditModal');
+                renderDbEditModalContent(ret.data, $modal);
+                $modal.modal('show');
+            } catch (error) {
+                if ($modal && $modal.hasClass('dynamic-modal-clone') && !$modal.hasClass('show')) $modal.remove();
+                failed('render', error, {server_lookup: 'success'});
+            } finally {
+                finish();
+            }
+        });
+        if (!request.xhr || typeof request.xhr.fail !== 'function' || typeof request.xhr.always !== 'function' ||
+                typeof request.xhr.abort !== 'function') {
+            throw new TypeError('metadataSendCommand must return a jqXHR with fail/always/abort');
+        }
+        request.xhr.fail(function(xhr, status) {
+            if (movieModalRequest === request && status !== 'abort') {
+                failed('transport', null, {http_status: Number(xhr.status) || 0,
+                    text_status: ['timeout', 'parsererror', 'error'].indexOf(status) >= 0 ? status : 'unknown'});
+            }
+        }).always(finish);
+    } catch (error) {
+        if (movieModalRequest === request) {
+            failed('client_contract', error, {function_name: 'metadataSendCommand', step: 'request_setup'});
+            finish();
+            if (request.xhr && typeof request.xhr.abort === 'function') request.xhr.abort();
+        }
+    }
 }
 
 // 모달 내부 갱신 작업 시 오버레이 스피너 및 푸터 버튼 상태 제어 헬퍼
@@ -3200,13 +3261,9 @@ $(document).on('click', '.actor-badge-clickable', function(e){
     }, 400);
 });
 
-var isWorkBadgeRequesting = false;
-
 $(document).on('click', '.work-badge-clickable', function(e){
     e.preventDefault();
     e.stopPropagation();
-
-    if (isWorkBadgeRequesting) return;
 
     var $badge = $(this);
     var code = $badge.attr('data-code') || $badge.data('code');
@@ -3214,18 +3271,7 @@ $(document).on('click', '.work-badge-clickable', function(e){
 
     if (!code) return;
 
-    isWorkBadgeRequesting = true;
-    var originalBadgeContent = $badge.html();
-    $badge.css({ 'pointer-events': 'none', 'opacity': '0.7' });
-    $badge.append(' <span class="spinner-border spinner-border-sm text-info ml-1" role="status" style="width: 0.7rem; height: 0.7rem; vertical-align: middle;"></span>');
-
-    loadAndOpenMovieModal(code, cat, null);
-
-    setTimeout(function(){
-        isWorkBadgeRequesting = false;
-        $badge.css({ 'pointer-events': '', 'opacity': '' });
-        $badge.html(originalBadgeContent);
-    }, 400);
+    loadAndOpenMovieModal(code, cat, $badge.closest('.modal'));
 });
 
 $(document).on('click', '#btn_search_actor_works', function(e){
@@ -3599,7 +3645,7 @@ $(document).off('click', '.btn_edit_db').on('click', '.btn_edit_db', function(e)
     var idx = parseInt($(this).data('idx'), 10);
     var row = (current_data && !isNaN(idx) && idx >= 0 && idx < current_data.length) ? current_data[idx] : null;
     if (row) {
-        loadAndOpenMovieModal(row.code, row.category, row);
+        loadAndOpenMovieModal(row.code, row.category, $(this).closest('.modal'));
     } else {
         if (typeof notify === 'function') notify('선택한 행의 데이터를 찾을 수 없습니다.', 'warning');
     }
@@ -3721,7 +3767,7 @@ $(document).on('click', '.item-title-clickable', function(e){
     var idx = parseInt($(this).data('idx'), 10);
     var row = (current_data && !isNaN(idx) && idx >= 0 && idx < current_data.length) ? current_data[idx] : null;
     if (row) {
-        loadAndOpenMovieModal(row.code, row.category, row);
+        loadAndOpenMovieModal(row.code, row.category, $(this).closest('.modal'));
     }
 });
 
@@ -6090,7 +6136,7 @@ function start_transfer_status_timer() {
 
     transfer_timer = setInterval(function(){
         $.ajax({
-            url: '/' + package_name + '/meta_api',
+            url: '/' + package_name + '/ajax/meta_db/command',
             type: 'POST',
             cache: false,
             global: false,
@@ -6155,7 +6201,7 @@ function start_import_status_timer() {
 
     import_status_timer = setInterval(function(){
         $.ajax({
-            url: '/' + package_name + '/meta_api',
+            url: '/' + package_name + '/ajax/meta_db/command',
             type: 'POST',
             cache: false,
             global: false,
@@ -6238,7 +6284,7 @@ $(document).on('click', '#btn_transfer_start', function(e){
     };
 
     $.ajax({
-        url: '/' + package_name + '/meta_api',
+        url: '/' + package_name + '/ajax/meta_db/command',
         type: 'POST',
         cache: false,
         global: false,

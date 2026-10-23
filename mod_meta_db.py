@@ -9511,6 +9511,13 @@ class ModuleMetaDb(PluginModuleBase):
 
             # code, ui_code, originaltitle 3개 필드 대조 및 카테고리 전방위 폴백 탐색
             elif command == 'get_meta_by_code':
+                from sqlalchemy.orm import selectinload
+                detail_options = (
+                    selectinload(MetaItem.media_files),
+                    selectinload(MetaItem.person_maps),
+                    selectinload(MetaItem.tag_maps),
+                    selectinload(MetaItem.fingerprints),
+                )
                 target_code = (arg1 or '').strip()
                 raw_cat = (arg2 or '').strip().upper()
 
@@ -9557,10 +9564,10 @@ class ModuleMetaDb(PluginModuleBase):
                         continue
                     try:
                         # code, ui_code, originaltitle 필드와 100% 완전 일치하는 레코드만 엄격하게 조회
-                        item = sess.query(MetaItem).filter(
+                        item = sess.query(MetaItem).options(*detail_options).filter(
                             MetaItem.category == std_cat, MetaItem.code == target_code).first()
                         if item is None and not (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and self._is_av_internal_code(target_code)):
-                            item = sess.query(MetaItem).filter(
+                            item = sess.query(MetaItem).options(*detail_options).filter(
                             MetaItem.category == std_cat,
                             or_(
                                 func.lower(MetaItem.code).in_(match_targets),
