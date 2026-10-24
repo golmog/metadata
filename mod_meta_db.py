@@ -1974,7 +1974,13 @@ class ModuleMetaDb(PluginModuleBase):
             orig_genres_list = orig_dict.get('genre') or []
 
             # 기존 레코드 조회 및 신규 생성
-            item = s.query(MetaItem).filter_by(code=code).first()
+            from sqlalchemy.orm import selectinload
+            item = s.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter_by(code=code).first()
             if not item:
                 item = MetaItem(
                     domain=domain, category=std_cat, code=code, ui_code=ui_code,
@@ -3069,7 +3075,13 @@ class ModuleMetaDb(PluginModuleBase):
         if not sess: return None
 
         try:
-            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            from sqlalchemy.orm import selectinload
+            item = sess.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter_by(code=code, category=std_cat).first()
             if item: return cls.to_entity_dict(item)
             return None
         except Exception as e:
@@ -3160,7 +3172,7 @@ class ModuleMetaDb(PluginModuleBase):
     @classmethod
     def get_metadata_batch(cls, category, codes, options=None):
         """
-        요청된 복수의 코드(최대 100건)에 대해 단일 SQL 쿼리로 메타데이터를 일괄 조회하여
+        요청된 고유 코드(최대 100건)를 정확 조회하고 관계를 분리 로딩하여
         {요청코드: 메타데이터} 딕셔너리로 반환합니다.
         """
         target_cat, clean_codes, _ = cls.normalize_batch_request(category, codes)
@@ -3179,45 +3191,30 @@ class ModuleMetaDb(PluginModuleBase):
                 clean_codes = clean_codes[:max_batch_size]
 
             raw_code_set = set(clean_codes)
-            lower_code_set = {c.lower() for c in clean_codes}
 
-            # 인덱스 컬럼을 활용한 단일 고속 쿼리 실행
-            items = sess.query(MetaItem).filter(
+            from sqlalchemy.orm import selectinload
+            # 고유 코드 후보를 한 번 조회하고 네 컬렉션은 별도 SELECT로 로딩
+            items = sess.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter(
                 MetaItem.category == std_cat,
-                or_(
-                    MetaItem.code.in_(raw_code_set),
-                    MetaItem.ui_code.in_(raw_code_set),
-                    MetaItem.originaltitle.in_(raw_code_set),
-                    func.lower(MetaItem.code).in_(lower_code_set),
-                    func.lower(MetaItem.ui_code).in_(lower_code_set),
-                    func.lower(MetaItem.originaltitle).in_(lower_code_set),
-                )
+                MetaItem.code.in_(raw_code_set),
             ).all()
 
-            # 매핑 색인 사전 구축 (대소문자 및 코드 변형 대응)
-            item_lookup = {}
+            # DB 고유 코드만 색인하고 요청 순서대로 반환
             exact_lookup = {}
             for item in items:
                 entity_dict = cls.to_entity_dict(item)
                 final_data = MetaUtil.finalize_info_return(entity_dict, extra_opts=opts, category=std_cat)
                 exact_lookup[item.code] = final_data
 
-                for key_variant in [item.code, item.ui_code, item.originaltitle]:
-                    if key_variant:
-                        item_lookup[key_variant] = final_data
-                        item_lookup[key_variant.lower()] = final_data
-                        item_lookup[key_variant.upper()] = final_data
-
             # 원본 요청 코드 키를 보존하며 결과 딕셔너리 조립
             result_dict = {}
             for req_code in clean_codes:
                 matched_meta = exact_lookup.get(req_code)
-                if not matched_meta and not (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and cls._is_av_internal_code(req_code)):
-                    matched_meta = (
-                    item_lookup.get(req_code) or
-                    item_lookup.get(req_code.lower()) or
-                    item_lookup.get(req_code.upper())
-                    )
                 if matched_meta:
                     result_dict[req_code] = matched_meta
 
@@ -3587,6 +3584,7 @@ class ModuleMetaDb(PluginModuleBase):
     @classmethod
     def complete_item_media(cls, code, category, media_path, metadata=None):
         """Complete videos at a confirmed local path without scraping metadata again."""
+        from sqlalchemy.orm import selectinload
         from .util_preview import MetaPreviewUtil, MediaReplacement
         from .util_runtime import stage_storage_record, commit_storage_record
         blocked_codes = ('commit_outcome_unknown', 'storage_conflict', 'storage_lookup_failed', 'storage_asset_incomplete')
@@ -3635,14 +3633,24 @@ class ModuleMetaDb(PluginModuleBase):
         result = {'ret': 'warning', 'msg': '미디어 보완을 완료하지 못했습니다.'}
         session.info['storage_commit_state'] = 'not_attempted'
         try:
-            item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            item = session.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter_by(code=code, category=std_cat).first()
             if item is None and metadata and P.ModelSetting.get_bool('meta_db_save'):
                 session.rollback()
                 from support_site import SiteUtil
                 plot = metadata.get('plot') or ''
                 allowed = not P.ModelSetting.get_bool('meta_db_save_only_translated') or not plot or SiteUtil.is_include_hangul(plot)
                 if allowed and cls.save_metadata(std_cat, metadata):
-                    item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+                    item = session.query(MetaItem).options(
+                        selectinload(MetaItem.media_files),
+                        selectinload(MetaItem.person_maps),
+                        selectinload(MetaItem.tag_maps),
+                        selectinload(MetaItem.fingerprints),
+                    ).filter_by(code=code, category=std_cat).first()
             if item is None:
                 return {'ret': 'warning', 'msg': '저장 정책에 따라 메타 DB 등록이 생략되어 미디어 보완을 실행하지 않았습니다.'}
             data = cls.to_entity_dict(item)
@@ -3720,7 +3728,7 @@ class ModuleMetaDb(PluginModuleBase):
         result = {'ret': 'success'}
         session.info['storage_commit_state'] = 'not_attempted'
         try:
-            item = session.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            item = session.query(MetaItem).options(lazyload('*')).filter_by(code=code, category=std_cat).first()
             if item is None:
                 return {'ret': 'success'}  # Respect metadata save policies.
             from .util_runtime import stage_storage_record, commit_storage_record
@@ -4913,6 +4921,7 @@ class ModuleMetaDb(PluginModuleBase):
     @classmethod
     def verify_and_sync_person_works(cls, person_identifier, domain='JAV'):
         """현재 인물의 등록된 출연작들만 타겟으로 실제 소장 작품의 출연 여부를 검증하고 오매칭을 자동 정제"""
+        from sqlalchemy.orm import selectinload
         cls.ensure_db_ready()
         sess, _, _ = cls.get_session_and_domain('PERSON')
         if not sess:
@@ -4986,7 +4995,10 @@ class ModuleMetaDb(PluginModuleBase):
                         if not raw_c:
                             continue
 
-                        m_item = work_session.query(MetaItem).filter(
+                        m_item = work_session.query(MetaItem).options(
+                            lazyload('*'),
+                            selectinload(MetaItem.person_maps).lazyload(MetaItemPersonMap.person),
+                        ).filter(
                             MetaItem.category == std_cat,
                             or_(
                                 MetaItem.code == raw_c,
@@ -5929,7 +5941,10 @@ class ModuleMetaDb(PluginModuleBase):
             if exists:
                 return True
 
-            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            from sqlalchemy.orm import selectinload
+            item = sess.query(MetaItem).options(
+                lazyload('*'), selectinload(MetaItem.fingerprints),
+            ).filter_by(code=code, category=std_cat).first()
             if not item:
                 return False
 
@@ -5977,7 +5992,12 @@ class ModuleMetaDb(PluginModuleBase):
                 kw_clean = re.sub(r'[^\w\s]', ' ', str(keyword or '').lower()).strip()
                 tokens = [t for t in kw_clean.split() if len(t) >= 2]
 
-                query = sess.query(MetaItem).filter(MetaItem.category == std_cat)
+                from sqlalchemy.orm import joinedload
+
+                query = sess.query(MetaItem).options(
+                    lazyload('*'),
+                    joinedload(MetaItem.person_maps).lazyload(MetaItemPersonMap.person),
+                ).filter(MetaItem.category == std_cat)
                 if tokens:
                     conditions = []
                     for t in tokens:
@@ -6550,7 +6570,13 @@ class ModuleMetaDb(PluginModuleBase):
         if not sess:
             return False
         try:
-            item = sess.query(MetaItem).filter_by(code=code).first()
+            from sqlalchemy.orm import selectinload
+            item = sess.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter_by(code=code).first()
             if not item:
                 logger.warning(f"[MetaDB Delete] [{std_cat}] 삭제 대상 메타데이터 없음: {code}")
                 return False
@@ -6614,7 +6640,13 @@ class ModuleMetaDb(PluginModuleBase):
 
             from .util_preview import MetaPreviewUtil
             delete_videos = MetaPreviewUtil.is_delete_video_on_meta_delete_enabled(std_cat)
-            items = sess.query(MetaItem).filter(MetaItem.category == std_cat, MetaItem.code.in_(code_list)).all()
+            from sqlalchemy.orm import selectinload
+            items = sess.query(MetaItem).options(
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.person_maps),
+                selectinload(MetaItem.tag_maps),
+                selectinload(MetaItem.fingerprints),
+            ).filter(MetaItem.category == std_cat, MetaItem.code.in_(code_list)).all()
             deleted_count = 0
 
             for item in items:
@@ -6650,7 +6682,13 @@ class ModuleMetaDb(PluginModuleBase):
         try:
             from .util_preview import MetaPreviewUtil
             if MetaPreviewUtil.is_delete_video_on_meta_delete_enabled(std_cat):
-                all_items = sess.query(MetaItem).filter_by(category=std_cat).all()
+                all_items = (
+                    sess.query(MetaItem).options(lazyload('*'))
+                    .filter_by(category=std_cat)
+                    .outerjoin(MetaItem.person_maps)
+                    .order_by(MetaItemPersonMap.sort_order)
+                    .all()
+                )
                 for it in all_items:
                     MetaPreviewUtil.delete_video_assets(it.extra_info, category=std_cat)
 
@@ -9662,7 +9700,11 @@ class ModuleMetaDb(PluginModuleBase):
                     return jsonify({'ret': 'error', 'msg': '세션 획득 실패'})
 
                 try:
-                    item = sess.query(MetaItem).filter_by(code=code).first()
+                    from sqlalchemy.orm import selectinload
+                    item = sess.query(MetaItem).options(
+                        lazyload('*'),
+                        selectinload(MetaItem.media_files),
+                    ).filter_by(code=code).first()
                     if not item:
                         return jsonify({'ret': 'error', 'msg': '작품을 찾을 수 없습니다.'})
 
