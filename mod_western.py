@@ -1175,12 +1175,16 @@ class ModuleWestern(PluginModuleBase):
             ret['total_input'] = len(files)
             sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(self.category)
             from .mod_meta_db import MetaItem
+            from sqlalchemy.orm import lazyload, selectinload
             try:
                 for f in files:
                     clean_name = os.path.basename(f).strip()
                     stem = re.split(r'_(?:p|pl)(?:_user)?\.', clean_name, flags=re.I)[0]
                     if not stem: continue
-                    meta = sess.query(MetaItem).filter(
+                    meta = sess.query(MetaItem).options(
+                        lazyload('*'),
+                        selectinload(MetaItem.media_files),
+                    ).filter(
                         MetaItem.category == std_cat,
                         or_(MetaItem.originaltitle.ilike(stem), MetaItem.code.ilike(stem))
                     ).first()

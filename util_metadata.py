@@ -565,7 +565,7 @@ class MetaUtil:
             session, _, category = ModuleMetaDb.get_session_and_domain('PERSON' if subject == 'person' else entry['category'])
             if session is None:
                 return None
-            from sqlalchemy.orm import sessionmaker
+            from sqlalchemy.orm import sessionmaker, lazyload, selectinload
             recovery = sessionmaker(bind=session.get_bind())()
             try:
                 if subject == 'person':
@@ -579,7 +579,9 @@ class MetaUtil:
                         if not entry.get('commit_unknown') and entry.get('old_id') and person.official_cached_gdrive_fileid == entry['old_id']:
                             return False
                     return None
-                item = recovery.query(MetaItem).filter_by(code=entry['code'], category=category).first()
+                item = recovery.query(MetaItem).options(
+                    lazyload('*'), selectinload(MetaItem.media_files),
+                ).filter_by(code=entry['code'], category=category).first()
                 if not item:
                     return None
                 assets = [m for m in item.media_files if m.media_type == entry['media_type'] and not m.is_user]
@@ -693,6 +695,7 @@ class MetaUtil:
             return False, '카테고리가 지정되지 않았습니다.'
 
         from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia
+        from sqlalchemy.orm import lazyload, selectinload
 
         sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
         if not sess:
@@ -702,7 +705,9 @@ class MetaUtil:
 
         workspace = None
         try:
-            item = sess.query(MetaItem).filter_by(code=code).first()
+            item = sess.query(MetaItem).options(
+                lazyload('*'), selectinload(MetaItem.media_files),
+            ).filter_by(code=code).first()
             if not item:
                 return False, f"해당 코드의 메타데이터를 찾을 수 없습니다: {code}"
 
@@ -935,6 +940,7 @@ class MetaUtil:
             return False, '카테고리가 지정되지 않았습니다.'
 
         from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia
+        from sqlalchemy.orm import lazyload, selectinload
         from support_site import SiteAvBase
 
         sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
@@ -945,7 +951,9 @@ class MetaUtil:
 
         workspace = None
         try:
-            item = sess.query(MetaItem).filter_by(code=code).first()
+            item = sess.query(MetaItem).options(
+                lazyload('*'), selectinload(MetaItem.media_files),
+            ).filter_by(code=code).first()
             if not item:
                 return False, f"해당 코드의 메타데이터를 찾을 수 없습니다: {code}"
 
@@ -2216,7 +2224,10 @@ class MetaUtil:
             if sess:
                 try:
                     from .mod_meta_db import MetaItem
-                    meta_item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+                    from sqlalchemy.orm import lazyload, selectinload
+                    meta_item = sess.query(MetaItem).options(
+                        lazyload('*'), selectinload(MetaItem.media_files),
+                    ).filter_by(code=code, category=std_cat).first()
                     if meta_item:
                         old_p = str(meta_item.poster_url or '').strip()
                         old_pl_m = next((m for m in meta_item.media_files if m.media_type == 'landscape'), None)
@@ -2258,14 +2269,19 @@ class MetaUtil:
     @classmethod
     def sync_local_data(cls, module, code, category, memory_index=None):
         """외부 사이트 접속 없이 로컬 DB와 디스크 파일 상태만 대조하여 동기화"""
-        from .mod_meta_db import ModuleMetaDb, MetaItem
+        from .mod_meta_db import ModuleMetaDb, MetaItem, MetaItemTagMap
+        from sqlalchemy.orm import lazyload, selectinload
 
         sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(category)
         if not sess:
             return {'ret': 'error', 'msg': '세션 획득 실패', 'is_updated': False}
 
         try:
-            item = sess.query(MetaItem).filter_by(code=code, category=std_cat).first()
+            item = sess.query(MetaItem).options(
+                lazyload('*'),
+                selectinload(MetaItem.media_files),
+                selectinload(MetaItem.tag_maps).joinedload(MetaItemTagMap.tag),
+            ).filter_by(code=code, category=std_cat).first()
             if not item:
                 return {'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
 
