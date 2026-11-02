@@ -36,9 +36,8 @@
       <div class="col-md-4 mb-2 mb-md-0">
         <label class="small font-weight-bold text-muted mb-1">배치 작업 모드</label>
         <select id="batch_mode" class="form-control form-control-sm">
-          <option value="local_sync" selected>📁 로컬 DB/파일 기반 업데이트</option>
-          <option value="missing">🩹 현재 사이트 누락 정보 업데이트</option>
-          <option value="media_sync">🔄 이미지/미디어 동기화</option>
+          <option value="missing" title="기존 DB의 인물·장르·UI Code·누락 작품 타입만 복구합니다. 사이트 조회와 미디어 작업은 하지 않습니다.">🩹 메타 DB 복구</option>
+          <option value="media_sync" selected title="실제 저장소 파일 목록을 기준으로 DB를 대조합니다. 사이트 조회와 파일 변경은 하지 않습니다.">🔄 이미지/미디어 동기화</option>
           <option value="media_reprocess">🔁 이미지/미디어 재처리</option>
           <option value="in_place">📌 현재 사이트 제자리 갱신</option>
           <option value="auto_search">🔍 전체 우선순위 자동 재검색</option>
@@ -144,7 +143,7 @@
             </select>
             <select id="search_status" name="search_status" class="form-control form-control-sm">
               <option value="all">전체 상태</option>
-              <option value="no_actor">배우 누락</option>
+              <option value="no_actor">인물 정보 누락</option>
               <option value="no_poster">포스터 누락</option>
               <option value="no_plot">줄거리 누락</option>
               <option value="no_trailer">트레일러 미저장</option>

@@ -1,10 +1,12 @@
 import os
+import re
 import time
 import json
 import requests
 import traceback
 from urllib.parse import unquote_plus
 from support_site import SupportWavve, SiteUtilAv, SiteUtil, SiteAvBase
+from support_site.ssrf_guard import fetch as guarded_fetch, public_scope, SSRFRejected, validate, current_image_proxies
 from flask import request, send_file, redirect, abort, Response, send_from_directory, current_app
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
@@ -33,12 +35,14 @@ class ModuleRoute(PluginModuleBase):
             
             if not rule_exists:
                 def serve_global_images(filename):
+                    from werkzeug.exceptions import HTTPException
                     try:
                         image_root_dir = (
                             P.ModelSetting.get('jav_censored_image_server_local_path') or
                             P.ModelSetting.get('western_image_server_local_path') or
                             os.path.join(path_data, 'images')
                         )
+                        image_root_dir = os.path.abspath(image_root_dir)
                         abs_target_path = os.path.abspath(os.path.join(image_root_dir, filename))
                         
                         if os.path.commonpath([image_root_dir, abs_target_path]) == image_root_dir:
@@ -48,6 +52,8 @@ class ModuleRoute(PluginModuleBase):
                                 abort(404)
                         else:
                             abort(403)
+                    except HTTPException as e:
+                        return e.get_response(request.environ)
                     except Exception as e:
                         logger.error(f"Global Image Route Error: {e}")
                         abort(500)
@@ -70,6 +76,9 @@ class ModuleRoute(PluginModuleBase):
                 def person_api():
                     try:
                         from .mod_meta_db import ModuleMetaDb
+                        from .util_metadata import MetaUtil
+                        if not ModuleMetaDb.is_effectively_enabled():
+                            return ModuleMetaDb.disabled_response()
 
                         command = request.form.get('command')
                         search_domain = request.form.get('search_domain')
@@ -77,9 +86,14 @@ class ModuleRoute(PluginModuleBase):
                         # 목록 조회 명령 또는 인물 카테고리 요청 처리
                         if command in ['web_list', 'list', 'person_web_list'] or search_domain is not None or request.form.get('category') == 'PERSON':
                             default_domain = search_domain or 'ALL'
+                            listing = ModuleMetaDb.person_web_list(request, default_domain=default_domain)
+                            failed = isinstance(listing, dict) and listing.get('success') is False
+                            if failed:
+                                listing = dict(listing, ret='error', error_code='lookup_failed', error_origin='ff',
+                                               msg=listing.get('msg') or '인물 DB 목록 조회에 실패했습니다.')
                             return current_app.response_class(
-                                response=json.dumps(ModuleMetaDb.person_web_list(request, default_domain=default_domain), ensure_ascii=False),
-                                status=200,
+                                response=json.dumps(listing, ensure_ascii=False),
+                                status=500 if failed else 200,
                                 mimetype='application/json'
                             )
 
@@ -87,7 +101,7 @@ class ModuleRoute(PluginModuleBase):
                         meta_module = P.get_module('meta_db')
                         if meta_module is None:
                             return current_app.response_class(
-                                response=json.dumps({'ret': 'error', 'msg': 'meta_db module not available'}, ensure_ascii=False),
+                                response=json.dumps({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'msg': '메타 DB 모듈을 사용할 수 없습니다.'}, ensure_ascii=False),
                                 status=500,
                                 mimetype='application/json'
                             )
@@ -100,17 +114,17 @@ class ModuleRoute(PluginModuleBase):
                             request
                         )
                         if res is not None:
-                            return res
+                            return MetaUtil.api_command_response(res)
 
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'msg': f'Unknown person command: {command}'}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'error_code': 'unsupported_command', 'error_origin': 'ff', 'msg': '지원하지 않는 인물 명령입니다.'}, ensure_ascii=False),
                             status=400,
                             mimetype='application/json'
                         )
                     except Exception as e:
                         logger.exception('[Metadata Person API] 요청 처리 실패')
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'msg': '인물 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'msg': '인물 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
                             status=500,
                             mimetype='application/json'
                         )
@@ -130,24 +144,30 @@ class ModuleRoute(PluginModuleBase):
                 def meta_api():
                     try:
                         from .mod_meta_db import ModuleMetaDb
+                        from .util_metadata import MetaUtil
+                        if not ModuleMetaDb.is_effectively_enabled():
+                            return ModuleMetaDb.disabled_response()
                         meta_module = P.get_module('meta_db')
                         command = request.form.get('command') or ''
 
                         # 목록 조회 처리
                         if command in ['web_list', 'list'] or not command:
+                            listing = ModuleMetaDb.web_list(request, category=request.form.get('category') or 'JAV_CEN')
+                            failed = isinstance(listing, dict) and listing.get('success') is False
+                            if failed:
+                                listing = dict(listing, ret='error', error_code='lookup_failed', error_origin='ff',
+                                               msg=listing.get('msg') or '메타 DB 목록 조회에 실패했습니다.')
                             return current_app.response_class(
-                                response=json.dumps(
-                                    ModuleMetaDb.web_list(
-                                        request,
-                                        category=request.form.get('category') or 'JAV_CEN'
-                                    ),
-                                    ensure_ascii=False
-                                ),
-                                status=200,
+                                response=json.dumps(listing, ensure_ascii=False),
+                                status=500 if failed else 200,
                                 mimetype='application/json'
                             )
 
                         # 목록 조회가 아닌 모든 커맨드는 meta_db 모듈의 process_command로 동적 위임
+                        if meta_module is None:
+                            return current_app.response_class(
+                                response=json.dumps({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'msg': '메타 DB 모듈을 사용할 수 없습니다.'}, ensure_ascii=False),
+                                status=500, mimetype='application/json')
                         if meta_module:
                             res = meta_module.process_command(
                                 command,
@@ -157,17 +177,17 @@ class ModuleRoute(PluginModuleBase):
                                 request
                             )
                             if res is not None:
-                                return res
+                                return MetaUtil.api_command_response(res)
 
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'msg': f'알 수 없는 명령: {command}'}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'error_code': 'unsupported_command', 'error_origin': 'ff', 'msg': '지원하지 않는 메타 명령입니다.'}, ensure_ascii=False),
                             status=400,
                             mimetype='application/json'
                         )
                     except Exception as e:
                         logger.exception('[Metadata Meta API] 요청 처리 실패')
                         return current_app.response_class(
-                            response=json.dumps({'ret': 'error', 'success': False, 'msg': '메타 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
+                            response=json.dumps({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'success': False, 'msg': '메타 API 요청 처리에 실패했습니다.'}, ensure_ascii=False),
                             status=500,
                             mimetype='application/json'
                         )
@@ -188,17 +208,17 @@ class ModuleRoute(PluginModuleBase):
             if sub == 'image_process.jpg':
                 mode = request.args.get('mode')
                 if mode == 'landscape_to_poster':
-                    image_url = unquote_plus(request.args.get('url'))
-                    im = Image.open(requests.get(image_url, stream=True).raw)
-                    width, height = im.size
-                    left = width/1.895734597
-                    top = 0
-                    right = width
-                    bottom = height
-                    filename = os.path.join(path_data, 'tmp', 'proxy_%s.jpg' % str(time.time()) )
-                    poster = im.crop((left, top, right, bottom))
-                    poster.save(filename)
-                    return send_file(filename, mimetype='image/jpeg')
+                    image_url = request.args.get('url')
+                    res = SiteUtil.get_image_response(image_url, timeout=30, ssrf_safe=True)
+                    if res.status_code != 200:
+                        return Response(status=502)
+                    with Image.open(BytesIO(res.content)) as im:
+                        width, height = im.size
+                        with im.crop((width/1.895734597, 0, width, height)) as poster:
+                            buf = BytesIO()
+                            poster.save(buf, format='JPEG')
+                    buf.seek(0)
+                    return send_file(buf, mimetype='image/jpeg')
             elif sub == 'stream':
                 mode = request.args.get('mode')
                 param = request.args.get('param')
@@ -247,27 +267,25 @@ class ModuleRoute(PluginModuleBase):
                 return redirect(ret)
             
             elif sub == "image_proxy":
-                image_url = unquote_plus(request.args.get("url"))
-                proxy_url = request.args.get("proxy_url")
-                if proxy_url is not None:
-                    proxy_url = unquote_plus(proxy_url)
+                image_url = request.args.get("url")
+                proxy_url = self._resolve_image_proxy(request.args)
 
                 # image open
-                res = SiteUtil.get_response(image_url, proxy_url=proxy_url, verify=False)
+                res = SiteUtil.get_image_response(image_url, proxy_url=proxy_url, verify=False, ssrf_safe=True)
 
                 if res is None:
-                    P.logger.error(f"image_proxy: SiteUtil.get_response returned None for URL: {image_url}")
+                    P.logger.error(f"image_proxy: SiteUtil.get_response returned None for URL: [remote image]")
                     abort(404)
                     return
                 
                 if res.status_code != 200:
-                    P.logger.error(f"image_proxy: Received status code {res.status_code} for URL: {image_url}. Content: {res.text[:200]}")
+                    P.logger.error(f"image_proxy: Received status code {res.status_code} for URL: [remote image]. Content: [omitted]")
                     abort(res.status_code if res.status_code >= 400 else 500)
                     return
 
                 content_type_header = res.headers.get('Content-Type', '').lower()
                 if not content_type_header.startswith('image/'):
-                    P.logger.error(f"image_proxy: Expected image Content-Type, but got '{content_type_header}' for URL: {image_url}. Content: {res.text[:200]}")
+                    P.logger.error(f"image_proxy: Expected image Content-Type, but got '{content_type_header}' for URL: [remote image]. Content: [omitted]")
                     abort(400)
                     return
 
@@ -276,7 +294,7 @@ class ModuleRoute(PluginModuleBase):
                     im = Image.open(bytes_im)
                     imformat = im.format
                     if imformat is None:
-                        P.logger.warning(f"image_proxy: Pillow could not determine format for image from URL: {image_url}. Attempting to infer from Content-Type.")
+                        P.logger.warning(f"image_proxy: Pillow could not determine format for image from URL: [remote image]. Attempting to infer from Content-Type.")
                         if 'jpeg' in content_type_header or 'jpg' in content_type_header:
                             imformat = 'JPEG'
                         elif 'png' in content_type_header:
@@ -286,7 +304,7 @@ class ModuleRoute(PluginModuleBase):
                         elif 'gif' in content_type_header:
                             imformat = 'GIF'
                         else:
-                            P.logger.error(f"image_proxy: Could not infer image format from Content-Type '{content_type_header}'. URL: {image_url}")
+                            P.logger.error(f"image_proxy: Could not infer image format from Content-Type '{content_type_header}'. URL: [remote image]")
                             abort(400)
                             return
                     mimetype = im.get_format_mimetype()
@@ -296,7 +314,7 @@ class ModuleRoute(PluginModuleBase):
                         elif imformat == 'WEBP': mimetype = 'image/webp'
                         elif imformat == 'GIF': mimetype = 'image/gif'
                         else:
-                            P.logger.error(f"image_proxy: Could not determine mimetype for inferred format '{imformat}'. URL: {image_url}")
+                            P.logger.error(f"image_proxy: Could not determine mimetype for inferred format '{imformat}'. URL: [remote image]")
                             abort(400)
                             return
 
@@ -304,18 +322,10 @@ class ModuleRoute(PluginModuleBase):
                     logger.error('image_proxy: image decode failed, type=%s', content_type_header)
                     logger.exception('image_proxy: PIL.UnidentifiedImageError')
                     
-                    try:
-                        failed_image_path = os.path.join(path_data, "tmp", f"failed_image_{time.time()}.bin")
-                        with open(failed_image_path, 'wb') as f:
-                            f.write(res.content)
-                        P.logger.info(f"image_proxy: Content of failed image saved to: {failed_image_path}")
-                    except Exception as save_err:
-                        P.logger.error(f"image_proxy: Could not save failed image content: {save_err}")
                     abort(400) # 잘못된 이미지 파일
                     return
                 except Exception as e_pil:
-                    P.logger.error(f"image_proxy: General PIL error for URL: {image_url}: {e_pil}")
-                    P.logger.error(traceback.format_exc())
+                    logger.exception('image_proxy: General PIL error for remote image')
                     abort(500)
                     return
 
@@ -330,14 +340,12 @@ class ModuleRoute(PluginModuleBase):
                 return send_file(bytes_im, mimetype=mimetype)
 
             elif sub == "discord_proxy":
-                image_url = unquote_plus(request.args.get("url"))
-                proxy_url = request.args.get("proxy_url")
-                if proxy_url is not None:
-                    proxy_url = unquote_plus(proxy_url)
+                image_url = request.args.get("url")
                 crop_mode = request.args.get("crop_mode")
                 if crop_mode is not None:
                     crop_mode = unquote_plus(crop_mode)
-                ret = SiteUtilAv.discord_proxy_image(image_url, proxy_url=proxy_url, crop_mode=crop_mode)
+                ret = SiteUtilAv.discord_proxy_image(image_url, crop_mode=crop_mode, ssrf_safe=True)
+                validate(ret)
                 return redirect(ret)    
 
             elif sub in ["jav_image", "jav_image_un"]:
@@ -345,27 +353,68 @@ class ModuleRoute(PluginModuleBase):
                 image_url = request.args.get("url")
                 mode = request.args.get("mode")
                 site = request.args.get("site")
-                path = request.args.get("path")
                 
                 target_site_cls = self._get_site_class(site)
-                return target_site_cls.jav_image(url=image_url, mode=mode, site=site, path=path)
+                with public_scope():
+                    return target_site_cls.jav_image(url=image_url, mode=mode, site=site)
 
             elif sub in ["jav_video", "jav_video_un"]:
-                video_url = unquote_plus(request.args.get("url")) if request.args.get("url") else None
+                video_url = request.args.get("url")
                 site = request.args.get("site")
                 mode = request.args.get("mode")
 
                 # 프리뷰 클립 로컬 파일 스트리밍 서빙
                 if mode == "preview_local":
-                    local_filepath = unquote_plus(request.args.get("path") or "")
-                    if local_filepath and os.path.exists(local_filepath):
-                        return send_file(local_filepath, mimetype='video/mp4')
-                    abort(404)
+                    from .util_preview import MetaPreviewUtil
+                    # Flask already decoded quote_plus(local_path); '+' and '%' are filenames.
+                    local_filepath = request.args.get("path") or ""
+                    if not local_filepath:
+                        abort(404)
+                    if '\x00' in local_filepath or '\\' in local_filepath:
+                        abort(400)
+                    local_root = MetaPreviewUtil.get_setting("preview_local_path", "JAV_CEN", default="/data/previews")
+                    if not isinstance(local_root, str) or not local_root.strip() or not os.path.isabs(local_root):
+                        abort(403)
+                    local_root = os.path.abspath(local_root)
+                    if local_root == os.path.sep or not os.path.isabs(local_filepath) or '..' in local_filepath.split('/'):
+                        abort(403)
+                    local_filepath = os.path.abspath(local_filepath)
+                    if os.path.commonpath([local_root, local_filepath]) != local_root:
+                        abort(403)
+                    # Lexical containment permits operator-created symlinks by policy.
+                    if not os.path.isdir(local_root) or not os.path.isfile(local_filepath):
+                        abort(404)
+                    return send_file(local_filepath, mimetype='video/mp4')
 
                 # 프리뷰 클립 구글 드라이브 스트리밍 서빙
                 if mode == "preview_gdrive":
                     file_id = request.args.get("fileid")
-                    category = request.args.get("cat") or "JAV_CEN"
+                    category = request.args.get("cat", "JAV_CEN")
+                    if not file_id or category not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                        return Response(status=404)
+                    try:
+                        from sqlalchemy.orm import sessionmaker
+                        from .mod_meta_db import ModuleMetaDb, MetaItem, MetaMedia, DOMAIN_MAP
+                        if not ModuleMetaDb.is_effectively_enabled() or ModuleMetaDb._engine_config_dirty:
+                            return Response(status=404)
+                        # Borrow only the selected, already initialized store; never initialize DBs here.
+                        store = 'postgres' if ModuleMetaDb._is_postgres else DOMAIN_MAP[category][0]
+                        registry = ModuleMetaDb._sessions.get(store)
+                        if registry is None:
+                            return Response(status=404)
+                        with sessionmaker(bind=registry.get_bind())() as read:
+                            registered = read.query(MetaMedia.id).join(
+                                MetaItem, MetaMedia.item_id == MetaItem.id
+                            ).filter(
+                                MetaItem.category == category,
+                                MetaMedia.gdrive_fileid == file_id,
+                                MetaMedia.media_type.in_(('preview', 'trailer'))
+                            ).first() is not None
+                        if not registered:
+                            return Response(status=404)
+                    except Exception:
+                        # Fail closed without exposing IDs or storage failure details.
+                        return Response(status=404)
                     if file_id:
                         from .util_preview import MetaPreviewUtil
                         rclone_conf = MetaPreviewUtil.get_setting("preview_rclone_conf", category, default="/root/.config/rclone/rclone.conf")
@@ -412,21 +461,60 @@ class ModuleRoute(PluginModuleBase):
                                 logger.error(f"[MetaPreview] 구글 드라이브 스트리밍 중계 예외: {e_stream}")
                         else:
                             logger.error(f"[MetaPreview] 구글 드라이브 스트리밍 토큰 발급 실패 (FileID: {file_id})")
-                    abort(404)
+                    return Response(status=404)
 
                 target_site_cls = self._get_site_class(site)
-                return target_site_cls.jav_video(video_url)
+                with public_scope():
+                    validate(video_url)
+                    return target_site_cls.jav_video(video_url)
 
+        except SSRFRejected:
+            return Response('Remote media request denied', status=403, mimetype='text/plain')
         except HTTPException as e:
-            if sub in ('jav_image', 'jav_image_un'):
+            if sub in ('image_proxy', 'discord_proxy', 'image_process.jpg') or (
+                    sub in ('jav_video', 'jav_video_un') and
+                    req.args.get('mode') not in ('preview_local', 'preview_gdrive')):
+                return Response(status=e.code)
+            if sub in ('jav_image', 'jav_image_un') or (
+                    sub in ('jav_video', 'jav_video_un') and req.args.get('mode') == 'preview_local'):
                 # FF's outer plugin route catches raised exceptions without a response.
                 return e.get_response(req.environ)
             raise
         except Exception as e:
+            if sub in ('image_proxy', 'discord_proxy', 'image_process.jpg', 'jav_image', 'jav_image_un') or (
+                    sub in ('jav_video', 'jav_video_un') and
+                    req.args.get('mode') not in ('preview_local', 'preview_gdrive')):
+                mode = req.args.get('mode')
+                site = req.args.get('site')
+                safe_mode = mode if mode in ('poster', 'landscape', 'original', 'preview_local', 'preview_gdrive') else '기타'
+                safe_site = site if site in ('dmm', 'mgstage', '1pondo', '10musume', 'paco', 'heyzo', 'carib', 'fc2com', 'stashdb', 'tpdb') else '미지정/기타'
+                logger.exception('[미디어] 원격 요청 처리 실패: sub=%s mode=%s site=%s',
+                    sub, safe_mode, safe_site)
+                return Response(status=502)
             logger.error(f"Exception:{str(e)}")
             logger.error(traceback.format_exc())
-            if sub in ('jav_image', 'jav_image_un'):
+            if sub in ('jav_image', 'jav_image_un') or (
+                    sub in ('jav_video', 'jav_video_un') and req.args.get('mode') == 'preview_local'):
                 return Response(status=500)
+
+
+    def _resolve_image_proxy(self, args):
+        """Ignore legacy proxy_url/proxy_ref completely, including duplicates.
+
+        A site is a public selector within registered operator settings, never
+        authorization. Historical links without a site use a proxy only when
+        there is exactly one distinct enabled URL; ambiguous links go direct.
+        """
+        current = current_image_proxies(P)
+        if 'proxy_site' in args:
+            if hasattr(args, 'getlist') and len(args.getlist('proxy_site')) != 1:
+                raise SSRFRejected()
+            site = args.get('proxy_site')
+            if not isinstance(site, str) or site not in current:
+                raise SSRFRejected()
+            return current[site]
+        enabled = set(value for value in current.values() if value)
+        return next(iter(enabled)) if len(enabled) == 1 else None
 
 
     def _get_site_class(self, site):

@@ -94,7 +94,6 @@
     {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
     {{ macros.setting_checkbox('jav_censored_preview_include_audio', '프리뷰 영상에 사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
 
-    {{ macros.setting_checkbox('jav_censored_video_delete_on_metadata_delete', '메타데이터 삭제시 영상 삭제', value=arg.get('jav_censored_video_delete_on_metadata_delete'), desc=['메타데이터 삭제 또는 카테고리 전체 초기화 시 연동된 영상 파일(로컬 디렉토리 및 구글 드라이브)도 함께 영구 삭제됩니다.']) }}
   </div>
 
   {{ macros.m_hr() }}
