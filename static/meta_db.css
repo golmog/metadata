@@ -297,6 +297,43 @@
   min-height: 32px;
 }
 
+/* Person works only: wrap long codes/titles inside narrow and cloned modals. */
+.person-modal-content .person-work-row,
+.person-modal-content .person-work-group-toggle {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.person-modal-content .person-work-row {
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.person-modal-content .person-work-row > span,
+.person-modal-content .person-work-group-toggle > span {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.person-modal-content .person-work-row > .work-badge-title {
+  flex-basis: 0;
+  white-space: nowrap;
+}
+
+.person-modal-content .person-work-identity {
+  flex-basis: 100%;
+}
+
+.person-modal-content .person-work-children[hidden] {
+  display: none !important;
+}
+
+.person-modal-content #p_modal_works_count {
+  white-space: normal;
+}
+
 /* 이미지 확대 라이트박스 네비게이션 스타일 */
 .enlarge-nav-wrapper {
   display: flex;

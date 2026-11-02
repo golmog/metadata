@@ -11,6 +11,7 @@ from io import BytesIO
 from urllib.parse import urlparse
 
 from flask import send_from_directory, send_file, jsonify, Response, abort
+from flask_login import login_required
 import requests
 
 from support_site import (
@@ -279,7 +280,7 @@ class ModuleJavCensored(PluginModuleBase):
             if os.path.exists(cache_filepath):
                 os.remove(cache_filepath)
         except Exception as e:
-            logger.error(f"Failed to delete AV cache file: {e}")
+            logger.error(f"AV 캐시 파일 삭제 실패: {e}")
 
         try:
             for key, value in self.db_default.items():
@@ -293,7 +294,7 @@ class ModuleJavCensored(PluginModuleBase):
             self.web_list_model = ModuleMetaDb
             # logger.debug(f"[{self.name}] Universal Metadata DB Engine connected.")
         except Exception as e_db_create:
-            logger.error(f"[{self.name}] Failed to initialize Metadata DB engine: {e_db_create}")
+            logger.error(f"[{self.name}] 메타 DB 연결 초기화 실패: {e_db_create}")
             logger.error(traceback.format_exc())
 
         self.create_default_settings_yaml()
@@ -332,7 +333,7 @@ class ModuleJavCensored(PluginModuleBase):
                 # P.logger.debug(f"set_config site {ins.__name__} with settings.")
                 ins.set_config(self.P.ModelSetting)
             except Exception as e:
-                P.logger.error(f"Error initializing site {ins}: {str(e)}")
+                P.logger.error(f"사이트 {ins} 초기화 실패: {str(e)}")
 
     def _sort_search_results(self, search_results_raw, call_site=None):
         if not search_results_raw:
@@ -420,39 +421,21 @@ class ModuleJavCensored(PluginModuleBase):
             return jsonify({'ret': 'error', 'msg': str(e)})
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        if str(command or '').startswith(('db_', 'person_')) and not ModuleMetaDb.is_effectively_enabled():
+            return ModuleMetaDb.disabled_response()
         try:
             ret = {'ret': 'success'}
 
             # --- 포스터 수동 크롭 저장 ---
             if command in ["crop_save", "db_crop_save"]:
-                code = arg1
-                crop_data = arg2
-                upload_payload = arg3
-                pl_base64, p_base64 = None, None
-
-                if upload_payload:
-                    try:
-                        p_json = json.loads(upload_payload)
-                        if isinstance(p_json, dict):
-                            if p_json.get('type') == 'p': p_base64 = p_json.get('data')
-                            elif p_json.get('type') == 'pl': pl_base64 = p_json.get('data')
-                    except Exception:
-                        pl_base64 = upload_payload
-
-                success, result_msg = MetaUtil.save_user_cropped_poster(
-                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
-                )
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
+                return MetaUtil.image_api_response(MetaUtil.user_image_command(command, arg1, arg2, arg3, category=self.category, request=req))
 
             # --- 단일 레코드 삭제 ---
             elif command == 'db_delete':
-                success = ModuleMetaDb.delete_record(arg1, category=self.category)
-                return jsonify({'ret': 'success' if success else 'error'})
+                return jsonify(ModuleMetaDb._delete_command_result('single', self.category, arg1))
 
             elif command == 'db_delete_selected':
-                success, count = ModuleMetaDb.delete_records(arg1, category=self.category)
-                msg = f"{count}건의 메타데이터가 삭제되었습니다." if success else "선택 항목 삭제 실패"
-                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+                return jsonify(ModuleMetaDb._delete_command_result('selected', self.category, arg1))
 
             # --- 폼 기반 DB 메타데이터 수정 저장 ---
             elif command == 'db_edit_save':
@@ -462,6 +445,7 @@ class ModuleJavCensored(PluginModuleBase):
                     return jsonify({'ret': 'error', 'msg': '수정할 데이터가 없습니다.'})
                 try:
                     new_json = json.loads(raw_json_str)
+                    MetaUtil.preserve_user_images_in_edit(code, self.category, new_json)
                     success = ModuleMetaDb.save_metadata(self.category, new_json)
                     return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB에 성공적으로 저장되었습니다.' if success else '저장 실패'})
                 except Exception as e:
@@ -469,39 +453,19 @@ class ModuleJavCensored(PluginModuleBase):
 
             # --- 카테고리 DB 초기화 및 최적화 ---
             elif command == 'db_clear':
-                success, count = ModuleMetaDb.clear_db(self.category)
-                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건 삭제 완료' if success else '초기화 실패'})
+                return jsonify(ModuleMetaDb._delete_command_result('clear', self.category))
 
             elif command == 'db_vacuum':
                 success = ModuleMetaDb.vacuum_db()
                 return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB 최적화 완료' if success else '최적화 실패'})
 
             elif command in ["crop_direct_save", "direct_save"]:
-                code = arg1
-                source_val = arg2 or req.form.get('url')
-                target_type = arg3 or req.form.get('type') or 'pl'
-                b64_data = req.form.get('data')
-
-                success, result_data = MetaUtil.save_direct_user_image(
-                    code=code,
-                    source_path_or_url=source_val,
-                    image_type=target_type,
-                    category=self.category,
-                    image_base64_data=b64_data
-                )
-                if success:
-                    new_url = result_data.get('new_url') if isinstance(result_data, dict) else result_data
-                    return jsonify({
-                        'ret': 'success',
-                        'msg': f"[{target_type.upper()}_USER] 이미지가 성공적으로 저장되었습니다.",
-                        'new_url': new_url,
-                        'data': result_data
-                    })
-                else:
-                    return jsonify({'ret': 'error', 'msg': str(result_data)})
+                return MetaUtil.image_api_response(MetaUtil.user_image_command(command, arg1, arg2, arg3, category=self.category, request=req))
 
             # 4대 메타 갱신 공용 파이프라인 호출
             elif command == 'db_refresh_image_only':
+                if arg3 == 'reuse':
+                    return jsonify(MetaUtil.reconcile_item_media_with_storage(arg1, self.category))
                 return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category, storage_action=arg3 or None))
 
             elif command == 'db_refresh_missing_in_place':
@@ -648,8 +612,8 @@ class ModuleJavCensored(PluginModuleBase):
 
             elif command == 'person_clear':
                 domain = arg1 or 'JAV'
-                success, count = ModuleMetaDb.person_clear_db(domain)
-                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건 삭제 완료' if success else '인물 DB 초기화 실패'})
+                return jsonify(ModuleMetaDb._delete_command_result('person_clear', 'PERSON', domain))
+
 
             elif command == 'person_sync_jav_actors':
                 success, msg = ModuleMetaDb.sync_jav_actors_db()
@@ -693,85 +657,54 @@ class ModuleJavCensored(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
-            call = req.values.get("call", "")
+            params = req.get_json(silent=True) if req.is_json else dict(req.values)
+            if not isinstance(params, dict):
+                return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='요청은 올바른 JSON 객체여야 합니다.'), 400
+            values = dict(req.values)
+            values.update(params)
+            call = values.get("call", "")
             if sub == "search":
-                raw_keyword = req.values.get("keyword") or req.values.get("q") or ""
-                media_path = req.values.get("media_path") or req.values.get("path") or ""
+                raw_keyword = values.get("keyword") or values.get("q") or ""
+                media_path = values.get("media_path") or values.get("path") or ""
+                if not isinstance(raw_keyword, str) or not isinstance(media_path, str):
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='검색어와 영상 경로는 문자열이어야 합니다.'), 400
                 keyword = str(raw_keyword).rstrip("-").strip()
                 if not keyword and media_path:
                     keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
                     logger.debug(f"[{self.name}] media_path 기반 키워드 자동 추출: '{keyword}' (경로: {media_path})")
 
-                manual = str(req.values.get("manual", "")).lower() in ["true", "1"]
+                if not keyword:
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='검색어 또는 키워드를 추출할 영상 경로가 필요합니다.'), 400
+                manual = str(values.get("manual", "")).lower() in ["true", "1"]
                 return jsonify(self.search(keyword, manual=manual, media_path=media_path))
 
             if sub == "info":
-                code = req.args.get("code")
-                media_path = req.args.get("media_path") or req.args.get("path")
+                code = values.get("code")
+                if not isinstance(code, str) or not code.strip():
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='code 파라미터가 필요합니다.'), 400
+                media_path = values.get("media_path") or values.get("path")
                 data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
-                if call == "kodi":
+                if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
 
             if sub == "crop_save":
-                if req.is_json:
-                    body_json = req.get_json(silent=True) or {}
-                    code = body_json.get("code")
-                    crop_data = body_json.get("crop_data")
-                    pl_base64 = body_json.get("pl_base64")
-                    p_base64 = body_json.get("p_base64")
-                else:
-                    code = req.form.get("code") or req.args.get("code")
-                    crop_data = req.form.get("crop_data") or req.args.get("crop_data")
-                    pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
-                    p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
-
-                if isinstance(crop_data, dict):
-                    crop_data = json.dumps(crop_data)
-
-                if not code or (not crop_data and not p_base64):
-                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭 데이터 누락'}), 400
-
-                success, result_msg = MetaUtil.save_user_cropped_poster(
-                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
-                )
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
+                result = MetaUtil.user_image_command(sub, req.values.get("code"), category=self.category, request=req)
+                return MetaUtil.image_api_response(result)
 
             if sub in ["crop_direct_save", "direct_save"]:
-                if req.is_json:
-                    body_json = req.get_json(silent=True) or {}
-                    code = body_json.get("code")
-                    image_type = body_json.get("type") or body_json.get("image_type") or "pl"
-                    source_val = body_json.get("url") or body_json.get("image_url") or body_json.get("path")
-                    b64_data = body_json.get("data") or body_json.get("image_base64")
-                else:
-                    code = req.form.get("code") or req.args.get("code")
-                    image_type = req.form.get("type") or req.form.get("image_type") or req.args.get("type") or "pl"
-                    source_val = req.form.get("url") or req.form.get("image_url") or req.form.get("path") or req.args.get("url")
-                    b64_data = req.form.get("data") or req.form.get("image_base64") or req.args.get("data")
+                result = MetaUtil.user_image_command(sub, req.values.get("code"), category=self.category, request=req)
+                return MetaUtil.image_api_response(result)
 
-                if not code:
-                    return jsonify({'ret': 'error', 'msg': 'code 파라미터가 누락되었습니다.'}), 400
-
-                if not source_val and not b64_data:
-                    return jsonify({'ret': 'error', 'msg': '저장할 이미지 소스(url, path 또는 base64 데이터)가 누락되었습니다.'}), 400
-
-                success, result_msg = MetaUtil.save_direct_user_image(
-                    code=code,
-                    source_path_or_url=source_val,
-                    image_type=image_type,
-                    category=self.category,
-                    image_base64_data=b64_data
-                )
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None}), (200 if success else 500)
-
-            return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
+            return jsonify(ret='error', error_code='unsupported_command', error_origin='ff', msg='지원하지 않는 API 명령입니다.'), 400
 
         except Exception as e:
             logger.error(f"Exception in process_api (sub={sub}): {e}")
-            return jsonify({'ret': 'exception', 'msg': str(e)}), 500
+            body, status = MetaUtil.api_exception(e)
+            return jsonify(body), status
 
 
+    @login_required
     def process_normal(self, sub, req):
         if sub == "nfo_download":
             keyword = req.args.get("code")
@@ -839,15 +772,7 @@ class ModuleJavCensored(PluginModuleBase):
             except Exception as e:
                 return f"Error: {e}", 500
 
-        elif sub == "db_download":
-            filename = req.args.get('filename')
-            if filename:
-                filepath = os.path.join(path_data, 'tmp', filename)
-                if os.path.exists(filepath):
-                    return send_file(filepath, as_attachment=True, download_name=filename)
-            return "File not found.", 404
-
-        return None
+        return '', 404
 
     def create_default_settings_yaml(self):
         try:
@@ -911,6 +836,7 @@ class ModuleJavCensored(PluginModuleBase):
         return all_results
 
     def search(self, keyword, manual=False, media_path=None, use_db=True):
+        use_db = use_db and ModuleMetaDb.is_effectively_enabled()
         if (not keyword or not str(keyword).strip()) and media_path:
             keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
             logger.debug(f"[{self.name}] search() media_path 기반 키워드 보정: '{keyword}'")
@@ -923,7 +849,7 @@ class ModuleJavCensored(PluginModuleBase):
             if direct_item:
                 return [direct_item]
             else:
-                logger.warning(f"[{self.name}] Failed to parse direct URL: '{keyword}'")
+                logger.warning(f"[{self.name}] 직접 입력 주소 분석 실패: '{keyword}'")
                 return []
 
         all_results = []
@@ -991,7 +917,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         # 로컬 Meta DB 선행 검색 및 우선순위 대조
         has_db_perfect_match = False
-        if use_db and P.ModelSetting.get_bool("meta_db_use") and not manual:
+        if use_db and not manual:
             try:
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, keyword)
                 if valid_db_records:
@@ -1053,9 +979,9 @@ class ModuleJavCensored(PluginModuleBase):
                             logger.info(f"[{self.name}] DB 선행 검색 100점 완벽 매칭 확인 ({len(all_results)}건)")
 
             except Exception as e_db:
-                logger.error(f"[{self.name}] DB Search Error: {e_db}")
+                logger.error(f"[{self.name}] DB 작품 검색 실패: {e_db}")
 
-        is_db_writable = ModuleMetaDb._ensure_meta_db_writable(self.category)
+        is_db_writable = not use_db or ModuleMetaDb._ensure_meta_db_writable(self.category)
         if use_db and not is_db_writable and not manual:
             logger.info(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 신규 외부 검색 차단, DB 조회 결과({len(all_results)}건)만 반환: {keyword}")
             return all_results
@@ -1078,7 +1004,7 @@ class ModuleJavCensored(PluginModuleBase):
                         if 'code' in item: self.keyword_cache.set(item['code'], keyword)
 
                         # 수동 검색 시 DB에 이미 존재하는 레코드인지 확인하여 뱃지 표시 부여
-                        if manual and use_db and P.ModelSetting.get_bool("meta_db_use") and item.get('code'):
+                        if manual and use_db and item.get('code'):
                             if ModuleMetaDb.get_metadata(item['code'], category=self.category):
                                 item['is_db_cached'] = True
                                 if not item.get('title', '').startswith('📁'):
@@ -1132,7 +1058,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         logger.info(f"--- 검색 완료. 결과: {len(all_results)} ---")
         if not all_results:
-            logger.info("======= jav censored search END - No results found. =======")
+            logger.info("[JAV_CEN] 작품 검색 완료 — 일치하는 후보 없음")
             return []
 
         all_results = self._reconcile_official_results(all_results)
@@ -1174,7 +1100,7 @@ class ModuleJavCensored(PluginModuleBase):
                     try: self.keyword_cache.set(f"BYPASS_{item_in_sorted_list['code']}", "1")
                     except AttributeError: self.keyword_cache[f"BYPASS_{item_in_sorted_list['code']}"] = "1"
 
-            logger.info(f"최종 결과(우선순위 점수 반영, 총 {len(all_results_sorted)}건):")
+            logger.info(f"[JAV_CEN] 검색 후보 {len(all_results_sorted)}건 확인 — 1순위 {all_results_sorted[0].get('ui_code') or all_results_sorted[0].get('code')}")
             for i, item_log in enumerate(all_results_sorted):
                 ui_code = item_log.get('ui_code', '미상')
                 site_key = item_log.get('site_key', 'unknown').upper()
@@ -1188,9 +1114,10 @@ class ModuleJavCensored(PluginModuleBase):
                 title_preview = (raw_title[:60] + "...") if len(raw_title) > 60 else raw_title
                 type_str = f"Type={content_type}, " if content_type and content_type != 'unknown' else ""
                 prio_str = "PrioLabel=True, " if prio_label else ""
-                logger.info(f"  {i+1}. [{site_key}] 점수={score}(원점수={orig_score}) | 품번={ui_code} | Code={code} | {type_str}{prio_str}DB_Cache={db_cache} | Title='{title_preview}'")
+                logger.debug(f"  {i+1}순위 {ui_code}: {title_preview} ({site_key}, 일치도 {score}점)")
+                logger.debug(f"  후보 진단: [{site_key}] 원점수={orig_score}, 내부 코드={code}, {type_str}{prio_str}DB 등록 여부={db_cache}")
 
-        logger.info(f"======= jav censored search END - Returning {len(all_results_sorted)} results. =======")
+        logger.info(f"[JAV_CEN] 작품 검색 완료: 후보 {len(all_results_sorted)}건")
         return all_results_sorted
 
     def search2(self, keyword, site, manual=False, site_settings_override=None):
@@ -1201,7 +1128,7 @@ class ModuleJavCensored(PluginModuleBase):
             if data and data.get("ret") == "success" and data.get("data"):
                 return data["data"] if isinstance(data["data"], list) else None
         except Exception as e:
-            logger.error(f"Error searching '{site}' for keyword '{keyword}': {e}")
+            logger.error(f"[{site}] 작품 검색 실패: {keyword} — {e}")
         return None
 
     def _process_direct_url(self, url):
@@ -1309,7 +1236,7 @@ class ModuleJavCensored(PluginModuleBase):
         cached_json = None
         ps_url = opts.get('ps_url')
 
-        use_db = P.ModelSetting.get_bool("meta_db_use")
+        use_db = ModuleMetaDb.is_effectively_enabled()
         save_db = P.ModelSetting.get_bool("meta_db_save")
         
         # 캐시 히트 시: DB 원본은 보존하고 반환 직전 임시 가공 적용
@@ -1334,7 +1261,7 @@ class ModuleJavCensored(PluginModuleBase):
                 year_log = cached_json.get('year', '????')
                 site_log = cached_json.get('site', 'unknown').upper()
                 ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
-                logger.info(f"[Meta DB Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
+                logger.info(f"[Meta DB Success] [JAV_CEN] {ui_code_log}: DB에 등록된 작품 정보 조회 완료 — {title_log} ({year_log}, 출처: {site_log})")
                 if opts.get('media_path') and os.path.isfile(opts['media_path']):
                     completed = ModuleMetaDb.complete_item_media(cached_json.get('code') or code, self.category, opts['media_path'], metadata=cached_json)
                     MetaUtil.note_media_completion(opts, completed, opts['media_path'])
@@ -1369,6 +1296,7 @@ class ModuleJavCensored(PluginModuleBase):
 
         if ps_url:
             opts['ps_url'] = ps_url
+        if ps_url and site == 'dmm':
             cache = getattr(self.site_map.get(site), '_ps_url_cache', {}).get(code, {})
             kinds = [cache.get('main_content_type'), 'videoa', 'vr', 'dvd', 'bluray', 'amateur']
             matching_type = next((kind for kind in kinds if kind in ('videoa', 'vr', 'dvd', 'bluray', 'amateur') and cache.get(kind) == ps_url), None)
@@ -1620,13 +1548,13 @@ class ModuleJavCensored(PluginModuleBase):
         if ret:
             title_log = ret.get('title', 'No Title')
             year_log = ret.get('year', '????')
-            logger.info(f"[{site.upper()} Success] Code: {code}, Title: {title_log} ({year_log})")
+            logger.info(f"[{site.upper()} Success] {code}: 사이트 작품 정보 조회 완료 — {title_log} ({year_log})")
 
         from .util_preview import MetaPreviewUtil
         MetaPreviewUtil.complete_media(ret, self.category, opts.get('media_path'), options=opts)
 
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
-        should_save = use_db and save_db and ret
+        should_save = use_db and save_db and ret and not opts.get('for_db')
         if should_save:
             if skip_trans:
                 should_save = False
@@ -1637,8 +1565,11 @@ class ModuleJavCensored(PluginModuleBase):
 
         if should_save:
             receipt = opts.get('_media_completion')
-            ModuleMetaDb.save_metadata(self.category, ret, **(
-                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}))
+            saved = ModuleMetaDb.save_metadata(self.category, ret, **(
+                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}),
+                **({'_refresh_owner': {'code': code, 'category': self.category}} if bypass_cache and ModuleMetaDb.get_metadata(code,category=self.category) else {}))
+            (logger.debug if saved else logger.warning)('[%s] [%s] 메타 DB 저장 %s: %s',
+                self.name, self.category, '완료' if saved else '보류/실패', code)
 
         return MetaUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
 

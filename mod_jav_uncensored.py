@@ -11,6 +11,7 @@ from io import BytesIO
 from urllib.parse import urlparse
 
 from flask import send_from_directory, send_file, jsonify, Response, abort
+from flask_login import login_required
 import requests
 from sqlalchemy import or_
 
@@ -223,7 +224,7 @@ class ModuleJavUncensored(PluginModuleBase):
             try:
                 ins.set_config(P.ModelSetting)
             except Exception as e:
-                P.logger.error(f"Error initializing site {ins.__name__}: {str(e)}")
+                P.logger.error(f"사이트 {ins.__name__} 초기화 실패: {str(e)}")
                 P.logger.error(traceback.format_exc())
 
     def process_ajax(self, sub, req):
@@ -289,29 +290,14 @@ class ModuleJavUncensored(PluginModuleBase):
             return jsonify({'ret': 'error', 'msg': str(e)})
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        if str(command or '').startswith(('db_', 'person_')) and not ModuleMetaDb.is_effectively_enabled():
+            return ModuleMetaDb.disabled_response()
         try:
             ret = {'ret': 'success'}
 
             # --- 포스터 수동 크롭 저장 (MetaImageUtil 위임) ---
             if command in ["crop_save", "db_crop_save"]:
-                code = arg1
-                crop_data = arg2
-                upload_payload = arg3
-                pl_base64, p_base64 = None, None
-
-                if upload_payload:
-                    try:
-                        p_json = json.loads(upload_payload)
-                        if isinstance(p_json, dict):
-                            if p_json.get('type') == 'p': p_base64 = p_json.get('data')
-                            elif p_json.get('type') == 'pl': pl_base64 = p_json.get('data')
-                    except Exception:
-                        pl_base64 = upload_payload
-
-                success, result_msg = MetaUtil.save_user_cropped_poster(
-                    code, crop_data, pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
-                )
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None})
+                return MetaUtil.image_api_response(MetaUtil.user_image_command(command, arg1, arg2, arg3, category=self.category, request=req))
 
             # --- 웹 UI 검색 테스트 ---
             elif command == "test":
@@ -352,6 +338,7 @@ class ModuleJavUncensored(PluginModuleBase):
                     return jsonify({'ret': 'error', 'msg': '수정할 데이터가 없습니다.'})
                 try:
                     new_json = json.loads(raw_json_str)
+                    MetaUtil.preserve_user_images_in_edit(code, self.category, new_json)
                     success = ModuleMetaDb.save_metadata(self.category, new_json)
                     return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB에 성공적으로 저장되었습니다.' if success else '저장 실패'})
                 except Exception as e:
@@ -359,46 +346,21 @@ class ModuleJavUncensored(PluginModuleBase):
 
             # --- 단일 레코드 삭제 ---
             elif command == 'db_delete':
-                success = ModuleMetaDb.delete_record(arg1, category=self.category)
-                return jsonify({'ret': 'success' if success else 'error'})
+                return jsonify(ModuleMetaDb._delete_command_result('single', self.category, arg1))
 
             elif command == 'db_delete_selected':
-                success, count = ModuleMetaDb.delete_records(arg1, category=self.category)
-                msg = f"{count}건의 메타데이터가 삭제되었습니다." if success else "선택 항목 삭제 실패"
-                return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
+                return jsonify(ModuleMetaDb._delete_command_result('selected', self.category, arg1))
 
             # --- 카테고리 DB 초기화 및 최적화 ---
             elif command == 'db_clear':
-                success, count = ModuleMetaDb.clear_db(self.category)
-                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건의 메타데이터가 삭제되었습니다.' if success else '초기화 실패'})
+                return jsonify(ModuleMetaDb._delete_command_result('clear', self.category))
 
             elif command == 'db_vacuum':
                 success = ModuleMetaDb.vacuum_db()
                 return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB 최적화(VACUUM) 완료' if success else '최적화 실패'})
 
             elif command in ["crop_direct_save", "direct_save"]:
-                code = arg1
-                source_val = arg2 or req.form.get('url')
-                target_type = arg3 or req.form.get('type') or 'pl'
-                b64_data = req.form.get('data')
-
-                success, result_data = MetaUtil.save_direct_user_image(
-                    code=code,
-                    source_path_or_url=source_val,
-                    image_type=target_type,
-                    category=self.category,
-                    image_base64_data=b64_data
-                )
-                if success:
-                    new_url = result_data.get('new_url') if isinstance(result_data, dict) else result_data
-                    return jsonify({
-                        'ret': 'success',
-                        'msg': f"[{target_type.upper()}_USER] 이미지가 성공적으로 저장되었습니다.",
-                        'new_url': new_url,
-                        'data': result_data
-                    })
-                else:
-                    return jsonify({'ret': 'error', 'msg': str(result_data)})
+                return MetaUtil.image_api_response(MetaUtil.user_image_command(command, arg1, arg2, arg3, category=self.category, request=req))
 
             # --- 미디어 일괄 채우기 (공용 워커 호출) ---
             elif command == 'db_enrich_start':
@@ -417,6 +379,8 @@ class ModuleJavUncensored(PluginModuleBase):
                 return jsonify({'ret': 'success', 'msg': '작업 중단을 요청했습니다.'})
 
             elif command == 'db_refresh_image_only':
+                if arg3 == 'reuse':
+                    return jsonify(MetaUtil.reconcile_item_media_with_storage(arg1, self.category))
                 return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category, storage_action=arg3 or None))
 
             elif command == 'db_refresh_missing_in_place':
@@ -455,8 +419,8 @@ class ModuleJavUncensored(PluginModuleBase):
 
             elif command == 'person_clear':
                 domain = arg1 or 'JAV'
-                success, count = ModuleMetaDb.person_clear_db(domain)
-                return jsonify({'ret': 'success' if success else 'error', 'msg': f'{count}건 삭제 완료' if success else '인물 DB 초기화 실패'})
+                return jsonify(ModuleMetaDb._delete_command_result('person_clear', 'PERSON', domain))
+
 
             elif command == 'person_sync_jav_actors':
                 success, msg = ModuleMetaDb.sync_jav_actors_db()
@@ -499,88 +463,53 @@ class ModuleJavUncensored(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
-            call = req.values.get("call", "")
+            params = req.get_json(silent=True) if req.is_json else dict(req.values)
+            if not isinstance(params, dict):
+                return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='요청은 올바른 JSON 객체여야 합니다.'), 400
+            values = dict(req.values)
+            values.update(params)
+            call = values.get("call", "")
             if sub == "search":
-                raw_keyword = req.values.get("keyword") or req.values.get("q") or ""
-                media_path = req.values.get("media_path") or req.values.get("path") or ""
+                raw_keyword = values.get("keyword") or values.get("q") or ""
+                media_path = values.get("media_path") or values.get("path") or ""
+                if not isinstance(raw_keyword, str) or not isinstance(media_path, str):
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='검색어와 영상 경로는 문자열이어야 합니다.'), 400
                 keyword = str(raw_keyword).rstrip("-").strip()
                 if not keyword and media_path:
                     keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
                     logger.debug(f"[{self.name}] media_path 기반 키워드 자동 추출: '{keyword}' (경로: {media_path})")
 
-                manual = str(req.values.get("manual", "")).lower() in ["true", "1"]
+                if not keyword:
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='검색어 또는 키워드를 추출할 영상 경로가 필요합니다.'), 400
+                manual = str(values.get("manual", "")).lower() in ["true", "1"]
                 return jsonify(self.search(keyword, manual=manual, media_path=media_path))
 
             if sub == "info":
-                code = req.args.get("code")
-                media_path = req.args.get("media_path") or req.args.get("path")
+                code = values.get("code")
+                if not isinstance(code, str) or not code.strip():
+                    return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='code 파라미터가 필요합니다.'), 400
+                media_path = values.get("media_path") or values.get("path")
                 data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
                 if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
 
             if sub == "crop_save":
-                if req.is_json:
-                    body_json = req.get_json(silent=True) or {}
-                    code = body_json.get("code")
-                    crop_data = body_json.get("crop_data")
-                    pl_base64 = body_json.get("pl_base64")
-                    p_base64 = body_json.get("p_base64")
-                else:
-                    code = req.form.get("code") or req.args.get("code")
-                    crop_data = req.form.get("crop_data") or req.args.get("crop_data")
-                    pl_base64 = req.form.get("pl_base64") or req.args.get("pl_base64")
-                    p_base64 = req.form.get("p_base64") or req.args.get("p_base64")
-
-                if isinstance(crop_data, dict):
-                    crop_data = json.dumps(crop_data)
-
-                if not code or (not crop_data and not p_base64):
-                    return jsonify({'ret': 'error', 'msg': 'code 또는 크롭 데이터 누락'}), 400
-
-                success, result_msg = MetaUtil.save_user_cropped_poster(
-                    code, crop_data or "{}", pl_image_base64_data=pl_base64, p_image_base64_data=p_base64, category=self.category
-                )
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg}), (200 if success else 500)
+                result = MetaUtil.user_image_command(sub, req.values.get("code"), category=self.category, request=req)
+                return MetaUtil.image_api_response(result)
 
             if sub in ["crop_direct_save", "direct_save"]:
-                if req.is_json:
-                    body_json = req.get_json(silent=True) or {}
-                    code = body_json.get("code")
-                    image_type = body_json.get("type") or body_json.get("image_type") or "pl"
-                    source_val = body_json.get("url") or body_json.get("image_url") or body_json.get("path")
-                    b64_data = body_json.get("data") or body_json.get("image_base64")
-                else:
-                    code = req.form.get("code") or req.args.get("code")
-                    image_type = req.form.get("type") or req.form.get("image_type") or req.args.get("type") or "pl"
-                    source_val = req.form.get("url") or req.form.get("image_url") or req.form.get("path") or req.args.get("url")
-                    b64_data = req.form.get("data") or req.form.get("image_base64") or req.args.get("data")
+                result = MetaUtil.user_image_command(sub, req.values.get("code"), category=self.category, request=req)
+                return MetaUtil.image_api_response(result)
 
-                if not code:
-                    return jsonify({'ret': 'error', 'msg': 'code 파라미터가 누락되었습니다.'}), 400
-
-                if not source_val and not b64_data:
-                    return jsonify({'ret': 'error', 'msg': '저장할 이미지 소스(url, path 또는 base64 데이터)가 누락되었습니다.'}), 400
-
-                success, result_msg = MetaUtil.save_direct_user_image(
-                    code=code,
-                    source_path_or_url=source_val,
-                    image_type=image_type,
-                    category=self.category,
-                    image_base64_data=b64_data
-                )
-
-                return jsonify({'ret': 'success' if success else 'error', 'msg': result_msg, 'new_url': result_msg if success else None}), (200 if success else 500)
-
-            if sub == "user_image_update":
-                return self._api_user_image_update(req)
-
-            return jsonify({'ret': 'failed', 'msg': f'Invalid sub command: {sub}'}), 400
+            return jsonify(ret='error', error_code='unsupported_command', error_origin='ff', msg='지원하지 않는 API 명령입니다.'), 400
 
         except Exception as e:
             logger.error(f"Exception in process_api (sub={sub}): {e}")
-            return jsonify({'ret': 'exception', 'msg': str(e)}), 500
+            body, status = MetaUtil.api_exception(e)
+            return jsonify(body), status
 
+    @login_required
     def process_normal(self, sub, req):
         if sub == "nfo_download":
             keyword = req.args.get("code")
@@ -645,63 +574,8 @@ class ModuleJavUncensored(PluginModuleBase):
             except Exception as e:
                 return f"Error: {e}", 500
 
-        elif sub == "db_download":
-            filename = req.args.get('filename')
-            if filename:
-                filepath = os.path.join(path_data, 'tmp', filename)
-                if os.path.exists(filepath):
-                    return send_file(filepath, as_attachment=True, download_name=filename)
-            return "File not found.", 404
+        return '', 404
 
-        return None
-
-    def _api_user_image_update(self, req):
-        ret = {'ret': 'success', 'msg': '', 'total_input': 0, 'updated_count': 0, 'errors': []}
-        try:
-            files = []
-            if req.is_json:
-                json_body = req.get_json(silent=True) or {}
-                if isinstance(json_body, list): files = json_body
-                elif isinstance(json_body, dict): files = json_body.get('files') or []
-            
-            if not files:
-                raw_files = req.form.get('files') or req.args.get('files')
-                if raw_files:
-                    try:
-                        p = json.loads(raw_files)
-                        files = p if isinstance(p, list) else [p]
-                    except:
-                        files = [f.strip() for f in re.split(r'[\n,]', raw_files) if f.strip()]
-
-            ret['total_input'] = len(files)
-            # 공용 싱글 레코드 디스크 동기화
-            sess, domain, std_cat = ModuleMetaDb.get_session_and_domain(self.category)
-            from .mod_meta_db import MetaItem
-            from sqlalchemy.orm import lazyload, selectinload
-            try:
-                for f in files:
-                    clean_name = os.path.basename(f).strip()
-                    stem = re.split(r'_(?:p|pl)(?:_user)?\.', clean_name, flags=re.I)[0]
-                    if not stem: continue
-                    meta = sess.query(MetaItem).options(
-                        lazyload('*'),
-                        selectinload(MetaItem.media_files),
-                    ).filter(
-                        MetaItem.category == std_cat,
-                        or_(MetaItem.originaltitle.ilike(stem), MetaItem.code.ilike(stem))
-                    ).first()
-                    if meta:
-                        res, _ = MetaUtil.sync_single_record_disk_images(meta)
-                        if res == 'updated': ret['updated_count'] += 1
-                sess.commit()
-                ModuleMetaDb.checkpoint_wal()
-            finally:
-                sess.remove()
-
-            return jsonify(ret), 200
-        except Exception as e:
-            ret['ret'] = 'error'; ret['msg'] = str(e)
-            return jsonify(ret), 200
 
     # endregion PluginModuleBase 메서드 오버라이드
     ################################################     
@@ -710,6 +584,7 @@ class ModuleJavUncensored(PluginModuleBase):
     # region SEARCH
 
     def search(self, keyword, manual=False, media_path=None, use_db=True):
+        use_db = use_db and ModuleMetaDb.is_effectively_enabled()
         if (not keyword or not str(keyword).strip()) and media_path:
             keyword = MetaUtil.extract_keyword_from_path(media_path, category=self.category)
             logger.debug(f"[{self.name}] search() media_path 기반 키워드 보정: '{keyword}'")
@@ -718,7 +593,7 @@ class ModuleJavUncensored(PluginModuleBase):
         all_results = []
         
         # 1. DB 선행 검색 (전역 meta_db_use 기준)
-        if use_db and P.ModelSetting.get_bool("meta_db_use") and not manual:
+        if use_db and not manual:
             try:
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, keyword)
                 if valid_db_records:
@@ -755,11 +630,11 @@ class ModuleJavUncensored(PluginModuleBase):
 
                     if all_results:
                         for item in all_results: item['score'] = min(100, item['score'])
-                        logger.info(f"[{self.name}] Auto-match satisfied by Local DB ({len(all_results)}건)")
+                        logger.info(f"[{self.name}] DB에 등록된 작품으로 자동 매칭 완료: {len(all_results)}건")
                         return all_results
                 
             except Exception as e_db:
-                logger.error(f"[{self.name}] DB Search Error: {e_db}")
+                logger.error(f"[{self.name}] DB 작품 검색 실패: {e_db}")
 
         if use_db and not ModuleMetaDb._ensure_meta_db_writable(self.category) and not manual:
             logger.info(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 외부 사이트 검색 차단: {keyword}")
@@ -783,7 +658,7 @@ class ModuleJavUncensored(PluginModuleBase):
                     try: self.keyword_cache.set(f"BYPASS_{item['code']}", "1")
                     except AttributeError: self.keyword_cache[f"BYPASS_{item['code']}"] = "1"
 
-            logger.info(f"[{self.name}] 최종 검색 결과 (총 {len(all_results)}건):")
+            logger.info(f"[{self.name}] 검색 후보 {len(all_results)}건 확인 — 1순위 {all_results[0].get('ui_code') or all_results[0].get('code')}")
             for idx, item_log in enumerate(all_results):
                 ui_code = item_log.get('ui_code', '미상')
                 site_key = item_log.get('site_key', 'unknown').upper()
@@ -791,9 +666,10 @@ class ModuleJavUncensored(PluginModuleBase):
                 code = item_log.get('code')
                 raw_title = item_log.get('title', '')
                 title_preview = (raw_title[:60] + "...") if len(raw_title) > 60 else raw_title
-                logger.info(f"  {idx+1}. [{site_key}] 점수={score} | 품번={ui_code} | Code={code} | Title='{title_preview}'")
+                logger.debug(f"  {idx+1}순위 {ui_code}: {title_preview} ({site_key}, 일치도 {score}점)")
+                logger.debug('[%s] 검색 후보 내부 코드: %s',site_key,code)
         else:
-            logger.info(f'======= jav uncensored search END - NOT FOUND: {keyword} =======')
+            logger.info(f'[JAV_UNCEN] 작품 검색 완료 — 일치하는 후보 없음: {keyword}')
 
         return all_results
 
@@ -813,7 +689,7 @@ class ModuleJavUncensored(PluginModuleBase):
             if data and data.get("ret") == "success" and data.get("data"):
                 return data["data"] if isinstance(data["data"], list) else None
         except Exception as e:
-            logger.error(f"Error searching '{site}' for '{keyword}': {e}")
+            logger.error(f"[{site}] 작품 검색 실패: {keyword} — {e}")
         return None
 
     # endregion SEARCH
@@ -857,7 +733,7 @@ class ModuleJavUncensored(PluginModuleBase):
             logger.error(f"No site found for site_char '{code[1]}' in code '{code}'")
             return None
 
-        use_db = P.ModelSetting.get_bool("meta_db_use")
+        use_db = ModuleMetaDb.is_effectively_enabled()
         save_db = P.ModelSetting.get_bool("meta_db_save")
         
         # 캐시 히트 시: DB 마스터는 보존하고 반환 직전 임시 가공 적용
@@ -878,7 +754,7 @@ class ModuleJavUncensored(PluginModuleBase):
                 year_log = cached_json.get('year', '????')
                 site_log = cached_json.get('site', 'unknown').upper()
                 ui_code_log = cached_json.get('originaltitle') or cached_json.get('ui_code') or code
-                logger.info(f"[Meta DB Success] Code: {code} ({ui_code_log}), Site: {site_log}, Title: {title_log} ({year_log})")
+                logger.info(f"[Meta DB Success] [JAV_UNCEN] {ui_code_log}: DB에 등록된 작품 정보 조회 완료 — {title_log} ({year_log}, 출처: {site_log})")
                 if opts.get('media_path') and os.path.isfile(opts['media_path']):
                     completed = ModuleMetaDb.complete_item_media(cached_json.get('code') or code, self.category, opts['media_path'], metadata=cached_json)
                     MetaUtil.note_media_completion(opts, completed, opts['media_path'])
@@ -984,13 +860,13 @@ class ModuleJavUncensored(PluginModuleBase):
         if ret:
             title_log = ret.get('title', 'No Title')
             year_log = ret.get('year', '????')
-            logger.info(f"[{self.name}] Info Success: Code: {code} -> {title_log} ({year_log})")
+            logger.info(f"[{self.name}] {code}: 작품 정보 조회 완료 — {title_log} ({year_log})")
 
         from .util_preview import MetaPreviewUtil
         MetaPreviewUtil.complete_media(ret, self.category, opts.get('media_path'), options=opts)
 
         save_only_trans = P.ModelSetting.get_bool("meta_db_save_only_translated")
-        should_save = use_db and save_db and ret
+        should_save = use_db and save_db and ret and not opts.get('for_db')
         if should_save:
             if skip_trans:
                 should_save = False
@@ -1002,7 +878,8 @@ class ModuleJavUncensored(PluginModuleBase):
         if should_save:
             receipt = opts.get('_media_completion')
             ModuleMetaDb.save_metadata(self.category, ret, **(
-                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}))
+                {'_completion_receipt': receipt} if isinstance(receipt, dict) else {}),
+                **({'_refresh_owner': {'code': code, 'category': self.category}} if bypass_cache and ModuleMetaDb.get_metadata(code,category=self.category) else {}))
 
         return MetaUtil.finalize_info_return(ret, extra_opts=opts, category=self.category)
 
@@ -1023,7 +900,7 @@ class ModuleJavUncensored(PluginModuleBase):
             res['plot'] = fallback_tagline
 
         # meta_db 활성화 상태에서 공유 라이브러리 등 임시 오버라이드 요청이 있는 경우에만 위임
-        if P.ModelSetting.get_bool("meta_db_use"):
+        if ModuleMetaDb.is_effectively_enabled():
             try:
                 res = ModuleMetaDb.apply_transient_overrides(res, opts, category=self.category)
             except Exception as e_override:

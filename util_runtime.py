@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 import time
+import traceback
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -28,21 +29,26 @@ def redact_diagnostic(value):
         if value is None or isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, BaseException):
-            return type(value).__name__
+            return redact_diagnostic(str(value))
         if isinstance(value, dict):
             return {str(key): ('[redacted]' if re.search(
-                r'(?i)(api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id)', str(key))
+                r'(?i)(api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id|^sig$)', str(key))
                 else redact_diagnostic(item)) for key, item in value.items()}
         if isinstance(value, (tuple, list)):
             return type(value)(redact_diagnostic(item) for item in value)
         text = str(value)
-        text = re.sub(r'(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\'\"]+', '[url]', text)
+        text = re.sub(r'(?i)(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@', r'\1[redacted]@', text)
         text = re.sub(r'(?i)\b(Bearer|Basic)\s+[^\s,;]+', r'\1 [redacted]', text)
         text = re.sub(r'(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]+', r'\1[redacted]', text)
-        return re.sub(r'(?i)((?:api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id)'
-                      r'[\w-]*[\s\'\"]*[:=][\s\'\"]*)[^\s,;\'\"}\]]+', r'\1[redacted]', text)
+        return re.sub(r'(?i)((?:api.?key|authorization|cookie|password|passwd|secret|token|signature|credential|private.?key|session.?id|\bsig\b)'
+                      r'[\w-]*[\s\'\"]*[:=][\s\'\"]*)(?!\[redacted\])[^\s,;\'\"}\]&#]+', r'\1[redacted]', text)
     except Exception:
         return '[redaction failed]'
+
+
+def exception_diagnostic(error):
+    """Standard, complete traceback/cause with only credential values protected."""
+    return redact_diagnostic(''.join(traceback.format_exception(type(error), error, error.__traceback__)))
 
 
 class StorageLogger:
@@ -61,23 +67,18 @@ class StorageLogger:
             kwargs.pop('stack_info', None)
             if 'extra' in kwargs:
                 kwargs['extra'] = redact_diagnostic(kwargs['extra'])
-            if 'Traceback (most recent call last)' in str(message):
-                message = '[traceback: %s]' % type(sys.exc_info()[1]).__name__
-            if exc:
-                info = sys.exc_info() if exc is True else exc
-                error = info[1] if isinstance(info, tuple) else exc
-                # Exception messages, source lines and chained messages may carry arbitrary secrets.
-                kinds = []
-                while error is not None and len(kinds) < 8:
-                    kinds.append(type(error).__name__)
-                    error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
-                message = str(message) + ' [exceptions: ' + ' <- '.join(kinds) + ']'
             # Keep string fragments intact until formatting: sanitizing a URL
             # prefix alone can hide the scheme and expose its remaining token.
             safe_args = tuple(arg if isinstance(arg, str) else redact_diagnostic(arg) for arg in args)
             safe_message = str(message)
             if safe_args:
                 safe_message = safe_message % safe_args
+            if exc:
+                info = sys.exc_info() if exc is True else exc
+                if isinstance(info, tuple):
+                    safe_message += '\n' + ''.join(traceback.format_exception(*info))
+                elif isinstance(info, BaseException):
+                    safe_message += '\n' + ''.join(traceback.format_exception(type(info), info, info.__traceback__))
             safe_message = redact_diagnostic(safe_message)
             kwargs['stacklevel'] = int(kwargs.get('stacklevel', 1)) + 2
             self.wrapped.log(level, safe_message, **kwargs)

@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
 import copy
-import hashlib
-import fcntl
 import uuid
 import shlex
 import re
@@ -20,7 +18,7 @@ from io import BytesIO
 from datetime import datetime
 
 from .setup import *
-from .util_runtime import storage_logger
+from .util_runtime import storage_logger, redact_diagnostic
 
 logger = storage_logger(logger)
 
@@ -41,14 +39,15 @@ class MetaPreviewUtil:
         return result.returncode in (3, 4) and any(phrase in detail for phrase in phrases)
 
     @classmethod
-    def remote_stat(cls, command, lookup=None):
+    def remote_stat(cls, command, lookup=None, category='', purpose='storage'):
         from .util_runtime import StorageLookupError
         try:
-            result = (lookup or cls.run_rclone_lookup)(command)
+            result = lookup(command) if lookup else cls.run_rclone_lookup(command, category=category, purpose=purpose)
             if cls.remote_missing(result):
                 return None
             if result.returncode != 0 or not result.stdout.strip():
-                raise StorageLookupError('원격 파일 상태 조회 실패')
+                raise StorageLookupError(redact_diagnostic('원격 파일 상태 조회 실패 (rc=%s): %s' % (
+                    result.returncode, str(result.stderr or '').strip())))
             item = json.loads(result.stdout)
             if isinstance(item, list) and len(item) == 1:
                 item = item[0]
@@ -77,51 +76,88 @@ class MetaPreviewUtil:
             raise kind('원격 미디어의 종류 또는 크기를 확인하세요.')
 
     @staticmethod
-    def run_rclone_lookup(command):
-        """Retry transient read failures without treating them as missing files."""
-        timeout = 45
-        attempts = 3
-        target = command[-1]
-        for attempt in range(1, attempts + 1):
+    def log_storage_event(event, target='', category='', purpose='storage', attempt=1, returncode=0, elapsed_ms=0, reused=False, reason=''):
+        try:
+            category = category if category in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN', 'JAV', 'PERSON') else 'storage'
+            name = str(target).replace('\\', '/').split('?', 1)[0].split('#', 1)[0].rsplit('/', 1)[-1]
+            name = '저장소 루트' if not name or ':' in name or '@' in name else re.sub(r'[^\w.() -]', '_', name)[:100]
+            kind = '트레일러' if '_trailer.mp4' in name.lower() else '프리뷰' if '_preview.mp4' in name.lower() else {
+                'video': '영상', 'image_batch': '이미지', 'image': '이미지', 'actor': '인물 이미지',
+                'replacement': '미디어 교체', 'cleanup': '임시 파일 정리'}.get(purpose, '저장소')
+            text = {'lookup_success': '조회 완료', 'lookup_not_found': '파일 없음',
+                'lookup_transient_retry': '일시 오류로 재시도', 'lookup_error': '조회 실패',
+                'upload_start': '업로드 시작', 'upload_confirmed': '업로드 완료',
+                'cleanup_done': '정리 완료'}.get(event, '처리 상태')
+            detail = (' (' + reason + ')') if event == 'upload_confirmed' and reason else ''
+            if event=='lookup_success' and reason=='조회 성공 · 일치 0건':text='폴더 조회 완료 — 요청한 파일 없음'
+            elif event=='lookup_success':text='저장 폴더 조회 완료'
+            elif event=='lookup_not_found':text='요청한 파일 없음'
+            elif event=='lookup_transient_retry':text='조회 시도 실패 — 재시도 예정'
+            elif event=='lookup_error':text='조회 최종 실패 — 저장소 응답 확인 필요'
+            if attempt>1:detail+=' (%d번째 시도)'%attempt
+            if elapsed_ms:detail+=' (%.1f초)'%(elapsed_ms/1000)
+            if reused:detail+=' (캐시 재사용)'
+            label = kind if purpose == 'image_batch' else kind + ' ' + name
+            emit = (logger.warning if event == 'lookup_transient_retry' else logger.error if event == 'lookup_error'
+                    else logger.info if event == 'upload_confirmed' else logger.debug)
+            emit('[GDrive] [%s] %s %s%s',category,label,text,detail)
+            if event in ('lookup_success','lookup_not_found','lookup_transient_retry','lookup_error'):
+                logger.debug('[GDrive] 조회 진단: 분류=%s, 대상=%s, 반환코드=%s, 시도=%s, 사유=%s',
+                    category,label,returncode,attempt,reason)
+        except Exception:
+            pass
+
+    @classmethod
+    def run_rclone_lookup(cls, command, category='', purpose='storage'):
+        """Classify absence from rc AND stderr; retry only transient read failures."""
+        args=iter(command[command.index('lsjson')+1:])
+        target=''
+        for arg in args:
+            if arg in ('--include','--exclude','--max-depth','--files-from-raw','--config'):
+                next(args,None)
+            elif not arg.startswith('-'):
+                target=arg;break
+        for attempt in range(1, 4):
             started = time.monotonic()
             try:
-                result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        text=True, timeout=timeout)
+                result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=45)
             except subprocess.TimeoutExpired:
-                elapsed = time.monotonic() - started
-                logger.warning('[GDrive Lookup] 시간 초과 (%d/%d, %.1fs, 제한 %ds): %s',
-                               attempt, attempts, elapsed, timeout, target)
-                if attempt == attempts:
+                cls.log_storage_event('lookup_transient_retry' if attempt < 3 else 'lookup_error', target,
+                    category, purpose, attempt, 'timeout', int((time.monotonic() - started) * 1000), reason='조회 시간 초과')
+                if attempt == 3:
                     raise
             else:
-                elapsed = time.monotonic() - started
-                detail = str(result.stderr or '').strip().replace('\n', ' ')
-                logger.debug('[GDrive Lookup] 조회 완료 (%d/%d, %.1fs, exit=%s): %s',
-                             attempt, attempts, elapsed, result.returncode, target)
-                transient = result.returncode in (5, 10) or (
-                    result.returncode != 0 and any(marker in detail.lower() for marker in (
-                        'timeout', 'timed out', 'connection reset', 'connection refused',
-                        'connection closed', 'temporary failure', 'temporarily unavailable',
-                        'unexpected eof', 'tls handshake', '429', 'rate limit', 'ratelimit',
-                        'backenderror', 'http 500', 'http 502', 'http 503', 'http 504',
-                        'error 500:', 'error 502:', 'error 503:', 'error 504:',
-                        'status code 500', 'status code 502', 'status code 503', 'status code 504')))
-                if not transient:
-                    if result.returncode:
-                        logger.debug('[GDrive Lookup] 조회 응답 (exit=%s): %s (%s)',
-                                     result.returncode, 'lookup_failed', target)
+                detail = str(result.stderr or '').lower()
+                missing = cls.remote_missing(result)
+                transient = not missing and (result.returncode in (5, 10) or (result.returncode != 0 and any(
+                    marker in detail for marker in ('timeout', 'timed out', 'connection reset', 'connection refused',
+                        'connection closed', 'temporary failure', 'temporarily unavailable', 'unexpected eof',
+                        'tls handshake', '429', 'rate limit', 'ratelimit', 'backenderror', 'http 500', 'http 502',
+                        'http 503', 'http 504', 'error 500:', 'error 502:', 'error 503:', 'error 504:',
+                        'status code 500', 'status code 502', 'status code 503', 'status code 504'))))
+                event = 'lookup_success' if result.returncode == 0 else 'lookup_not_found' if missing else (
+                    'lookup_transient_retry' if transient and attempt < 3 else 'lookup_error')
+                reason = ''
+                if result.returncode != 0 and not missing:
+                    reason = str(result.stderr or '').strip()
+                if result.returncode==0:
+                    try:
+                        if json.loads(result.stdout)==[]:reason='조회 성공 · 일치 0건'
+                    except (ValueError,TypeError):pass
+                quiet_absence=missing
+                if purpose=='backup_probe' and result.returncode==0:
+                    try:quiet_absence=json.loads(result.stdout)==[]
+                    except (ValueError,TypeError):pass
+                if not (quiet_absence and purpose == 'backup_probe'):
+                    cls.log_storage_event(event, target, category, purpose, attempt, result.returncode,
+                        int((time.monotonic() - started) * 1000), reason=reason)
+                if not transient or attempt == 3:
                     return result
-                logger.warning('[GDrive Lookup] 일시 오류 (%d/%d, %.1fs, exit=%s): %s (%s)',
-                               attempt, attempts, elapsed, result.returncode, 'transient_lookup_failure', target)
-                if attempt == attempts:
-                    return result
-            delay = attempt * 2
-            logger.debug('[GDrive Lookup] %ds 후 조회 재시도: %s', delay, target)
-            time.sleep(delay)
+            time.sleep(attempt * 2)
 
     @classmethod
     def complete_media(cls, data, category='JAV_CEN', media_path=None, options=None):
-        """Complete optional videos using the same policy for fresh and cached metadata."""
+        """Apply the cached-read or explicit video-completion policy, then format playback."""
         completed = (data.get('extra_info') or {}).pop('_parallel_video_report', None)
         try:
             report = completed if completed is not None else cls._complete_media(data, category, media_path, options)
@@ -148,6 +184,18 @@ class MetaPreviewUtil:
     def _complete_media(cls, data, category='JAV_CEN', media_path=None, options=None):
         opts = options or {}
         extra = data.setdefault('extra_info', {})
+        if opts.get('_cached_metadata'):
+            # Cached reads trust the registration, including an absent video. Hydrate
+            # normalized rows only in this output copy; never discover or repair here.
+            for kind, key in (('trailer', 'trailer_video'), ('preview', 'preview_clip')):
+                if not extra.get(key):
+                    for storage in ('gdrive', 'local'):
+                        stored = cls.get_stored_video(data, kind, storage, category)
+                        if stored:
+                            extra[key] = copy.deepcopy(stored)
+                            break
+            return {'changed': False, 'failures': {},
+                    'trailer': bool(extra.get('trailer_video')), 'preview': bool(extra.get('preview_clip'))}
         extra.pop('source_video_path', None)
         before = copy.deepcopy(extra)
         original_before = copy.deepcopy(data.get('original') or {})
@@ -156,9 +204,10 @@ class MetaPreviewUtil:
             existing_preview = (existing_item.get('extra_info') or {}).get('preview_clip')
             if existing_preview:
                 extra['preview_clip'] = copy.deepcopy(existing_preview)
+        video_observations = {}
         cls.check_and_adopt_existing_video(data, category=category,
             reuse_gdrive=opts.get('reuse_existing_media', bool(media_path)), existing_item=opts.get('_existing_media_item'),
-            reprocess=opts.get('reuse_existing_media') is False)
+            reprocess=opts.get('reuse_existing_media') is False, observations=video_observations)
         extra = data.setdefault('extra_info', {})
         errors = dict(extra.get('media_errors') or {})
         errors.pop('video', None)
@@ -172,15 +221,20 @@ class MetaPreviewUtil:
                                 if isinstance(entry, dict) and entry.get('content_type') == 'trailer'
                                 and entry.get('content_url') and 'mode=preview_' not in entry['content_url']), None)
         if raw_trailer and cls.is_trailer_download_enabled(category) and not extra.get('trailer_video'):
-            logger.info('[MetaPreview] [%s] 공식 트레일러 저장: %s', category, code)
+            logger.debug('[MetaPreview] [%s] 공식 트레일러 처리 시작: %s', category, code)
             success, result = cls.process_trailer_download_workflow(code, raw_trailer, category,
-                force=not opts.get('reuse_existing_media', False), item_dict=data)
+                force=not opts.get('reuse_existing_media', False), item_dict=data,
+                video_observations=video_observations,
+                previous_video=cls.get_stored_video(dict(existing_item, extra_info={}), 'trailer',
+                    cls.get_setting('preview_storage_type', category, default='local'), category) or
+                    cls.get_stored_video(existing_item, 'trailer',
+                    cls.get_setting('preview_storage_type', category, default='local'), category))
             if not success:
                 failures['trailer'] = str(result)
         extra = data.setdefault('extra_info', {})
         if (valid_source and cls.is_auto_create_enabled(category)
                 and not extra.get('preview_clip') and not extra.get('trailer_video')):
-            logger.info('[MetaPreview] [%s] 저장 영상 부재 -> 프리뷰 생성: %s (%s)', category, code, media_path)
+            logger.info('[MetaPreview] [%s] %s: 저장된 트레일러·프리뷰가 없어 원본 영상에서 프리뷰 생성 시작 (%s)', category, code, media_path)
             success, result = cls.process_preview_workflow(code, str(media_path), category, force=False, item_dict=data)
             if not success:
                 failures['preview'] = str(result)
@@ -188,15 +242,17 @@ class MetaPreviewUtil:
         for kind, key in (('trailer', 'trailer_video'), ('preview', 'preview_clip')):
             if kind in failures:
                 errors[kind] = {'message': failures[kind], 'time': datetime.now().isoformat(timespec='seconds')}
-                logger.warning('[MetaPreview] [%s] %s 처리 실패, 메타데이터 유지 (%s): %s', category, kind, code, failures[kind])
+                logger.warning('[MetaPreview] [%s] %s: %s 처리 실패 — 메타데이터 유지 (%s)',category,code,
+                    '트레일러' if kind=='trailer' else '프리뷰',failures[kind])
             elif extra.get(key):
                 errors.pop(kind, None)
         if errors:
             extra['media_errors'] = errors
         else:
             extra.pop('media_errors', None)
-        logger.debug('[MetaPreview] [%s] 미디어 확인 (%s): source=%s trailer=%s preview=%s failures=%s',
-            category, code, valid_source, bool(extra.get('trailer_video')), bool(extra.get('preview_clip')), ','.join(failures))
+        logger.debug('[MetaPreview] [%s] %s: 원본 영상 %s, 저장된 트레일러 %s, 프리뷰 %s%s',
+            category,code,'있음' if valid_source else '없음','있음' if extra.get('trailer_video') else '없음',
+            '있음' if extra.get('preview_clip') else '없음',' (처리 실패: '+', '.join(failures)+')' if failures else '')
         return {'changed': before != extra or original_before != (data.get('original') or {}), 'failures': failures}
 
     @classmethod
@@ -374,14 +430,12 @@ class MetaPreviewUtil:
         target_unit = 3.5 if total_duration <= 60 else 4.0
         num_segments = max(4, int(total_duration // target_unit))
         
-        start_bound = duration * 0.01
-        end_bound = duration * 0.99
-        span = end_bound - start_bound
+        last_start = max(0.0, duration - target_unit)
+        segment_interval = last_start / float(num_segments - 1)
+        timestamps = [i * segment_interval for i in range(num_segments)]
+        timestamps[-1] = last_start
 
-        segment_interval = span / float(num_segments)
-        timestamps = [start_bound + (i * segment_interval) for i in range(num_segments)]
-
-        logger.info(f"[MetaPreview] 무인코딩(Codec Copy) 몽타주 프리뷰 생성 시작: {os.path.basename(source_video_path)} (총 {duration:.1f}초, 목표: {total_duration}초, {num_segments}구간 추출, 코덱: {v_codec})")
+        logger.info(f"[MetaPreview] 원본 영상의 여러 구간에서 프리뷰 생성 시작 (재인코딩 없음): {os.path.basename(source_video_path)} (총 {duration:.1f}초, 목표: {total_duration}초, {num_segments}구간 추출, 코덱: {v_codec})")
 
         tmp_dir = os.path.join(path_data, 'tmp', f"preview_seg_{int(time.time())}_{os.urandom(3).hex()}")
         os.makedirs(tmp_dir, exist_ok=True)
@@ -400,12 +454,15 @@ class MetaPreviewUtil:
 
                 cmd_cut = [
                     ffmpeg_bin, "-y",
-                    "-ss", f"{ts:.2f}",
-                    "-t", f"{target_unit:.2f}",
+                    "-ss", f"{ts:.2f}"
+                ]
+                if idx < num_segments - 1:
+                    cmd_cut.extend(["-t", f"{target_unit:.2f}"])
+                cmd_cut.extend([
                     "-i", source_video_path,
                     "-map", "0:v:0",
                     "-c:v", "copy"
-                ]
+                ])
 
                 if v_codec in ['hevc', 'h265']:
                     cmd_cut.extend(["-tag:v", "hvc1"])
@@ -485,6 +542,8 @@ class MetaPreviewUtil:
             studio_raw = (getattr(item_or_dict, 'studio', '') or 'Unknown').strip()
             label_raw = (getattr(item_or_dict, 'label', '') or '').strip().upper()
 
+        if cat_upper != 'WESTERN':
+            code_clean = (ui_code or code_clean).lower()
         suffix = "trailer" if video_type == 'trailer' else "preview"
         filename = f"{code_clean}_{suffix}.mp4"
 
@@ -622,6 +681,74 @@ class MetaPreviewUtil:
         cls._verified_remote_dirs.clear()
         cls._local_dir_cache.clear()
 
+    _image_parent_ids = {}
+
+    @classmethod
+    def resolve_image_parent(cls, remote_dir, binary, config, category, refresh=False):
+        """Bounded folder lookup, independent of file-only remote_stat validation."""
+        from .util_runtime import StorageLookupError
+        root=P.ModelSetting.get('jav_censored_image_gdrive_remote_path') or ''
+        expected=cls.build_rclone_target_remote_path(root,'').rstrip('/')
+        if not expected or not (remote_dir==expected or remote_dir.startswith(expected+('' if expected.endswith(':') else '/'))):
+            raise StorageLookupError('이미지 폴더가 설정 리모트 루트를 벗어납니다.')
+        try:settings_stat=(os.stat(config).st_mtime_ns,os.stat(config).st_size)
+        except OSError:settings_stat=None
+        key=(config,settings_stat,root,remote_dir)
+        cached=cls._image_parent_ids.get(key)
+        if not refresh and cached and time.monotonic()-cached[0]<30:return cached[1]
+        result=cls.run_rclone_lookup([binary,'--config',config,'lsjson','--stat',remote_dir],category=category,purpose='image_parent')
+        if cls.remote_missing(result,directory=True):
+            made=subprocess.run([binary,'--config',config,'mkdir',remote_dir],capture_output=True,text=True,timeout=45)
+            if made.returncode:raise StorageLookupError('이미지 목적 폴더 준비에 실패했습니다.')
+            result=cls.run_rclone_lookup([binary,'--config',config,'lsjson','--stat',remote_dir],category=category,purpose='image_parent')
+        if result.returncode or not result.stdout.strip():raise StorageLookupError('이미지 부모 디렉터리 조회 실패')
+        value=json.loads(result.stdout)
+        if isinstance(value,list):value=value[0] if len(value)==1 else None
+        expected_name=remote_dir.rsplit('/',1)[-1].split(':',1)[-1]
+        root_hint=re.fullmatch(r'\{([A-Za-z0-9_-]+)\}',remote_dir.split(':',1)[-1]) if remote_dir==expected else None
+        virtual_root=remote_dir==expected and (remote_dir.endswith(':') or root_hint is not None)
+        if not virtual_root and isinstance(value,dict) and value.get('Name') not in (None,'',expected_name):
+            raise StorageLookupError('조회된 부모 폴더 이름이 목적 경로와 다릅니다.')
+        fid=(value.get('ID') or value.get('id')) if isinstance(value,dict) and value.get('IsDir') is True else None
+        if root_hint and fid and fid!=root_hint.group(1):raise StorageLookupError('명시한 Drive 루트 ID와 조회 결과가 다릅니다.')
+        if virtual_root and not fid:
+            remote_name=remote_dir.split(':',1)[0]
+            if root_hint:root_id=root_hint.group(1)
+            else:
+                settings=configparser.RawConfigParser();settings.read(config,encoding='utf-8')
+                if not settings.has_section(remote_name) or settings.get(remote_name,'type',fallback='')!='drive':
+                    raise StorageLookupError('가상 리모트 루트의 Drive 신원을 확인할 수 없습니다.')
+                root_id=settings.get(remote_name,'root_folder_id',fallback='') or settings.get(remote_name,'team_drive',fallback='') or 'root'
+            if not re.fullmatch(r'[A-Za-z0-9_-]+',root_id):raise StorageLookupError('Drive 루트 ID 형식 오류')
+            token=cls.get_gdrive_access_token(config,remote_name,file_id=root_id)
+            if not token:raise StorageLookupError('Drive 루트 조회 인증 실패')
+            response=requests.get('https://www.googleapis.com/drive/v3/files/'+root_id,
+                params={'fields':'id,mimeType,trashed','supportsAllDrives':'true'},headers={'Authorization':'Bearer '+token},timeout=20)
+            try:
+                identity=response.json() if response.status_code==200 else {}
+                if (identity.get('mimeType')!='application/vnd.google-apps.folder' or identity.get('trashed') is not False
+                        or root_id!='root' and identity.get('id')!=root_id):raise StorageLookupError('Drive 루트 폴더 ID 확인 실패')
+                fid=identity.get('id')
+            finally:response.close()
+        if not fid:
+            # An ID-less directory stat is valid on Drive; list only its exact parent's children.
+            if '/' in remote_dir.split(':',1)[-1].rstrip('/'):
+                parent,name=remote_dir.rstrip('/').rsplit('/',1)
+            else:
+                remote,tail=remote_dir.split(':',1);parent=remote+':';name=tail.strip('/')
+            if not name:raise StorageLookupError('리모트 루트의 폴더 ID를 확인할 수 없습니다.')
+            listing=cls.run_rclone_lookup([binary,'--config',config,'lsjson',parent,'--dirs-only','--max-depth','1'],category=category,purpose='image_parent')
+            if listing.returncode or not listing.stdout.strip():raise StorageLookupError('부모의 하위 폴더 조회 실패')
+            rows=json.loads(listing.stdout)
+            if not isinstance(rows,list) or any(not isinstance(r,dict) for r in rows):raise StorageLookupError('하위 폴더 응답 형식 오류')
+            matches=[r for r in rows if str(r.get('Name') or '').casefold()==name.casefold()]
+            if len(matches)!=1 or matches[0].get('Name')!=name or matches[0].get('IsDir') is not True:raise StorageLookupError('부모 폴더 이름이 없거나 중복됩니다.')
+            fid=matches[0].get('ID') or matches[0].get('id')
+        if not isinstance(fid,str) or not re.fullmatch(r'[A-Za-z0-9_-]+',fid):raise StorageLookupError('이미지 부모 폴더 ID가 없습니다.')
+        if len(cls._image_parent_ids)>512:cls._image_parent_ids.clear()
+        cls._image_parent_ids[key]=(time.monotonic(),fid)
+        return fid
+
     @classmethod
     def get_remote_file_id(cls, dest_rel_path, category='JAV_CEN', is_image=False, use_dir_cache=False):
         """원격 구글 드라이브 경로의 파일 존재 여부를 사전 확인하고 File ID를 반환 (부재 시 None)."""
@@ -663,7 +790,7 @@ class MetaPreviewUtil:
             raise StorageLookupError('구글 드라이브 대상 경로 오류')
 
         cmd = [rclone_bin, "--config", rclone_conf, "lsjson", "--stat", dest_remote_file]
-        item_obj = cls.remote_stat(cmd)
+        item_obj = cls.remote_stat(cmd, category=cat_upper, purpose='actor' if '/actors/' in '/' + clean_path else 'image' if is_image else 'video')
         if item_obj is None:
             return None
         cls.validate_remote_media(item_obj)
@@ -783,10 +910,10 @@ class MetaPreviewUtil:
             raise StorageLookupError('구글 드라이브 대상 경로 오류')
 
         cmd = [rclone_bin, "--config", rclone_conf, "lsjson", remote_target_dir]
-        logger.debug(f"[MetaPreview] 원격 폴더 파일 목록 1회 일괄 적재 시작 ➔ {remote_target_dir}")
+        logger.debug(f"[MetaPreview] 저장소 이미지·영상 폴더 목록 조회 시작: {remote_target_dir}")
 
         try:
-            res = cls.run_rclone_lookup(cmd)
+            res = cls.run_rclone_lookup(cmd, category=category, purpose='image_batch' if is_image else 'video')
             if cls.remote_missing(res, directory=True):
                 return {}
             if res.returncode != 0 or not res.stdout.strip():
@@ -817,7 +944,7 @@ class MetaPreviewUtil:
                         if fname and fid:
                             file_map[fname.lower()] = fid
                             cls._remember_remote_path(fid, f'{rel_dir}/{fname}'.strip('/'), cat_upper, is_image)
-                logger.debug(f"[MetaPreview] 원격 폴더 캐시 적재 완료 ({len(file_map)}개 파일): {remote_target_dir}")
+                logger.debug(f"[MetaPreview] 저장소 이미지·영상 폴더 목록 조회 완료 ({len(file_map):,}개 파일): {remote_target_dir}")
                 return file_map
         except StorageLookupError:
             raise
@@ -852,10 +979,10 @@ class MetaPreviewUtil:
 
 
     @classmethod
-    def sync_file_to_gdrive(cls, local_path, dest_rel_path, category='JAV_CEN', overwrite=True, is_image=False):
+    def sync_file_to_gdrive(cls, local_path, dest_rel_path, category='JAV_CEN', overwrite=True, is_image=False, prechecked=False, replacement=None):
         """
-        구글 드라이브 통합 업로드 파이프라인:
-        원격 파일 사전 검사 -> 존재 시 ID만 추출 후 스킵 -> 교체 시 임시 리네임 후 직업로드 -> 새 ID 검증 -> 구파일 비동기 삭제
+        정식명 전송 어댑터. 백업/복구/정리는 영수증이 소유한다.
+        prechecked는 호환 인자이며 기존 파일 교체 권한을 부여하지 않는다.
         """
         if not local_path or not os.path.exists(local_path):
             return None, "로컬 파일이 존재하지 않습니다."
@@ -887,84 +1014,83 @@ class MetaPreviewUtil:
 
         def get_remote_file_stat(remote_target):
             cmd = [rclone_bin, "--config", rclone_conf, "lsjson", "--stat", remote_target]
-            item = cls.remote_stat(cmd, lookup=lambda command: subprocess.run(command,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20))
+            item = cls.remote_stat(cmd, category=cat_upper, purpose='actor' if '/actors/' in '/' + dest_rel_path else 'image' if is_image else 'video')
             if item is None:
                 return None
             cls.validate_remote_media(item)
-            return item.get('ID') or item.get('id')
+            return item
 
         # 원격 파일 존재 여부 사전 검사
-        existing_fid = get_remote_file_stat(dest_remote_file)
+        if replacement and replacement.get('image_contract'):
+            if replacement['target']!=dest_remote_file or replacement['relative_path']!=dest_rel_path:raise ValueError('이미지 영수증 대상 불일치')
+            MediaReplacement.image_write_start(replacement,local_path)
+            existing_fid=None
+        elif replacement:
+            if (replacement.get('storage')!='gdrive' or replacement.get('target')!=dest_remote_file or
+                    replacement.get('relative_path')!=dest_rel_path or replacement.get('category')!=cat_upper or
+                    replacement.get('config')!=rclone_conf or replacement.get('rclone')!=rclone_bin or
+                    replacement.get('status')!='pending' or
+                    replacement.get('had_original') and not replacement.get('staged')):
+                raise ValueError('전송 영수증 준비/대상 불일치')
+            existing_fid=None
+        else:
+            existing_item=get_remote_file_stat(dest_remote_file)
+            existing_fid=(existing_item.get('ID') or existing_item.get('id')) if existing_item else None
 
         # 이미 원격에 파일이 있고 덮어쓰기/재처리가 불필요한 경우: 다운로드/업로드 없이 File ID만 즉시 반환
         if existing_fid and not overwrite:
-            logger.debug(f"[MetaPreview] 원격 파일 이미 존재 ➔ 즉시 기존 File ID 반환 및 스킵: {existing_fid} ({os.path.basename(dest_remote_file)})")
+            cls.log_storage_event('lookup_success', dest_rel_path, cat_upper, 'image' if is_image else 'video', reused=True)
             return existing_fid, "already_exists"
 
-        # 재처리/교체 대상인 경우: 기존 파일을 임시 백업 파일명으로 리네임
-        backup_remote_file = None
         if existing_fid:
-            backup_remote_file = f"{dest_remote_file}.old_{int(time.time())}"
-            rename_cmd = [rclone_bin, "--config", rclone_conf, "moveto", dest_remote_file, backup_remote_file]
-            p_ren = subprocess.run(rename_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
-            if p_ren.returncode != 0:
-                logger.warning('[MetaPreview] 원격 파일 백업 실패, 교체 중단: exit=%s', p_ren.returncode)
-                return None, '기존 파일 백업에 실패해 교체를 중단했습니다.'
+            return None, '기존 파일 교체는 공통 영수증의 사전 백업이 필요합니다.'
 
         # 정식 파일명으로 직접 업로드 실행
         cmd = [rclone_bin, "--config", rclone_conf, "moveto", local_path, dest_remote_file]
         if extra_options:
             cmd.extend(extra_options.split())
+        if replacement:
+            cmd.append('--immutable')
 
-        logger.debug(f"[MetaPreview] Rclone 구글 드라이브 업로드 시작: {dest_remote_file}")
+        if replacement and replacement.get('initial_observation') and replacement.get('media_type') in ('trailer', 'preview'):
+            replacement.update(status='pending', **{'video_write_started': True})
+        upload_size=os.path.getsize(local_path)
+        cls.log_storage_event('upload_start', dest_rel_path, cat_upper, 'image' if is_image else 'video')
         try:
             p_up = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
             if p_up.returncode != 0:
-                logger.error('[MetaPreview] Rclone 업로드 실패: exit=%s', p_up.returncode)
+                logger.error('[MetaPreview] %s: Google Drive 업로드 실패 — 기존 파일의 복원 여부를 확인하세요.',os.path.basename(dest_rel_path))
+                logger.debug('[MetaPreview] 업로드 실패 진단: 반환코드=%s, 응답=%s',p_up.returncode,p_up.stderr)
                 # 업로드 실패 시 백업해둔 기존 파일 원상 복구
-                if backup_remote_file:
-                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
                 return None, 'Rclone 업로드에 실패했습니다 (exit=%s).' % p_up.returncode
 
             # 업로드 완료 후 신규 File ID 조회 및 검증
             new_fid = None
             for attempt in range(1, 6):
                 time.sleep(min(2.0, 0.5 * attempt))
-                new_fid = get_remote_file_stat(dest_remote_file)
+                observation = get_remote_file_stat(dest_remote_file)
+                new_fid=(observation.get('ID') or observation.get('id')) if observation else None
                 if new_fid:
+                    if observation.get('Name')!=os.path.basename(dest_rel_path) or observation.get('Size')!=upload_size:
+                        raise ValueError('업로드 이름/크기 확인 실패')
                     break
 
             if not new_fid:
-                if backup_remote_file:
-                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
                 return None, "업로드 후 신규 Google File ID 획득 실패"
 
-            # 신규 파일 ID 교체가 정상 확인되면 임시 백업해둔 구파일을 비동기 스레드로 백그라운드 삭제
-            if backup_remote_file:
-                def run_async_remote_delete(target_path):
-                    try:
-                        del_cmd = [rclone_bin, "--config", rclone_conf, "deletefile", target_path]
-                        subprocess.run(del_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-                        logger.debug(f"[MetaPreview] 원격 구파일 정리 완료: {target_path}")
-                    except Exception as e_del:
-                        logger.debug(f"[MetaPreview] 원격 구파일 삭제 예외 (무시): {e_del}")
+            if replacement:
+                MediaReplacement.generated(replacement,new_fid,observation=observation)
 
-                threading.Thread(target=run_async_remote_delete, args=(backup_remote_file,), daemon=True).start()
-
+            cls.register_remote_file(dest_rel_path, new_fid, category=cat_upper, is_image=is_image)
+            cls.log_storage_event('upload_confirmed', dest_rel_path, cat_upper, 'actor' if '/actors/' in '/' + dest_rel_path else 'image' if is_image else 'video')
             return new_fid, None
 
         except Exception as exc:
             logger.exception('[MetaPreview] 구글 드라이브 업로드 예외')
-            if backup_remote_file:
-                try:
-                    subprocess.run([rclone_bin, "--config", rclone_conf, "moveto", backup_remote_file, dest_remote_file], timeout=20)
-                except Exception:
-                    pass
             return None, '구글 드라이브 업로드 중 오류가 발생했습니다.'
 
     @classmethod
-    def sync_images_to_gdrive(cls, images, category='JAV_CEN'):
+    def sync_images_to_gdrive(cls, images, category='JAV_CEN', replacements=None):
         """Upload prepared images together; callers own per-file backups/rollback."""
         if not images:
             return {}, None
@@ -988,16 +1114,22 @@ class MetaPreviewUtil:
             os.makedirs(staged)
             names = {os.path.basename(relative): relative for relative in images}
             sizes = {}
+            hashes = {}
             for name, relative in names.items():
-                if '_user.' in name.lower() or not name or '\n' in name or '\r' in name:
+                entry=next((e for e in replacements or [] if e['relative_path']==relative and e.get('image_contract')),None)
+                if not entry or not name or '\n' in name or '\r' in name:
                     raise ValueError('Invalid batch image filename')
+                MediaReplacement.image_write_start(entry,images[relative])
                 shutil.copyfile(images[relative], os.path.join(staged, name))
                 sizes[name] = os.path.getsize(os.path.join(staged, name))
+                import hashlib
+                with open(images[relative], 'rb') as source:
+                    hashes[name] = hashlib.md5(source.read()).hexdigest()
             file_list = os.path.join(work, 'files.txt')
             with open(file_list, 'w', encoding='utf-8') as fp:
                 fp.write('\n'.join(names) + '\n')
-            command = [binary, '--config', config, 'move', staged, remote, '--no-traverse'] + options
-            logger.debug('[MetaPreview] GDrive 이미지 일괄 업로드 시작 (%s개): %s', len(images), remote)
+            command = [binary, '--config', config, 'move', staged, remote, '--no-traverse'] + options + ['--immutable']
+            cls.log_storage_event('upload_start', remote, str(category).upper(), 'image_batch')
             # A failed move can still have completed some files. Certify those
             # separately, using one directory query for all requested File IDs.
             for attempt in range(3):
@@ -1005,117 +1137,88 @@ class MetaPreviewUtil:
                     try:
                         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
                         if result.returncode:
-                            error = result.stderr[-300:] or 'rclone move failed'
+                            error = str(result.stderr or '').strip() or 'rclone move failed'
+                            logger.warning('[MetaPreview] 이미지 업로드 %s번째 시도 실패 — %s',attempt+1,
+                                '재시도 예정' if attempt<2 else '최종 업로드 결과 확인 필요')
+                            logger.debug('[MetaPreview] 업로드 실패 진단: 반환코드=%s, 응답=%s',result.returncode,error)
                     except Exception as exc:
                         error = str(exc)
                 try:
                     result = subprocess.run([binary, '--config', config, 'lsjson', remote,
-                        '--files-only', '--max-depth', '1', '--files-from-raw', file_list],
+                        '--files-only', '--max-depth', '1', '--hash', '--files-from-raw', file_list],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
+                    cls.log_storage_event('lookup_success' if result.returncode == 0 else
+                        'lookup_not_found' if cls.remote_missing(result) else 'lookup_error',
+                        remote, str(category).upper(), 'image_batch', attempt + 1, result.returncode,
+                        reason='' if result.returncode == 0 or cls.remote_missing(result) else str(result.stderr or '').strip())
                     if result.returncode == 0:
-                        for entry in json.loads(result.stdout):
-                            name = entry.get('Name') or entry.get('Path')
-                            file_id = entry.get('ID') or entry.get('id')
-                            if (name in names and file_id and not entry.get('IsDir') and sizes[name] > 0
-                                    and entry.get('Size') == sizes[name]
-                                    and not os.path.exists(os.path.join(staged, name))):
-                                confirmed[names[name]] = file_id
+                        rows=json.loads(result.stdout)
+                        if not isinstance(rows,list) or any(not isinstance(r,dict) for r in rows):raise ValueError('이미지 전송 결과 형식 오류')
+                        for name in names:
+                            receipt=next(e for e in replacements if e['relative_path']==names[name])
+                            initial_ids={row['ID'] for row in receipt['initial_observation']['files']}
+                            matches={}
+                            for row in rows:
+                                fid=row.get('ID') or row.get('id')
+                                if (row.get('Name') == name and fid and fid not in initial_ids and
+                                        row.get('IsDir') is False and row.get('Size') == sizes[name] and sizes[name] > 0):
+                                    md5=(row.get('Hashes') or {}).get('md5') or (row.get('Hashes') or {}).get('MD5')
+                                    if md5 and str(md5).lower() == hashes[name]:
+                                        matches[fid]=row
+                            if len(matches)==1 and not os.path.exists(os.path.join(staged,name)):
+                                file_id, observation=next(iter(matches.items()))
+                                try:
+                                    MediaReplacement.generated(receipt,file_id,observation=observation)
+                                    confirmed[names[name]]=file_id
+                                except Exception as exc:
+                                    error=str(exc)
+                            elif len(matches)>1:
+                                error='동시 업로드의 신규 ID 소유권을 구분하지 못해 해당 슬롯을 보존합니다.'
                 except Exception as exc:
                     error = str(exc)
                 if len(confirmed) == len(images):
                     break
                 if attempt < 2:
-                    logger.debug('[MetaPreview] GDrive 이미지 일괄 처리 재시도 (%s/3), 미확인: %s',
-                        attempt + 2, ', '.join(os.path.basename(path) for path in images if path not in confirmed))
+                    logger.debug('[MetaPreview] 이미지 업로드 재시도 예정: %s번째 시도, 파일 ID 미확인 %s개',
+                        attempt + 2, len(images) - len(confirmed))
                     time.sleep(attempt + 1)
         if len(confirmed) != len(images):
             error = error or '일부 이미지의 업로드 또는 File ID 확인 실패'
-            logger.warning('[MetaPreview] GDrive 일괄 업로드 일부 실패 (%s/%s): %s', len(confirmed), len(images), error)
+            logger.warning('[MetaPreview] 이미지 업로드 최종 확인 보류: %s개 확인 / 전체 %s개 — %s', len(confirmed), len(images), error)
         else:
             error = None
-        logger.debug('[MetaPreview] GDrive 이미지 일괄 업로드 확인: %s/%s', len(confirmed), len(images))
+        if len(confirmed) == len(images):
+            cls.log_storage_event('upload_confirmed', remote, str(category).upper(), 'image_batch',
+                reason='%s/%s개 확인' % (len(confirmed), len(images)))
         return confirmed, error
 
     @classmethod
-    def upload_to_gdrive(cls, local_clip_path, dest_rel_path, category='JAV_CEN'):
+    def upload_to_gdrive(cls, local_clip_path, dest_rel_path, category='JAV_CEN', prechecked=False, replacement=None):
         """기존 트레일러 업로드 호출을 통합 엔진으로 연결."""
-        fid, err = cls.sync_file_to_gdrive(local_clip_path, dest_rel_path, category=category, overwrite=True, is_image=False)
+        fid, err = cls.sync_file_to_gdrive(local_clip_path, dest_rel_path, category=category, overwrite=True, is_image=False, prechecked=prechecked, replacement=replacement)
         return fid, err
 
 
     @classmethod
-    def delete_preview_clip(cls, clip_info, category='JAV_CEN'):
+    def delete_preview_clip(cls, clip_info, category='JAV_CEN', owner=None, delete_context=None, video_type='preview'):
         if not clip_info or not isinstance(clip_info, dict):
             return True, "삭제할 클립 정보가 없습니다."
-
-        storage_type = clip_info.get('storage_type', 'local')
-
-        if storage_type == 'gdrive':
-            file_id = clip_info.get('google_fileid')
-            if not file_id:
-                return False, '구글 드라이브 파일 ID가 없습니다.'
-            if file_id:
-                rclone_conf = cls.get_setting("preview_rclone_conf", category, default="/root/.config/rclone/rclone.conf")
-                # 동영상 리모트 경로 루트의 콜론(:) 앞부분에서 리모트명을 추출하고, 미지정 시 재생/스트리밍 전용 리모트로 폴백
-                video_remote_root = cls.get_setting("preview_gdrive_remote_path", category, default="").strip()
-                extracted_remote = video_remote_root.split(':', 1)[0].strip() if video_remote_root else ''
-
-                playback_remote = (
-                    cls.get_setting("preview_rclone_playback_remote", category, default="").split(':', 1)[0].strip() or
-                    cls.get_setting("preview_rclone_remote", category, default="my_gdrive").split(':', 1)[0].strip()
-                )
-
-                remote_name = extracted_remote or playback_remote
-                access_token = cls.get_gdrive_access_token(rclone_conf, remote_name)
-
-                if not access_token:
-                    return False, "구글 드라이브 삭제 인증 토큰을 가져오지 못했습니다."
-                if access_token:
-                    del_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?supportsAllDrives=true"
-                    headers = {"Authorization": f"Bearer {access_token}"}
-                    try:
-                        res = requests.delete(del_url, headers=headers, timeout=10)
-                        if res.status_code in [200, 204]:
-                            logger.info(f"[MetaPreview] 구글 드라이브 기존 파일 영구 삭제 성공 (FileID: {file_id})")
-                        elif res.status_code == 404:
-                            logger.debug(f"[MetaPreview] 구글 드라이브 파일이 이미 존재하지 않음 (FileID: {file_id})")
-                        else:
-                            return False, f"구글 드라이브 파일 삭제 실패 (HTTP {res.status_code})"
-                    except Exception as e_del:
-                        return False, f"구글 드라이브 파일 삭제 실패: {e_del}"
-
-        local_path = clip_info.get('local_path')
-        if storage_type == 'local' and local_path and os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-                logger.info(f"[MetaPreview] 로컬 프리뷰 파일 삭제 완료: {local_path}")
-            except Exception as e_rm:
-                return False, f"로컬 영상 파일 삭제 실패: {e_rm}"
-
-        return True, "기존 프리뷰 파일 삭제 완료"
+        return False, 'D02_RECEIPT_REQUIRED: DB commit 전 영상의 직접 삭제를 보류했습니다.'
 
     @classmethod
-    def delete_video_assets(cls, extra_info, category='JAV_CEN', video_type=None):
-        """Delete selected video assets; None retains the existing bulk-delete API."""
+    def delete_video_assets(cls, extra_info, category='JAV_CEN', video_type=None, owner=None, delete_context=None):
         if video_type not in (None, '', 'trailer', 'preview'):
             return False, "유효하지 않은 영상 종류입니다."
         if not extra_info or not isinstance(extra_info, dict):
             return True, "삭제할 비디오 정보가 없습니다."
-        deleted = []
-        for kind, key, label in (('preview', 'preview_clip', '프리뷰'), ('trailer', 'trailer_video', '트레일러')):
-            if video_type and video_type != kind:
-                continue
-            if not extra_info.get(key):
-                continue
-            success, message = cls.delete_preview_clip(extra_info[key], category=category)
-            if not success:
-                return False, message
-            extra_info.pop(key, None)
-            deleted.append(label)
-        return True, ', '.join(deleted) + ' 삭제 완료' if deleted else '삭제할 비디오 파일 없음'
+        if not any(extra_info.get(key) for kind, key in
+                   (('preview', 'preview_clip'), ('trailer', 'trailer_video'))
+                   if not video_type or video_type == kind):
+            return True, "삭제할 비디오 정보가 없습니다."
+        return False, 'D02_RECEIPT_REQUIRED: DB commit 전 영상의 직접 삭제를 보류했습니다.'
 
     @classmethod
-    def check_and_adopt_existing_video(cls, item_or_dict, category='JAV_CEN', reuse_gdrive=False, existing_item=None, reprocess=False):
+    def check_and_adopt_existing_video(cls, item_or_dict, category='JAV_CEN', reuse_gdrive=False, existing_item=None, reprocess=False, observations=None):
         """
         저장소(로컬 디렉토리)에 이미 프리뷰 클립 또는 트레일러 파일이 존재하면
         신규 다운로드나 인코딩 없이 메타데이터 extra_info로 자동 흡수
@@ -1128,22 +1231,63 @@ class MetaPreviewUtil:
 
         storage_type = cls.get_setting("preview_storage_type", category, default="local")
         if storage_type == 'gdrive' and reuse_gdrive:
+            from .util_metadata import MetaUtil
+            from .util_runtime import StorageLookupError
             extra = dict((item_or_dict.get('extra_info') if isinstance(item_or_dict, dict) else item_or_dict.extra_info) or {})
             changed = False
+            pending = {}
             for kind, key in (('trailer', 'trailer_video'), ('preview', 'preview_clip')):
-                previous = cls.get_stored_video(existing_item or item_or_dict, kind, 'gdrive', category) or {}
+                previous = (cls.get_stored_video(item_or_dict, kind, 'gdrive', category) or
+                            cls.get_stored_video(existing_item or {}, kind, 'gdrive', category) or {})
+                if previous.get('google_fileid') and previous.get('relative_path'):
+                    if extra.get(key) != previous:
+                        extra[key] = copy.deepcopy(previous)
+                        changed = True
+                    continue
                 rel_dir, filename = cls.get_video_relative_path(item_or_dict, video_type=kind, category=category)
                 relative_path = previous.get('relative_path') or '/'.join(filter(None, (rel_dir, filename)))
-                fid = cls.get_remote_file_id(relative_path, category=category, is_image=False)
-                if not fid:
-                    continue
-                actual_path = cls.get_recorded_remote_path(fid, relative_path, category=category)
-                extra[key] = dict(previous, storage_type='gdrive', google_fileid=fid, local_path='',
-                    relative_path=actual_path, filename=actual_path.rsplit('/', 1)[-1],
-                    duration=previous.get('duration') or 0,
-                    created_time=previous.get('created_time') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                changed = True
-                logger.info('[MetaPreview] 기존 GDrive %s 재사용: %s', kind, actual_path)
+                # A literal work prefix is required; never broaden into a whole folder.
+                prefix = filename[:-len('_' + kind + '.mp4')]
+                if (not prefix or prefix in ('.', '..', 'unknown') or
+                        re.search(r'[\x00-\x1f/\\:*?"<>|\[\]{}]', prefix)):
+                    raise StorageLookupError('영상 작품 접두어를 확인할 수 없습니다.')
+                relative_path = str(relative_path).replace('\\', '/')
+                if (relative_path.startswith('/') or ':' in relative_path or
+                        any(part in ('', '.', '..') for part in relative_path.split('/')) or '/' not in relative_path):
+                    raise StorageLookupError('영상 상대 경로를 확인할 수 없습니다.')
+                directory, name = relative_path.rsplit('/', 1)
+                pending.setdefault((directory, prefix), []).append((kind, key, name, previous))
+            observed = observations if observations is not None else {}
+            for (directory, prefix), candidates in pending.items():
+                lookup_key = (str(category).upper(), directory, prefix.lower())
+                if lookup_key not in observed:
+                    try:
+                        observed[lookup_key] = MetaUtil.query_gdrive_remote_dir_files(
+                            directory, category=category, code_lower=prefix, strict=True, is_image=False)
+                    except StorageLookupError:
+                        raise
+                    except Exception as exc:
+                        raise StorageLookupError('영상 폴더 조회를 완료하지 못했습니다.') from exc
+                files = observed[lookup_key]
+                actual_names = getattr(files, 'actual_names', {})
+                names = [str(name).lower() for name in actual_names.values()]
+                if len(names) != len(set(names)):
+                    raise StorageLookupError('영상 폴더에 중복 파일명이 있습니다.')
+                for kind, key, name, previous in candidates:
+                    fid = files.get(name.lower())
+                    actual_name = actual_names.get(str(fid), '') if fid else ''
+                    if (not actual_name or '/' in actual_name or '\\' in actual_name or
+                            actual_name.lower() != name.lower() or
+                            not actual_name.lower().startswith(prefix.lower() + '_') or
+                            not actual_name.lower().endswith('_' + kind + '.mp4')):
+                        continue
+                    actual_path = directory + '/' + actual_name
+                    extra[key] = dict(previous, storage_type='gdrive', google_fileid=fid, local_path='',
+                        relative_path=actual_path, filename=actual_name,
+                        duration=previous.get('duration') or 0,
+                        created_time=previous.get('created_time') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    changed = True
+                    logger.info('[MetaPreview] 기존 GDrive %s 재사용: %s', kind, actual_path)
             if changed:
                 if isinstance(item_or_dict, dict):
                     item_or_dict['extra_info'] = extra
@@ -1258,21 +1402,32 @@ class MetaPreviewUtil:
 
     @staticmethod
     def publish_local_video(source, destination):
-        # Publish only a complete replacement; preserve the existing video on failure.
-        import tempfile
+        # Prepared source -> final name. Receipt owners have already staged old files.
+        import uuid
         parent = os.path.dirname(os.path.abspath(destination))
         os.makedirs(parent, exist_ok=True)
-        fd, staged = tempfile.mkstemp(prefix='.video_', suffix='.tmp', dir=parent)
-        os.close(fd)
+        backup = None
+        written = False
+        if os.path.lexists(destination):
+            backup = str(destination) + '.old_' + uuid.uuid4().hex
+            os.rename(destination, backup)
         try:
-            shutil.copyfile(source, staged)
-            os.replace(staged, destination)
-        finally:
-            if os.path.exists(staged):
-                os.remove(staged)
+            with open(source, 'rb') as src:
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                written = True
+                with os.fdopen(fd, 'wb') as dst:
+                    shutil.copyfileobj(src, dst, 1024 * 1024)
+        except Exception:
+            if written and os.path.exists(destination):
+                os.remove(destination)
+            if backup:
+                os.rename(backup, destination)
+            raise
+        if backup:
+            os.remove(backup)
 
     @classmethod
-    def process_trailer_download_workflow(cls, code, trailer_url, category='JAV_CEN', force=False, item_dict=None, use_dir_cache=False):
+    def process_trailer_download_workflow(cls, code, trailer_url, category='JAV_CEN', force=False, item_dict=None, use_dir_cache=False, video_observations=None, previous_video=None):
         """원격 트레일러 영상 다운로드 ➔ Rclone 업로드 또는 로컬 이동 ➔ 메타데이터 갱신 (디렉터리 캐시 지원)"""
         from .mod_meta_db import ModuleMetaDb, MetaItem
 
@@ -1305,6 +1460,7 @@ class MetaPreviewUtil:
         replacement_entry = None
         temp_output = None
         workflow_success = False
+        media_commit = {'state': 'not_attempted'}
 
         try:
             target_obj = item_dict if item_dict is not None else item
@@ -1313,14 +1469,13 @@ class MetaPreviewUtil:
             existing_trailer = cls.get_stored_video(target_obj, 'trailer', storage_type, std_cat)
             rel_dir, trailer_filename = cls.get_video_relative_path(target_obj, video_type='trailer', category=std_cat)
             dest_rel_full_path = f"{rel_dir}/{trailer_filename}"
-            previous = existing_trailer or {}
-            if previous.get('storage_type') == storage_type and previous.get('relative_path'):
+            previous = previous_video or existing_trailer or {}
+            if not force and previous.get('storage_type') == storage_type and previous.get('relative_path'):
                 recorded = previous['relative_path'].replace('\\', '/')
                 if recorded.startswith('/') or ':' in recorded or '..' in recorded.split('/'):
                     raise ValueError('Invalid recorded video path')
                 dest_rel_full_path = recorded
                 trailer_filename = recorded.rsplit('/', 1)[-1]
-
 
             # 로컬 저장 모드일 때 이미 해당 파일이 있으면 다운로드 생략 및 흡수
             if storage_type == 'local':
@@ -1342,129 +1497,127 @@ class MetaPreviewUtil:
                         sess.commit()
                     return True, extra.get('trailer_video')
 
-            # 구글 드라이브 모드이고 덮어쓰기 목적이 아닐 때: 원격 파일 사전 검사 및 File ID 갱신
-            if storage_type == 'gdrive' and not force:
-                existing_remote_fid = cls.get_remote_file_id(dest_rel_full_path, category=std_cat, is_image=False, use_dir_cache=use_dir_cache)
-                if existing_remote_fid:
-                    actual_relative_path = cls.get_recorded_remote_path(existing_remote_fid, dest_rel_full_path, category=std_cat)
-                    existing_meta = extra.get('trailer_video') or {}
-                    cur_fid = existing_meta.get('google_fileid')
+            observation = None
+            if storage_type == 'gdrive':
+                if not force and existing_trailer and existing_trailer.get('google_fileid') and existing_trailer.get('relative_path'):
+                    return True,existing_trailer
+                from .util_metadata import MetaUtil
+                prepared=next((e for e in extra.get('_media_replacements',[]) if e.get('media_type')=='trailer'
+                    and e.get('relative_path')==dest_rel_full_path and e.get('storage')=='gdrive'),None)
+                if prepared is None:
+                    directory,name=dest_rel_full_path.rsplit('/',1)
+                    files=None
+                    for key,value in (video_observations or {}).items():
+                        if (key[0]==std_cat and key[1]==directory and name.lower().startswith(key[2].lower()+'_')
+                                and getattr(value,'listing_complete',False)):
+                            files=value;break
+                    if files is None:files=MetaUtil.query_gdrive_remote_dir_files(directory,std_cat,strict=True,is_image=False)
+                    initial=dict(directory=directory,files=[dict(Name=getattr(files,'actual_names',{}).get(str(fid),n),ID=fid,IsDir=False) for n,fid in files.items()])
+                    fid=files.get(name.lower())
+                    if not force and fid:
+                        extra['trailer_video']=dict(storage_type='gdrive',relative_path=dest_rel_full_path,filename=name,google_fileid=fid,local_path='')
+                        if isinstance(target_obj,dict):target_obj['extra_info']=extra
+                        else:target_obj.extra_info=extra
+                        if sess:
+                            ModuleMetaDb.sync_item_video_assets(target_obj);sess.commit()
+                        return True,extra['trailer_video']
+                    replacement_entry=MetaUtil.prepare_video_replacement(target_obj,std_cat,dest_rel_full_path,
+                        observation={'initial_observation':initial},previous=previous,prebackup=True)
+                else:replacement_entry=prepared
+                MediaReplacement.stage(replacement_entry)
+                if not isinstance(target_obj,dict):
+                    pending_extra=dict(target_obj.extra_info or {});pending_extra.pop('_media_replacements',None);target_obj.extra_info=pending_extra
 
-                    # 메타데이터에 등록된 File ID와 다르거나 미등록 상태이면 최신 원격 ID로 동기화
-                    if cur_fid != existing_remote_fid or not existing_meta.get('storage_type') or existing_meta.get('relative_path') != actual_relative_path:
-                        trailer_meta = {
-                            'storage_type': 'gdrive',
-                            'filename': actual_relative_path.rsplit('/', 1)[-1],
-                            'relative_path': actual_relative_path,
-                            'duration': existing_meta.get('duration') or 0,
-                            'created_time': existing_meta.get('created_time') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'google_fileid': existing_remote_fid,
-                            'local_path': ''
-                        }
-                        extra['trailer_video'] = trailer_meta
-                        if isinstance(target_obj, dict):
-                            target_obj['extra_info'] = extra
-                        else:
-                            target_obj.extra_info = extra
-                            if sess:
-                                ModuleMetaDb.sync_item_video_assets(target_obj)
-                                sess.commit()
-                        logger.info(f"[MetaPreview] [GDrive] 원격 트레일러 파일 확인 ➔ File ID 동기화 및 다운로드 스킵: {code} ({existing_remote_fid})")
-                        return True, trailer_meta
-                    else:
-                        logger.debug(f"[MetaPreview] [GDrive] 트레일러 File ID 일치 확인 ➔ 다운로드 스킵: {code}")
-                        return True, existing_meta
-
-            from .util_metadata import MetaUtil
-            replacement_entry = MetaUtil.prepare_video_replacement(target_obj, std_cat, dest_rel_full_path)
             tmp_dir = os.path.join(path_data, 'tmp')
             os.makedirs(tmp_dir, exist_ok=True)
-            temp_output = os.path.join(tmp_dir, trailer_filename)
-
-            if os.path.exists(temp_output):
-                try:
-                    os.remove(temp_output)
-                except Exception:
-                    pass
+            fd, temp_output = tempfile.mkstemp(prefix='trailer_', suffix='.mp4', dir=tmp_dir)
+            os.close(fd)
 
             # 출처 사이트 식별 및 프록시 엔드포인트 결정
             site_raw = target_obj.get('site') if isinstance(target_obj, dict) else getattr(target_obj, 'site', '')
             site_key = (site_raw or '').strip().lower()
-            if not site_key or site_key == 'unknown':
-                if 'dmm.co.jp' in trailer_url: site_key = 'dmm'
-                elif 'mgstage.com' in trailer_url: site_key = 'mgstage'
-                elif 'fc2.com' in trailer_url: site_key = 'fc2com'
-                elif '1pondo.tv' in trailer_url: site_key = '1pondo'
-                elif '10musume.com' in trailer_url: site_key = '10musume'
-                elif 'pacopacomama.com' in trailer_url: site_key = 'paco'
-                elif 'caribbeancom.com' in trailer_url: site_key = 'carib'
-                elif 'heyzo.com' in trailer_url: site_key = 'heyzo'
-                elif 'stashdb.org' in trailer_url: site_key = 'stashdb'
-                elif 'theporndb.net' in trailer_url: site_key = 'tpdb'
-                else: site_key = 'dmm'
-
             from urllib.parse import quote_plus
-            is_uncen = (std_cat == 'JAV_UNCEN')
-            video_endpoint = 'jav_video_un' if is_uncen else 'jav_video'
-            proxy_route_path = f"/{P.package_name}/normal/{video_endpoint}?site={site_key}&url={quote_plus(trailer_url)}"
-
-            logger.info(f"[MetaPreview] 트레일러 다운로드 시작(FF Proxy): {code} [{site_key}] ➔ {trailer_url}")
-
+            endpoint = 'jav_video_un' if std_cat == 'JAV_UNCEN' else 'jav_video'
+            proxy_route_path = '/%s/normal/%s?site=%s&url=%s' % (
+                P.package_name, endpoint, quote_plus(site_key), quote_plus(trailer_url))
+            logger.info('[MetaPreview] FF 영상 프록시 다운로드 시작: %s [%s/%s]', code, std_cat, site_key or '미지정')
             download_success = False
             last_status_code = None
             source_failure = None
-
+            def read_proxy_response(response, internal):
+                nonlocal last_status_code, source_failure
+                last_status_code = response.status_code
+                source_failure = response.headers.get('X-Metadata-Trailer-Error')
+                content_type = str(response.headers.get('Content-Type') or '').lower()
+                if last_status_code not in (200, 206):
+                    return False
+                if any(t in content_type for t in ('text/html', 'text/plain', 'application/json')):
+                    source_failure = 'invalid_content'
+                    return False
+                if internal:
+                    chunks = response.iter_encoded() if hasattr(response, 'iter_encoded') else (
+                        response.response if hasattr(response, 'response') else [response.data])
+                else:
+                    chunks = response.iter_content(chunk_size=65536)
+                with open(temp_output, 'wb') as fp:
+                    for chunk in chunks:
+                        if chunk:
+                            fp.write(chunk)
+                return os.path.getsize(temp_output) > 1024
             try:
                 with F.app.test_client() as client:
-                    proxy_res = client.get(proxy_route_path, follow_redirects=True)
-                    last_status_code = proxy_res.status_code
-                    source_failure = proxy_res.headers.get('X-Metadata-Trailer-Error')
-
-                    if proxy_res.status_code in [200, 206]:
-                        if hasattr(proxy_res, 'iter_encoded'):
-                            stream_iter = proxy_res.iter_encoded()
-                        elif hasattr(proxy_res, 'response') and hasattr(proxy_res.response, '__iter__'):
-                            stream_iter = proxy_res.response
-                        else:
-                            stream_iter = [proxy_res.data]
-
-                        with open(temp_output, 'wb') as f_out:
-                            for chunk in stream_iter:
-                                if chunk:
-                                    f_out.write(chunk)
-
-                        if os.path.exists(temp_output) and os.path.getsize(temp_output) > 1024:
-                            download_success = True
-            except Exception as e_internal_proxy:
-                logger.debug(f"[MetaPreview] 내부 프록시 라우팅 호출 예외 ({code}): {e_internal_proxy}")
+                    response = client.get(proxy_route_path, follow_redirects=True)
+                    try:
+                        download_success = read_proxy_response(response, True)
+                    finally:
+                        response.close()
+            except Exception:
+                source_failure = None
+                logger.debug('[MetaPreview] FF 내부 영상 프록시 호출 실패: %s [%s]', code, std_cat, exc_info=True)
 
             if not download_success and source_failure not in ('not_found', 'invalid_content', 'tls_error'):
-                ddns_host = (F.SystemModelSetting.get('ddns') or '').rstrip('/')
-                if ddns_host:
-                    full_proxy_url = f"{ddns_host}{proxy_route_path}"
+                ddns = (F.SystemModelSetting.get('ddns') or '').rstrip('/')
+                if ddns:
+                    response = None
                     try:
-                        res = requests.get(full_proxy_url, stream=True, timeout=(10, 90), verify=False)
-                        last_status_code = res.status_code
-                        source_failure = res.headers.get('X-Metadata-Trailer-Error')
-                        if res.status_code in [200, 206]:
-                            with open(temp_output, 'wb') as f_out:
-                                for chunk in res.iter_content(chunk_size=65536):
-                                    if chunk:
-                                        f_out.write(chunk)
-                            if os.path.exists(temp_output) and os.path.getsize(temp_output) > 1024:
-                                download_success = True
-                    except Exception as e_ddns_proxy:
-                        logger.debug(f"[MetaPreview] DDNS 프록시 다운로드 예외 ({code}): {e_ddns_proxy}")
+                        response = requests.get(ddns + proxy_route_path, stream=True, timeout=(10, 90), verify=False)
+                        download_success = read_proxy_response(response, False)
+                    except Exception:
+                        source_failure = None
+                        logger.exception('[MetaPreview] DDNS FF 영상 프록시 다운로드 실패: %s [%s]', code, std_cat)
+                    finally:
+                        if response is not None:
+                            response.close()
 
             if not download_success or not os.path.exists(temp_output) or os.path.getsize(temp_output) < 1024:
                 cls.remove_official_trailer(target_obj, trailer_url)
                 if sess:
                     sess.commit()
-                logger.warning(f'[MetaPreview] 다운로드 실패로 공식 트레일러 URL 제거: {code}')
-                return False, f"트레일러 프록시 다운로드 실패 (HTTP {last_status_code}, {source_failure or 'temporary_error'})"
+                status = 'HTTP %s' % last_status_code if last_status_code is not None else 'HTTP 응답 확인 불가'
+                logger.warning('[MetaPreview] FF 트레일러 다운로드 실패: %s [%s/%s] %s %s; 공식 URL %s',
+                    code, std_cat, site_key or '미지정', status, source_failure or '영상 응답 미확인', '제거')
+                return False, '트레일러 FF 프록시 다운로드 실패 (%s, %s)' % (status, source_failure or '영상 응답 미확인')
 
             ffprobe_bin = cls.get_ffprobe_path(std_cat)
             dur = cls.get_video_duration(temp_output, ffprobe_bin)
+            if replacement_entry is not None and replacement_entry.get('retired_prebackup'):
+                import math
+                if not isinstance(dur, (int, float)) or not math.isfinite(dur) or dur <= 0:
+                    raise ValueError('트레일러 ffprobe 유효성 확인 실패')
+
+            from .util_metadata import MetaUtil
+            from .util_runtime import StorageConflict
+            prepared = replacement_entry or next((e for e in extra.get('_media_replacements', [])
+                if e.get('media_type') == 'trailer' and e.get('relative_path') == dest_rel_full_path
+                and e.get('storage') == storage_type), None)
+            if prepared is not None:
+                if prepared['status'] != 'pending':
+                    raise StorageConflict('이미 진행된 현재 트레일러 교체 정보입니다.')
+                replacement_entry = prepared
+                MediaReplacement.stage(replacement_entry)
+            else:
+                replacement_entry = MetaUtil.prepare_video_replacement(target_obj, std_cat, dest_rel_full_path,
+                    observation=observation, previous=previous if force else None)
 
             trailer_meta = {
                 'storage_type': storage_type,
@@ -1475,7 +1628,7 @@ class MetaPreviewUtil:
             }
 
             if storage_type == 'gdrive':
-                file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat)
+                file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat, prechecked=replacement_entry is not None, replacement=replacement_entry)
                 if not file_id:
                     return False, f"구글 드라이브 업로드 실패: {err}"
 
@@ -1492,7 +1645,7 @@ class MetaPreviewUtil:
                 trailer_meta['google_fileid'] = ''
 
             # 인메모리 객체 또는 DB 레코드에 반영
-            if replacement_entry is not None:
+            if replacement_entry is not None and storage_type != 'gdrive':
                 MediaReplacement.generated(replacement_entry, trailer_meta.get('google_fileid'))
             extra['trailer_video'] = trailer_meta
             extra.pop('unavailable_trailer', None)
@@ -1503,25 +1656,36 @@ class MetaPreviewUtil:
                 target_obj.extra_info = extra
                 if sess:
                     ModuleMetaDb.sync_item_video_assets(target_obj)
+                    if replacement_entry is not None and replacement_entry.get('retired_prebackup'):
+                        from sqlalchemy import event
+                        actual_session = sess() if hasattr(sess, 'registry') else sess
+                        def committed(session):
+                            media_commit['state'] = 'committed'
+                        event.listen(actual_session, 'after_commit', committed, once=True)
+                        media_commit['state'] = 'unknown'
                     sess.commit()
+                    if replacement_entry is not None and replacement_entry.get('retired_prebackup'):
+                        media_commit['state'] = 'committed'
                     MetaUtil.finish_media_replacements([replacement_entry], True)
 
             workflow_success = True
-            logger.info(f"[MetaPreview] [{std_cat}] {code} 트레일러 영상 저장 완료 ({storage_type}) -> {trailer_filename}")
+            emit = logger.debug if storage_type == 'gdrive' else logger.info
+            emit(f"[MetaPreview] [{std_cat}] {code} 트레일러 영상 저장 완료 ({storage_type}) -> {trailer_filename}")
             return True, trailer_meta
 
         except Exception as e:
             if sess:
                 sess.rollback()
-            logger.exception('[MetaPreview] 트레일러 다운로드 예외: code=%s', code)
+            logger.exception('[MetaPreview] 트레일러 준비/저장 처리 실패: %s [%s]', code, std_cat)
             return False, '트레일러 다운로드 중 오류가 발생했습니다.'
         finally:
             if replacement_entry is not None and not workflow_success:
                 from .util_metadata import MetaUtil
-                MetaUtil.finish_media_replacements([replacement_entry], False)
+                MetaUtil.finish_media_replacements([replacement_entry],
+                    None if media_commit['state'] == 'unknown' else media_commit['state'] == 'committed')
             if sess:
                 sess.remove()
-            if not workflow_success and temp_output and os.path.exists(temp_output):
+            if temp_output and os.path.exists(temp_output):
                 try:
                     os.remove(temp_output)
                 except Exception:
@@ -1553,6 +1717,7 @@ class MetaPreviewUtil:
         replacement_entry = None
         temp_output = None
         workflow_success = False
+        media_commit = {'state': 'not_attempted'}
 
         try:
             target_obj = item_dict if item_dict is not None else item
@@ -1562,7 +1727,7 @@ class MetaPreviewUtil:
             rel_dir, clip_filename = cls.get_video_relative_path(target_obj, video_type='preview', category=std_cat)
             dest_rel_full_path = f"{rel_dir}/{clip_filename}"
             previous = existing_clip or {}
-            if previous.get('storage_type') == storage_type and previous.get('relative_path'):
+            if not force and previous.get('storage_type') == storage_type and previous.get('relative_path'):
                 recorded = previous['relative_path'].replace('\\', '/')
                 if recorded.startswith('/') or ':' in recorded or '..' in recorded.split('/'):
                     raise ValueError('Invalid recorded video path')
@@ -1571,10 +1736,6 @@ class MetaPreviewUtil:
 
             if existing_clip and not force:
                 return True, existing_clip
-
-            if not existing_clip:
-                from .util_metadata import MetaUtil
-                replacement_entry = MetaUtil.prepare_video_replacement(target_obj, std_cat, dest_rel_full_path, video_type='preview')
 
             tmp_dir = os.path.join(path_data, 'tmp')
             os.makedirs(tmp_dir, exist_ok=True)
@@ -1590,6 +1751,10 @@ class MetaPreviewUtil:
             if not success:
                 return False, msg
 
+            from .util_metadata import MetaUtil
+            replacement_entry = MetaUtil.prepare_video_replacement(target_obj, std_cat, dest_rel_full_path,
+                video_type='preview', replace_existing_preview=bool(force))
+
             clip_meta = {
                 'storage_type': storage_type,
                 'filename': clip_filename,
@@ -1599,7 +1764,7 @@ class MetaPreviewUtil:
             }
 
             if storage_type == 'gdrive':
-                file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat)
+                file_id, err = cls.upload_to_gdrive(temp_output, dest_rel_full_path, category=std_cat, prechecked=replacement_entry is not None, replacement=replacement_entry)
                 if not file_id:
                     return False, f"구글 드라이브 업로드 실패: {err}"
                 clip_meta['google_fileid'] = file_id
@@ -1614,7 +1779,7 @@ class MetaPreviewUtil:
 
             extra['preview_clip'] = clip_meta
             extra.pop('source_video_path', None)
-            if replacement_entry is not None:
+            if replacement_entry is not None and storage_type != 'gdrive':
                 MediaReplacement.generated(replacement_entry, clip_meta.get('google_fileid'))
 
             if isinstance(target_obj, dict):
@@ -1624,7 +1789,15 @@ class MetaPreviewUtil:
                 target_obj.extra_info = extra
                 if sess:
                     ModuleMetaDb.sync_item_video_assets(target_obj)
+                    if replacement_entry is not None:
+                        from sqlalchemy import event
+                        actual_session = sess() if hasattr(sess, 'registry') else sess
+                        def committed(session):
+                            media_commit['state'] = 'committed'
+                        event.listen(actual_session, 'after_commit', committed, once=True)
+                        media_commit['state'] = 'unknown'
                     sess.commit()
+                    media_commit['state'] = 'committed'
                     if replacement_entry is not None:
                         MetaUtil.finish_media_replacements([replacement_entry], True)
 
@@ -1640,7 +1813,8 @@ class MetaPreviewUtil:
         finally:
             if replacement_entry is not None and not workflow_success:
                 from .util_metadata import MetaUtil
-                MetaUtil.finish_media_replacements([replacement_entry], False)
+                MetaUtil.finish_media_replacements([replacement_entry],
+                    None if media_commit['state'] == 'unknown' else media_commit['state'] == 'committed')
             if sess:
                 sess.remove()
             if temp_output and os.path.exists(temp_output):
@@ -1772,7 +1946,7 @@ class MetaPreviewUtil:
                     cached_token, expire_at = cls._token_cache[cache_key]
                     if now < (expire_at - 300):
                         if target_user:
-                            logger.debug(f"[MetaPreview] SA 권한 위임 토큰 캐시 히트: '{remote_name}' -> '{target_user}' (계정: {user_seq}/{total_users})")
+                            logger.debug(f"[MetaPreview] 서비스 계정 인증 토큰 재사용: {remote_name}")
                         return cached_token
 
                 # JWT 어서션 생성 및 OAuth2 access_token 발급 요청
@@ -1791,12 +1965,12 @@ class MetaPreviewUtil:
                     cls._token_cache[cache_key] = (access_token, now + expires_in)
 
                     if target_user:
-                        logger.debug(f"[MetaPreview] SA 권한 위임 토큰 갱신 성공: '{remote_name}' -> '{target_user}' ({user_seq}/{total_users}, 유효: {expires_in}초)")
+                        logger.debug(f"[MetaPreview] 위임 서비스 계정 인증 토큰 갱신 완료: {remote_name} (유효기간 {expires_in}초)")
                     else:
-                        logger.debug(f"[MetaPreview] SA 토큰 갱신 성공: '{remote_name}' (유효: {expires_in}초)")
+                        logger.debug(f"[MetaPreview] 서비스 계정 인증 토큰 갱신 완료: '{remote_name}' (유효: {expires_in}초)")
                     return access_token
                 else:
-                    logger.error(f"[MetaPreview] SA 토큰 요청 실패 (HTTP {res.status_code}): {res.text[:200]}")
+                    logger.error(f"[MetaPreview] 서비스 계정 인증 토큰 요청 실패 (HTTP {res.status_code})")
                     return None
 
             # 일반 OAuth2 리프레시 토큰(refresh_token) 방식 처리
@@ -1813,7 +1987,7 @@ class MetaPreviewUtil:
                     pass
 
             if not refresh_token:
-                logger.error(f"[MetaPreview] 리모트 '{remote_name}'에서 인증 정보(SA 키 파일 또는 refresh_token)를 찾을 수 없습니다.")
+                logger.error(f"[MetaPreview] 저장소 {remote_name}: 서비스 계정 또는 갱신용 인증 정보를 찾지 못했습니다.")
                 return None
 
             if remote_name in cls._token_cache:
@@ -1848,233 +2022,26 @@ class MetaPreviewUtil:
 
 
 class MediaReplacement:
-    @classmethod
-    def acquire_subject(cls, folder, domain, person_idx):
-        os.makedirs(folder, exist_ok=True)
-        key = 'person:' + str(domain).upper() + ':' + str(person_idx).casefold()
-        path = os.path.join(folder, 'subject_' + hashlib.sha256(key.encode()).hexdigest() + '.lock')
-        token = uuid.uuid4().hex
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            from .util_runtime import StorageConflict
-            raise StorageConflict('이 인물의 이미지 작업 또는 복구 확인이 진행 중입니다.') from None
-        with os.fdopen(fd, 'w') as fp:
-            json.dump({'identifier': token, 'owner_pid': os.getpid(), 'owner_token': cls.owner_token(os.getpid())}, fp)
-            fp.flush()
-            os.fsync(fp.fileno())
-        return {'subject_lock': path, 'subject_token': token}
 
-    @staticmethod
-    def release_subject(subject):
-        path = subject.get('subject_lock')
-        if path and os.path.isfile(path):
-            with open(path) as fp:
-                owner = json.load(fp)
-            if owner.get('identifier') == subject.get('subject_token'):
-                os.remove(path)
-
-    @staticmethod
-    def assert_available(folder, target):
-        if not isinstance(target, str) or not target:
-            from .util_runtime import StorageLookupError
-            raise StorageLookupError('미디어 저장소 대상을 확인할 수 없습니다.')
-        path = os.path.join(folder, hashlib.sha256(target.encode()).hexdigest() + '.lock')
-        if os.path.exists(path):
-            from .util_runtime import StorageConflict
-            raise StorageConflict('대상 파일의 교체 또는 복구 확인이 진행 중입니다.')
-
-    @staticmethod
-    def owner_token(pid):
-        try:
-            with open('/proc/sys/kernel/random/boot_id') as fp:
-                boot = fp.read().strip()
-            with open('/proc/%s/stat' % pid) as fp:
-                start = fp.read().rsplit(')', 1)[1].split()[19]
-            return boot + ':' + start
-        except (OSError, IndexError):
-            return ''
-
-    @staticmethod
-    def journal_guard(entry):
-        from contextlib import contextmanager
-        from .util_runtime import StorageConflict
-        @contextmanager
-        def locked():
-            # Reuse the existing target lock inode. Never create a lock/journal
-            # for a stale receipt, and never hold this across network operations.
-            with open(entry['lock'], 'rb') as guard:
-                try:
-                    fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise StorageConflict('복구 기록 갱신이 진행 중입니다.') from None
-                try:
-                    current = os.stat(entry['lock'])
-                    opened = os.fstat(guard.fileno())
-                    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                        raise StorageConflict('복구 기록 잠금 소유 상태가 변경되었습니다.')
-                    yield
-                finally:
-                    fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
-        return locked()
-
-    @staticmethod
-    def validate_journal_owner(entry, current):
-        from .util_runtime import StorageConflict
-        keys = ('identifier', 'target', 'journal', 'lock', 'owner_pid', 'owner_token',
-                'subject_lock', 'subject_token', 'person_id', 'person_domain', 'person_idx')
-        if (not isinstance(current, dict) or any(entry.get(key) != current.get(key) for key in keys)
-                or entry.get('subject_type', 'item') != current.get('subject_type', 'item')):
-            raise StorageConflict('복구 기록의 작업 소유 근거가 일치하지 않습니다.')
-
-    @classmethod
-    def mark_pending(cls, entry, commit_unknown=False):
-        if not os.path.isfile(entry['journal']):
-            return False
-        try:
-            with cls.journal_guard(entry):
-                if not os.path.isfile(entry['journal']):
-                    return False
-                with open(entry['journal']) as fp:
-                    current = json.load(fp)
-                cls.validate_journal_owner(entry, current)
-                status = current.get('status')
-                if status in ('committing', 'committed', 'rolling_back', 'rolled_back'):
-                    if commit_unknown:
-                        entry.update(current)
-                        return False
-                    # A confirmed cleanup may still need retry while its owner
-                    # process lives. Retain its phase and only abandon cleanup.
-                    current['abandoned'] = True
-                    cls._save_journal(current)
-                    entry.update(current)
-                    return True
-                if status not in ('pending', 'generated', 'removed'):
-                    from .util_runtime import StorageConflict
-                    raise StorageConflict('알 수 없는 복구 기록 상태입니다.')
-                current['abandoned'] = True
-                if commit_unknown:
-                    current['commit_unknown'] = True
-                cls._save_journal(current)
-                entry.update(current)
-                return True
-        except FileNotFoundError:
-            if not os.path.exists(entry['journal']):
-                return False
-            raise
-
-    @classmethod
-    def save(cls, entry, create=False):
-        with cls.journal_guard(entry):
-            exists = os.path.isfile(entry['journal'])
-            from .util_runtime import StorageConflict
-            if create:
-                raise StorageConflict('복구 기록의 최초 생성은 begin에서만 가능합니다.')
-            if not create and not exists:
-                raise FileNotFoundError('종료된 복구 기록을 다시 생성할 수 없습니다.')
-            if exists:
-                with open(entry['journal']) as fp:
-                    current = json.load(fp)
-                cls.validate_journal_owner(entry, current)
-                # Ordinary save may add evidence, never replace an existing
-                # fact. Managed phase/evidence changes use _transition instead.
-                managed = {'status', 'staged', 'stage_started', 'new_id', 'new_file_stat',
-                           'backup', 'had_original', 'original_id', 'original_file_stat'}
-                flags = {'commit_unknown', 'abandoned'}
-                if (any(entry.get(key) != value for key, value in current.items() if key not in flags)
-                        or any(key not in current and key in managed for key in entry)):
-                    raise StorageConflict('오래된 복구 기록으로 최신 증거를 변경할 수 없습니다.')
-                updated = dict(current)
-                updated.update({key: value for key, value in entry.items() if key not in flags})
-                for flag in flags:
-                    if entry.get(flag):
-                        updated[flag] = True
-                cls._save_journal(updated)
-                entry.clear()
-                entry.update(updated)
-            else:
-                cls._save_journal(entry)
-
-    @classmethod
-    def read_current(cls, entry):
-        with cls.journal_guard(entry):
-            with open(entry['journal']) as fp:
-                current = json.load(fp)
-            cls.validate_journal_owner(entry, current)
-            return current
-
-    @classmethod
-    def verify_current(cls, entry):
-        from .util_runtime import StorageConflict
-        current = cls.read_current(entry)
-        flags = {'commit_unknown', 'abandoned'}
-        if ({k: v for k, v in current.items() if k not in flags} !=
-                {k: v for k, v in entry.items() if k not in flags}):
-            raise StorageConflict('파일 작업 전에 복구 증거가 변경되었습니다.')
-
-    @classmethod
-    def _transition(cls, entry, status, changes=None, replace_generation=False):
-        from .util_runtime import StorageConflict
-        allowed = {'pending': {'pending', 'generated', 'removed', 'rolling_back'},
-                   'generated': {'generated', 'committing', 'rolling_back'},
-                   'removed': {'removed', 'committing', 'rolling_back'},
-                   'committing': {'committing', 'committed'}, 'committed': {'committed'},
-                   'rolling_back': {'rolling_back', 'rolled_back'}, 'rolled_back': {'rolled_back'}}
-        changes = changes or {}
-        fields = {'pending': {'staged', 'stage_started'}, 'generated': {'new_id', 'new_file_stat'}}
-        if set(changes) - fields.get(status, set()):
-            raise StorageConflict('허용되지 않은 복구 증거 변경입니다.')
-        with cls.journal_guard(entry):
-            with open(entry['journal']) as fp:
-                current = json.load(fp)
-            cls.validate_journal_owner(entry, current)
-            flags = {'commit_unknown', 'abandoned'}
-            if ({k: v for k, v in current.items() if k not in flags} !=
-                    {k: v for k, v in entry.items() if k not in flags}):
-                raise StorageConflict('복구 기록이 변경되어 단계 전이를 보류합니다.')
-            previous = current.get('status')
-            if status not in allowed.get(previous, set()):
-                raise StorageConflict('복구 단계가 변경되어 이전 작업을 보류합니다.')
-            if status == 'rolling_back' and current.get('commit_unknown'):
-                raise StorageConflict('DB 반영 결과 불명으로 파일 복구를 보류합니다.')
-            if status == 'pending' and any(current.get(key) and not value for key, value in changes.items()):
-                raise StorageConflict('파일 이동 증거를 이전 단계로 변경할 수 없습니다.')
-            if previous == 'generated' and not replace_generation and any(
-                    key in current and current[key] != value for key, value in changes.items()):
-                raise StorageConflict('기존 생성 증거의 변경에는 명시적인 재시도 근거가 필요합니다.')
-            updated = dict(current, status=status, **changes)
-            cls._save_journal(updated)
-            entry.clear()
-            entry.update(updated)
-
-    @staticmethod
-    def _save_journal(entry):
-        folder = os.path.dirname(entry['journal'])
-        fd, temporary = tempfile.mkstemp(prefix='.journal_', dir=folder)
-        try:
-            with os.fdopen(fd, 'w') as fp:
-                json.dump(entry, fp, ensure_ascii=False)
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.replace(temporary, entry['journal'])
-        finally:
-            if os.path.exists(temporary):
-                os.remove(temporary)
 
     @staticmethod
     def command(entry, operation, *paths):
         result = subprocess.run([entry['rclone'], '--config', entry['config'], operation, *paths],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=40)
         if result.returncode:
-            raise RuntimeError('rclone %s failed: %s' % (operation, result.stderr[-250:]))
+            raise RuntimeError('rclone %s failed (rc=%s): %s' % (operation, result.returncode, result.stderr))
         return result.stdout
 
     @classmethod
     def exists(cls, entry, path):
         if entry['storage'] == 'local':
             return os.path.isfile(path)
-        return MetaPreviewUtil.remote_stat(
-            [entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', path]) is not None
+        item = MetaPreviewUtil.remote_stat([entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', path],
+            category=entry.get('category', ''), purpose='backup_probe' if path == entry.get('backup') else 'replacement')
+        if item is not None and 'status' not in entry and path == entry.get('target'):
+            MetaPreviewUtil.validate_remote_media(item)
+            entry['old_id'] = item.get('ID') or item.get('id')
+        return item is not None
 
     @classmethod
     def move(cls, entry, source, destination):
@@ -2088,200 +2055,465 @@ class MediaReplacement:
         if entry['storage'] == 'local':
             if os.path.exists(path):
                 os.remove(path)
+                return True
+            return False
         else:
             try:
                 cls.command(entry, 'deletefile', path)
+                return True
             except RuntimeError as exc:
                 if 'not found' not in str(exc).lower() and 'does not exist' not in str(exc).lower():
                     raise
+                return False
 
     @classmethod
-    def begin(cls, folder, spec, exists=False):
+    def begin(cls, spec, exists=False):
         basename = spec['relative_path'].replace('\\', '/').rsplit('/', 1)[-1].lower()
-        if '_user.' in basename or (spec['media_type'] == 'preview' and exists):
+        manual_image = (spec.get('manual_user_image') is True and isinstance(spec.get('user_plan'), dict)
+                        and spec.get('subject_type', 'item') == 'item'
+                        and spec['media_type'] in ('poster', 'landscape') and not exists)
+        manual_image = manual_image or (spec.get('image_contract')==1 and spec.get('explicit_user_image') is True
+            and isinstance(spec.get('user_plan'),dict) and spec.get('image_plan',{}).get('relative_path')==spec['relative_path']
+            and spec['user_plan'].get('code')==spec.get('code') and spec['user_plan'].get('category')==spec.get('category')
+            and spec['user_plan'].get('canonical_rel')==spec['relative_path']
+            and spec['media_type'] in ('poster','landscape'))
+        manual_image = manual_image or (spec.get('image_contract')==1 and spec.get('subject_type')=='person'
+            and spec.get('image_plan',{}).get('person_custom') and spec.get('person_id') is not None
+            and spec.get('person_idx') and spec.get('person_domain') in ('JAV','WESTERN'))
+        if ('_user.' in basename and not manual_image) or (
+                spec['media_type'] == 'preview' and exists and not spec.get('replace_existing_preview')):
             raise ValueError('Protected media cannot be staged for replacement')
-        os.makedirs(folder, exist_ok=True)
         identifier = uuid.uuid4().hex
-        lock = os.path.join(folder, hashlib.sha256(spec['target'].encode()).hexdigest() + '.lock')
-        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
-        entry = dict(spec, identifier=identifier, journal=os.path.join(folder, identifier + '.json'),
-                     lock=lock, owner_pid=os.getpid(), owner_token=cls.owner_token(os.getpid()),
-                     backup=spec['target'] + '.old_' + identifier if exists else '',
+        entry = dict(spec, identifier=identifier,
+                     backup=spec.get('original_target', spec['target']) + '.old_' + identifier if exists else '',
                      had_original=bool(exists), status='pending', staged=False, new_id='')
-        collision = False
-        try:
-            if exists:
-                if spec['storage'] == 'local':
-                    stat = os.stat(spec['target'])
-                    entry['original_file_stat'] = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
-                else:
-                    original = MetaPreviewUtil.remote_stat([spec['rclone'], '--config', spec['config'],
-                                                           'lsjson', '--stat', spec['target']])
-                    if original is None:
-                        from .util_runtime import StorageConflict
-                        raise StorageConflict('예약 중 원본 파일이 변경되었습니다.')
-                    entry['original_id'] = original.get('ID') or original.get('id')
-            with cls.journal_guard(entry):
-                if os.path.exists(entry['journal']):
-                    collision = True
-                    from .util_runtime import StorageConflict
-                    raise StorageConflict('이미 존재하는 복구 기록입니다.')
-                cls._save_journal(entry)
-            return entry
-        except Exception:
-            # Never remove another journal on identifier collision. If initial
-            # persistence may have succeeded, retain its lock and evidence.
-            if (collision or not os.path.exists(entry['journal'])) and os.path.exists(lock):
-                os.remove(lock)
-            raise
+        if entry.get('retired_prebackup'):
+            name = entry['retired_video']['relative_path'].rsplit('/', 1)[-1]
+            entry.update(retired_original_name=name, retired_backup_name=name + '.old_' + identifier)
+        return entry
 
     @classmethod
     def stage(cls, entry):
-        from .util_runtime import StorageConflict
-        current = cls.read_current(entry)
-        if current['status'] != 'pending':
-            raise StorageConflict('파일 이동을 시작할 수 없는 복구 단계입니다.')
-        if current['staged']:
-            entry.clear()
-            entry.update(current)
+        if entry.get('staged'):
             return
-        if entry['backup']:
+        if entry.get('image_contract'):
+            return cls.image_stage(entry)
+        if entry.get('initial_observation') and entry.get('media_type') in ('trailer', 'preview'):
+            from .util_metadata import MetaUtil
+            if entry.get('retired_prebackup'):
+                MetaUtil.prebackup_registered_video(entry)
+        elif entry['backup']:
             if cls.exists(entry, entry['backup']):
-                raise StorageConflict('이미 백업 파일이 있어 이전 이동 결과 확인을 보류합니다.')
-            cls._transition(entry, 'pending', {'stage_started': True})
+                from .util_runtime import StorageConflict
+                raise StorageConflict('백업 이름에 이미 파일이 있습니다.')
+            if entry['storage'] == 'gdrive':
+                entry['stage_started'] = True
             cls.move(entry, entry['target'], entry['backup'])
-            cls._transition(entry, 'pending', {'staged': True})
+            entry['stage_started'] = True
+            logger.debug('[MediaReplacement] 원본 백업 이동 완료: %s', entry['relative_path'])
+        entry['staged'] = True
 
     @classmethod
-    def generated(cls, entry, file_id='', *, expected_new_id=None):
-        from .util_runtime import StorageConflict
-        current = cls.read_current(entry)
-        if current['status'] not in ('pending', 'generated'):
-            raise StorageConflict('생성 결과를 기록할 수 없는 복구 단계입니다.')
-        changes = {'new_id': file_id or ''}
-        if entry.get('storage') == 'local' and os.path.isfile(entry['target']):
-            stat = os.stat(entry['target'])
-            changes['new_file_stat'] = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
-        retry = bool(expected_new_id and current.get('new_id') == expected_new_id and entry.get('new_id') == expected_new_id)
-        cls._transition(entry, 'generated', changes, replace_generation=retry)
+    def generated(cls, entry, file_id='', *, expected_new_id=None, observation=None):
+        if entry.get('image_contract'):
+            return cls.image_generated(entry, file_id, observation)
+        if entry.get('initial_observation'):
+            cls.validate_upload_observation(entry, file_id, observation)
+        entry.update(status='generated', new_id=file_id or '')
+        if entry['storage'] == 'local':
+            entry['new_file'] = os.path.isfile(entry['target'])
 
     @classmethod
     def removed(cls, entry):
-        cls._transition(entry, 'removed')
+        entry['status'] = 'removed'
+
+    @classmethod
+    def image_settings(cls, entry):
+        from .util_runtime import StorageConflict
+        if not entry.get('image_contract'):
+            plan=entry['user_plan']
+            current=P.ModelSetting.get(plan['module']+'_image_mode') or 'image_server'
+            if current!=plan.get('configured_mode',plan['mode']) or P.ModelSetting.get('jav_censored_image_gdrive_remote_path')!=plan['remote_root']:
+                raise StorageConflict('구 이미지 저장 방식/루트가 변경되어 보존합니다.')
+            if MetaPreviewUtil.get_setting('rclone_conf',plan['category'],default='/data/db/rclone.conf')!=plan['config']:
+                raise StorageConflict('구 이미지 리모트 설정 변경으로 보존합니다.')
+            return
+        plan=entry['image_plan'];module={'WESTERN':'western','JAV_UNCEN':'jav_uncensored','JAV_CEN':'jav_censored'}[entry['category']]
+        current=P.ModelSetting.get(module+'_image_mode') or ('image_server' if entry.get('explicit_user_image') else P.ModelSetting.get('jav_censored_image_mode') or 'ff_proxy')
+        if plan.get('person_custom'):current=P.ModelSetting.get(module+'_actor_image_mode') or 'gds'
+        if current!=plan['configured_mode']:raise StorageConflict('이미지 저장 방식이 변경되어 작업을 보류합니다.')
+        root=(P.ModelSetting.get('jav_censored_image_gdrive_remote_path') or '') if entry['storage']=='gdrive' else os.path.abspath(P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data,'images'))
+        if root!=plan['root']:raise StorageConflict('이미지 저장 루트가 변경되어 작업을 보류합니다.')
+        if entry['storage']=='gdrive' and MetaPreviewUtil.get_setting('rclone_conf',entry['category'],default='/data/db/rclone.conf')!=entry['config']:
+            raise StorageConflict('이미지 리모트 설정이 변경되어 작업을 보류합니다.')
+
+    @classmethod
+    def image_identity(cls, entry, file_id, expected_name=None, parent=None):
+        """Read-only metadata. Mutation callers must additionally prove name, parent and DB state."""
+        import requests
+        from .util_runtime import StorageConflict
+        plan=entry.get('image_plan') or {'root':entry['user_plan']['remote_root']}
+        config=entry.get('config') or entry['user_plan']['config']
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',file_id or ''):raise StorageConflict('이미지 File ID 형식 오류')
+        token=MetaPreviewUtil.get_gdrive_access_token(config,plan['root'].split(':',1)[0],file_id=file_id)
+        if not token:raise StorageConflict('이미지 저장소 인증 확인 실패')
+        response=requests.get('https://www.googleapis.com/drive/v3/files/'+file_id,
+            params={'fields':'id,name,parents,trashed','supportsAllDrives':'true'},headers={'Authorization':'Bearer '+token},timeout=20)
+        try:
+            value=response.json() if response.status_code==200 else {}
+            if (value.get('id')!=file_id or value.get('trashed') is not False or not isinstance(value.get('name'),str)
+                    or not isinstance(value.get('parents'),list) or len(value['parents'])!=1):raise StorageConflict('이미지 ID/이름/부모 상태 확인 실패')
+            if expected_name is not None and value['name']!=expected_name:raise StorageConflict('이미지 실제 파일명이 다릅니다.')
+            if parent is not None and value['parents']!=[parent]:raise StorageConflict('이미지 실제 부모가 다릅니다.')
+            return value
+        finally:response.close()
+
+    @classmethod
+    def validate_upload_observation(cls, entry, file_id, observation):
+        from .util_runtime import StorageConflict
+        old_id=(entry.get('image_plan',{}).get('old') or {}).get('fid') or (entry.get('retired_video') or {}).get('file_id') or entry.get('original_id')
+        if (not re.fullmatch(r'[A-Za-z0-9_-]+',file_id or '') or file_id==old_id or
+                not isinstance(observation,dict) or observation.get('Name')!=os.path.basename(entry['relative_path']) or
+                (observation.get('ID') or observation.get('id'))!=file_id):
+            raise StorageConflict('업로드 신규 이름/ID 확인 실패')
+        MetaPreviewUtil.validate_remote_media(observation)
+        if any(row['ID']==file_id for row in entry['initial_observation']['files']):
+            raise StorageConflict('업로드 결과가 최초 관측의 기존 ID를 재사용합니다.')
+
+    @classmethod
+    def mutate_observed_file(cls, entry, file_id, current_name, root, new_name=None):
+        """ID-only mutation; the operation's first observation authorizes normal work."""
+        import requests
+        from .util_runtime import StorageConflict
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',file_id or ''):raise StorageConflict('파일 ID 형식 오류')
+        token=MetaPreviewUtil.get_gdrive_access_token(entry['config'],root.split(':',1)[0],file_id=file_id)
+        if not token:raise StorageConflict('저장소 변경 인증 확인 실패')
+        url='https://www.googleapis.com/drive/v3/files/'+file_id
+        options=dict(params={'supportsAllDrives':'true'},headers={'Authorization':'Bearer '+token},timeout=20)
+        if new_name is not None:
+            options.update(json={'name':new_name});options['params']['fields']='id,name,trashed'
+        response=(requests.patch if new_name is not None else requests.delete)(url,**options)
+        try:
+            if new_name is None:
+                if response.status_code not in (200,204):raise StorageConflict('ID 삭제 결과 불명')
+            else:
+                value=response.json() if response.status_code==200 else {}
+                if value.get('id')!=file_id or value.get('name')!=new_name or value.get('trashed') is not False:
+                    raise StorageConflict('ID 이름 변경 결과 불명')
+                return value
+        finally:response.close()
+
+    @classmethod
+    def image_mutate(cls, entry, file_id, current_name, parent, new_name=None):
+        import requests
+        from .util_runtime import StorageConflict
+        cls.image_settings(entry)
+        if entry.get('initial_observation'):
+            return cls.mutate_observed_file(entry,file_id,current_name,entry['image_plan']['root'],new_name)
+        cls.image_identity(entry,file_id,current_name,parent)
+        root=entry['image_plan']['root'] if entry.get('image_contract') else entry['user_plan']['remote_root']
+        config=entry.get('config') or entry['user_plan']['config']
+        token=MetaPreviewUtil.get_gdrive_access_token(config,root.split(':',1)[0],file_id=file_id)
+        if not token:raise StorageConflict('이미지 변경 인증 확인 실패')
+        kwargs=dict(params={'supportsAllDrives':'true'},headers={'Authorization':'Bearer '+token},timeout=20)
+        if new_name is not None:kwargs.update(json={'name':new_name});kwargs['params']['fields']='id,name,parents,trashed'
+        response=(requests.patch if new_name is not None else requests.delete)('https://www.googleapis.com/drive/v3/files/'+file_id,**kwargs)
+        try:
+            if new_name is None:
+                if response.status_code not in (200,204):raise StorageConflict('이미지 삭제 결과 불명')
+            else:
+                value=response.json() if response.status_code==200 else {}
+                if value.get('id')!=file_id or value.get('name')!=new_name or value.get('parents')!=[parent] or value.get('trashed') is not False:raise StorageConflict('이미지 이름 변경 결과 불명')
+                return value
+        finally:response.close()
+
+    @classmethod
+    def image_stage(cls, entry):
+        from .util_metadata import MetaUtil
+        from .util_runtime import StorageConflict
+        plan = entry['image_plan']; old = plan['old']
+        cls.image_settings(entry)
+        if entry.get('staged'):
+            return
+        if entry['storage'] == 'gdrive' and 'system_candidates' in plan:
+            for index, row in enumerate(plan['system_candidates']):
+                row['backup_name'] = row['Name'] + '.old_' + entry['identifier'] + '_' + str(index)
+                if any(value['Name'].casefold() == row['backup_name'].casefold() for value in entry['initial_observation']['files']):
+                    raise StorageConflict('이미지 백업 이름이 이미 존재하여 보존합니다.')
+                entry['stage_started'] = True
+                cls.image_mutate(entry, row['ID'], row['Name'], None, row['backup_name'])
+                row['staged'] = True
+            entry['staged'] = True
+            return
+        if entry['had_original']:
+            if not entry.get('initial_observation') and MetaUtil._manual_image_references(dict(category=entry['category'], old=old)):
+                raise StorageConflict('공유된 이전 이미지를 보존합니다.')
+            if entry['storage'] == 'gdrive':
+                backup = old['name'] + '.old_' + entry['identifier']
+                if entry.get('initial_observation'):
+                    if any(row['Name'].casefold() == backup.casefold() for row in entry['initial_observation']['files']):
+                        raise StorageConflict('이미지 백업 이름 충돌')
+                else:
+                    lookup = dict(rclone=entry['rclone'], config=entry['config'], remote_dir=old['target'].rsplit('/', 1)[0], category=entry['category'])
+                    if MetaUtil._manual_drive_rows(lookup, backup):
+                        raise StorageConflict('이미지 백업 이름 충돌')
+                entry['stage_started'] = True
+                cls.image_mutate(entry, old['fid'], old['name'], old.get('parent_id'), backup)
+            else:
+                MetaUtil.validate_image_local_target(entry['target'], plan['root'])
+                if os.path.lexists(entry['backup']):
+                    raise StorageConflict('로컬 이미지 백업 이름 충돌')
+                os.replace(entry['original_target'], entry['backup'])
+                entry['stage_started'] = True
+            logger.debug('[MediaReplacement] 이미지 백업 완료: %s', entry['relative_path'])
+        entry['staged'] = True
+
+    @classmethod
+    def image_write_start(cls, entry, source=None):
+        from .util_metadata import MetaUtil
+        from .util_runtime import StorageConflict
+        cls.image_settings(entry)
+        if entry['status']!='pending' or not entry.get('staged'):raise StorageConflict('사전 준비된 이미지 영수증이 필요합니다.')
+        plan=entry['image_plan']
+        if entry['storage']=='local':
+            root=P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data,'images')
+            if os.path.abspath(root)!=plan['root']:raise StorageConflict('이미지 로컬 루트 설정 변경')
+            MetaUtil.validate_image_local_target(entry['target'],plan['root'])
+            if MetaUtil._manual_file_stat(entry['target']):raise StorageConflict('이미지 목적지에 예상하지 않은 파일이 있습니다.')
+        elif not entry.get('initial_observation'):
+            if P.ModelSetting.get('jav_censored_image_gdrive_remote_path')!=plan['root']:raise StorageConflict('이미지 리모트 설정 변경')
+            lookup=dict(rclone=entry['rclone'],config=entry['config'],remote_dir=plan['remote_dir'],category=entry['category'])
+            if MetaUtil._manual_drive_rows(lookup,plan['filename']):raise StorageConflict('이미지 정식 이름이 비워지지 않았습니다.')
+        changes={'image_write_started':True}
+        if source:changes['image_write_checksum']=MetaUtil._user_image_checksum(source)
+        entry.update(status='pending', **changes)
+
+    @classmethod
+    def image_generated(cls, entry, file_id='', observation=None):
+        from .util_metadata import MetaUtil
+        from .util_runtime import StorageConflict
+        if entry['storage'] == 'gdrive':
+            if file_id == entry['image_plan']['old'].get('fid'):
+                raise StorageConflict('신규 이미지 ID가 이전 파일과 같습니다.')
+            if entry.get('initial_observation'):
+                cls.validate_upload_observation(entry, file_id, observation)
+            else:
+                entry['new_id'] = file_id or ''
+                candidate = dict(category=entry['category'], old=dict(url=MetaUtil.format_gdrive_thumbnail_url(file_id), fid=file_id, relative_path=entry['relative_path']))
+                if MetaUtil._manual_image_references(candidate, exclude_owner=False):
+                    raise StorageConflict('신규 ID가 다른 DB 등록에서 사용되어 보존합니다.')
+                if observation is None:
+                    plan = entry['image_plan']
+                    rows = MetaUtil._manual_drive_rows(dict(remote_dir=plan['remote_dir'], rclone=entry['rclone'], config=entry['config'], category=entry['category']), plan['filename'])
+                    if len(rows) != 1 or rows[0].get('Name') != plan['filename'] or (rows[0].get('ID') or rows[0].get('id')) != file_id:
+                        raise StorageConflict('생성된 정식 이미지의 동명/ID 확인 실패')
+                cls.image_identity(entry, file_id, entry['image_plan']['filename'], entry['image_plan']['parent_id'])
+            MetaPreviewUtil.register_remote_file(entry['relative_path'], file_id, entry['category'], is_image=True)
+        else:
+            if not os.path.isfile(entry['target']) or MetaUtil._user_image_checksum(entry['target']) != entry.get('image_write_checksum'):
+                raise StorageConflict('게시 이미지 내용 확인 실패')
+            entry.update(new_file=True, new_checksum=entry['image_write_checksum'])
+            MetaPreviewUtil.register_local_file(entry['target'])
+        entry.update(status='generated', new_id=file_id or '', image_verified=True)
+
+    @classmethod
+    def image_finish(cls, entry, commit):
+        from .util_metadata import MetaUtil
+        from .util_runtime import StorageConflict
+        plan = entry['image_plan']; old = plan['old']
+        cls.image_settings(entry)
+        if entry['storage'] == 'gdrive' and 'system_candidates' in plan:
+            return cls.system_image_finish(entry, commit)
+        if commit:
+            if entry['status'] not in ('generated', 'removed'):
+                raise StorageConflict('이미지 교체가 완료되지 않아 백업 정리를 보류합니다.')
+            if entry['had_original'] and entry.get('stage_started'):
+                if not entry.get('initial_observation') and MetaUtil._manual_image_references(dict(category=entry['category'], old=old)):
+                    raise StorageConflict('공유된 이전 이미지를 보존합니다.')
+                if entry['storage'] == 'gdrive':
+                    cls.image_mutate(entry, old['fid'], old['name'] + '.old_' + entry['identifier'], old.get('parent_id'))
+                else:
+                    os.remove(entry['backup'])
+                logger.debug('[MediaReplacement] DB 저장 후 이미지 백업 정리 완료: %s', entry['relative_path'])
+            entry['status'] = 'committed'
+        else:
+            if entry['storage'] == 'gdrive':
+                if entry.get('new_id'):
+                    cls.image_mutate(entry, entry['new_id'], plan['filename'], plan.get('parent_id'))
+                elif entry.get('image_write_started'):
+                    lookup = dict(rclone=entry['rclone'], config=entry['config'], remote_dir=plan['remote_dir'], category=entry['category'])
+                    if MetaUtil._manual_drive_rows(lookup, plan['filename']):
+                        raise StorageConflict('신규 이미지 ID 불명으로 파일 삭제·백업 복원을 보류합니다.')
+                if entry['had_original'] and entry.get('stage_started'):
+                    if entry.get('initial_observation') and entry.get('staged'):
+                        cls.image_mutate(entry, old['fid'], old['name'] + '.old_' + entry['identifier'], old.get('parent_id'), old['name'])
+                    else:
+                        identity = cls.image_identity(entry, old['fid'], parent=old.get('parent_id'))
+                        if identity['name'] == old['name'] + '.old_' + entry['identifier']:
+                            lookup = dict(rclone=entry['rclone'], config=entry['config'], remote_dir=old['target'].rsplit('/', 1)[0], category=entry['category'])
+                            if MetaUtil._manual_drive_rows(lookup, old['name']):
+                                raise StorageConflict('원본 이미지 복원 이름 충돌')
+                            cls.image_mutate(entry, old['fid'], identity['name'], old.get('parent_id'), old['name'])
+                        elif identity['name'] != old['name']:
+                            raise StorageConflict('기존 이미지 복원 상태 불명')
+            else:
+                MetaUtil.validate_image_local_target(entry['target'], plan['root'])
+                if entry.get('new_file') and os.path.isfile(entry['target']):
+                    os.remove(entry['target'])
+                if entry['had_original'] and entry.get('stage_started'):
+                    if os.path.lexists(entry['original_target']):
+                        raise StorageConflict('로컬 원본 복원 이름 충돌')
+                    os.replace(entry['backup'], entry['original_target'])
+            entry['status'] = 'rolled_back'
+            logger.debug('[MediaReplacement] 이미지 롤백 완료: %s', entry['relative_path'])
+        if entry['storage'] == 'local':
+            for target in {entry['target'], entry['original_target']}:
+                MetaPreviewUtil._local_dir_cache.pop(os.path.dirname(target), None)
+                if os.path.isfile(target):
+                    MetaPreviewUtil.register_local_file(target)
+        else:
+            for relative in {entry['relative_path'], old.get('relative_path', '')}:
+                if relative:
+                    key = (entry['category'], True, os.path.dirname(relative))
+                    MetaPreviewUtil._remote_dir_cache.pop(key, None); MetaPreviewUtil._verified_remote_dirs.discard(key)
+            if entry['status'] == 'committed' and entry.get('new_id'):
+                MetaPreviewUtil.register_remote_file(entry['relative_path'], entry['new_id'], entry['category'], is_image=True)
+            elif entry['status'] == 'rolled_back':
+                MetaPreviewUtil._remote_file_paths.pop((entry['category'], True, str(entry.get('new_id'))), None)
+                if old.get('fid'):
+                    MetaPreviewUtil.register_remote_file(old['relative_path'], old['fid'], entry['category'], is_image=True)
+
+    @classmethod
+    def system_image_finish(cls, entry, commit):
+        """Settle only this system slot; never delete unowned or DB-referenced IDs."""
+        from .util_metadata import MetaUtil
+        from .util_runtime import StorageConflict
+        plan = entry['image_plan']
+        name = plan['filename']
+        stem = re.sub(r'_(?:p|pl|art_\d+)\.[^.]+$', '', name, flags=re.I)
+        files = MetaUtil.query_gdrive_remote_dir_files(os.path.dirname(entry['relative_path']),
+            entry['category'], code_lower=stem, strict=True)
+        observed = MetaUtil.image_initial_observation(entry['relative_path'], entry['category'], {}, files)['files']
+        old = {row['ID']: row for row in plan['system_candidates']}
+        known = set(old) | ({entry['new_id']} if entry.get('new_id') else set())
+        current = [row for row in observed if row['Name'].casefold() == name.casefold()]
+        by_id = {row['ID']: row for row in observed}
+        changed_backups = any(row.get('staged') and (row['ID'] not in by_id or
+                              by_id[row['ID']]['Name'] != row['backup_name']) for row in old.values())
+        if changed_backups or any(row['ID'] not in known for row in current):
+            entry['cleanup_pending'] = True
+            if commit:
+                entry['status'] = 'committed'
+                return
+            raise StorageConflict('동시 업로드의 소유권이 불명확하여 해당 슬롯을 보존합니다.')
+        backups = [row for row in observed if row['ID'] in old and
+                   row['Name'] == old[row['ID']].get('backup_name')]
+        def referenced(row):
+            return MetaUtil._manual_image_references(dict(category=entry['category'], old=dict(
+                fid=row['ID'], url=MetaUtil.format_gdrive_thumbnail_url(row['ID']),
+                relative_path=entry['relative_path'])), exclude_owner=False)
+        if commit:
+            if entry['status'] not in ('generated', 'removed'):
+                raise StorageConflict('이미지 교체 미완료로 백업 정리를 보류합니다.')
+            if entry['status'] == 'generated' and not any(row['ID'] == entry.get('new_id') for row in current):
+                raise StorageConflict('정식 이름의 신규 이미지 ID를 확인하지 못했습니다.')
+            keep = entry.get('new_id')
+        else:
+            entry['status'] = 'rolling_back'
+            chosen = MetaUtil.select_image_candidate(current + backups)
+            if not chosen and (current or backups):
+                raise StorageConflict('복구 이미지의 최신 시각을 확인하지 못해 보존합니다.')
+            keep = chosen['ID'] if chosen else None
+            if chosen and chosen['Name'] != name and any(referenced(row) for row in current if row['ID'] != keep):
+                raise StorageConflict('다른 DB가 참조하는 정식 이미지가 있어 복원을 보류합니다.')
+        for row in current + backups:
+            if row['ID'] == keep:
+                continue
+            if referenced(row):
+                entry['cleanup_pending'] = True
+                continue
+            cls.image_mutate(entry, row['ID'], row['Name'], None)
+        if not commit and keep:
+            if chosen['Name'] != name:
+                cls.image_mutate(entry, keep, chosen['Name'], None, name)
+            entry['recovered_id'] = keep
+        entry['status'] = 'committed' if commit else 'rolled_back'
+        key = (entry['category'], True, os.path.dirname(entry['relative_path']))
+        MetaPreviewUtil._remote_dir_cache.pop(key, None)
+        MetaPreviewUtil._verified_remote_dirs.discard(key)
+        if keep:
+            MetaPreviewUtil.register_remote_file(entry['relative_path'], keep, entry['category'], is_image=True)
 
     @classmethod
     def original_at_target(cls, entry):
         if entry['storage'] == 'local':
-            if not entry.get('original_file_stat') or not os.path.isfile(entry['target']):
-                return False
-            stat = os.stat(entry['target'])
-            return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns] == entry['original_file_stat']
-        original_id = entry.get('original_id') or entry.get('old_id')
+            return not entry.get('stage_started') and os.path.isfile(entry['target'])
+        original_id = entry.get('old_id')
         if not original_id:
             return False
-        item = MetaPreviewUtil.remote_stat([entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', entry['target']])
+        item = MetaPreviewUtil.remote_stat([entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', entry['target']],
+            category=entry.get('category', ''), purpose='cleanup')
         return bool(item and (item.get('ID') or item.get('id')) == original_id)
 
     @classmethod
     def finish(cls, entry, commit):
-        if not os.path.isfile(entry['journal']):
+        if entry.get('_finished'):
             return
-        # Refresh under the same guard used for phase changes, then CAS each
-        # following transition. No guard is held during file/network operations.
-        current = cls.read_current(entry)
-        entry.clear()
-        entry.update(current)
-        if commit and entry['status'] in ('rolling_back', 'rolled_back'):
-            from .util_runtime import StorageConflict
-            raise StorageConflict('확정 commit과 복구 단계가 충돌하여 정리를 보류합니다.')
-        if entry['status'] in ('committed', 'rolled_back'):
-            pass
-        elif (commit and entry['status'] in ('generated', 'removed')) or entry['status'] == 'committing':
-            cls._transition(entry, 'committing')
-            if entry['backup']:
-                cls.verify_current(entry)
+        entry['_finished'] = True
+        if entry.get('image_contract'):
+            return cls.image_finish(entry, commit)
+        if entry.get('manual_user_image'):
+            from .util_metadata import MetaUtil
+            return MetaUtil.finish_user_image_replacement(entry, commit)
+        from .util_runtime import StorageConflict
+        if entry.get('initial_observation') and entry.get('media_type') in ('trailer', 'preview'):
+            from .util_metadata import MetaUtil
+            if commit:
+                if entry['status'] not in ('generated', 'removed'):
+                    raise StorageConflict('생성 완료 전 트레일러 백업 정리를 보류합니다.')
+                entry['status'] = 'committing'
+                if entry.get('retired_prebackup'):
+                    MetaUtil.prebackup_registered_video(entry, 'delete')
+                entry['status'] = 'committed'
+            else:
+                entry['status'] = 'rolling_back'
+                if entry.get('new_id'):
+                    root = MetaPreviewUtil.get_setting('preview_gdrive_remote_path', entry['category'], default='') or MetaPreviewUtil.get_setting('preview_video_folder_id', entry['category'], default='')
+                    cls.mutate_observed_file(entry, entry['new_id'], os.path.basename(entry['relative_path']), root)
+                elif entry.get('video_write_started') and cls.exists(entry, entry['target']):
+                    raise StorageConflict('신규 트레일러 ID 불명으로 파일 삭제·백업 복원을 보류합니다.')
+                if entry.get('retired_prebackup'):
+                    MetaUtil.prebackup_registered_video(entry, 'restore')
+                entry['status'] = 'rolled_back'
+            return
+        if commit:
+            if entry['status'] not in ('generated', 'removed'):
+                raise StorageConflict('미디어 교체 미완료로 백업 정리를 보류합니다.')
+            entry['status'] = 'committing'
+            if entry['backup'] and entry.get('stage_started'):
                 cls.delete(entry, entry['backup'])
-            cls._transition(entry, 'committed')
-        else:
-            cls._transition(entry, 'rolling_back')
-            backup_exists = bool(entry['backup'] and cls.exists(entry, entry['backup']))
-            if entry['had_original'] and not backup_exists and not cls.original_at_target(entry):
-                from .util_runtime import StorageConflict
-                raise StorageConflict('원본 백업이 없어 파일 복구를 완료할 수 없습니다.')
-            if (backup_exists or not entry['had_original']) and cls.exists(entry, entry['target']):
-                from .util_runtime import StorageConflict
-                if (entry.get('storage') == 'local' and not entry.get('new_file_stat')) or (
-                        entry.get('storage') == 'gdrive' and not entry.get('new_id')):
-                    raise StorageConflict('새 파일의 소유 근거가 없어 복구를 보류합니다.')
-                if entry.get('storage') == 'local' and entry.get('new_file_stat'):
-                    stat = os.stat(entry['target'])
-                    if [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns] != entry['new_file_stat']:
-                        raise StorageConflict('새 로컬 파일의 소유 상태가 변경되어 복구를 보류합니다.')
-                if entry.get('storage') == 'gdrive' and entry.get('new_id'):
-                    item = MetaPreviewUtil.remote_stat([entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', entry['target']])
-                    if item is None or (item.get('ID') or item.get('id')) != entry['new_id']:
-                        raise StorageConflict('새 원격 파일의 소유 상태가 변경되어 복구를 보류합니다.')
-                cls.verify_current(entry)
-                cls.delete(entry, entry['target'])
-            if backup_exists:
-                cls.verify_current(entry)
-                cls.move(entry, entry['backup'], entry['target'])
-            cls._transition(entry, 'rolled_back')
-        with cls.journal_guard(entry):
-            with open(entry['journal']) as fp:
-                current = json.load(fp)
-            cls.validate_journal_owner(entry, current)
-            if current.get('status') != entry['status'] or current['status'] not in ('committed', 'rolled_back'):
-                from .util_runtime import StorageConflict
-                raise StorageConflict('복구 종료 단계가 변경되어 정리를 보류합니다.')
-            for path in (entry['journal'], entry['lock']):
-                if os.path.exists(path):
-                    os.remove(path)
-            cls.release_subject(entry)
-
-    @classmethod
-    def recover(cls, folder, is_committed, logger):
-        if not os.path.isdir(folder):
+            if entry.get('retired_video'):
+                from .util_metadata import MetaUtil
+                MetaUtil.cleanup_replaced_video(entry)
+            entry['status'] = 'committed'
             return
-        # Kernel releases this lock on worker/container exit. Multiple workers may
-        # start together, but only one may restore or discard a given backup.
-        with open(os.path.join(folder, '.recovery'), 'a') as lock:
-            try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return
-            try:
-                cls._recover_entries(folder, is_committed, logger)
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-    @classmethod
-    def _recover_entries(cls, folder, is_committed, logger):
-        for filename in os.listdir(folder):
-            if not filename.endswith('.json'):
-                continue
-            try:
-                with open(os.path.join(folder, filename)) as fp:
-                    entry = json.load(fp)
-                if (not isinstance(entry, dict) or entry.get('subject_type', 'item') not in ('item', 'person')
-                        or entry.get('storage') not in ('local', 'gdrive')):
-                    logger.warning('[MediaReplacement] 알 수 없는 소유 형식, 복구 보류')
-                    continue
-                token = cls.owner_token(entry['owner_pid'])
-                if token and token == entry.get('owner_token') and not entry.get('abandoned'):
-                    continue
-                if entry['status'] in ('committing', 'committed'):
-                    committed = True
-                elif entry['status'] in ('rolling_back', 'rolled_back'):
-                    committed = False
-                else:
-                    committed = is_committed(entry)
-                if committed is None:
-                    logger.warning('[MediaReplacement] 복구 판정 보류: category=%s code=%s type=%s status=%s',
-                        entry.get('category'), entry.get('code'), entry.get('subject_type', 'item'), entry.get('status'))
-                    continue
-                cls.finish(entry, committed)
-                logger.info('[MediaReplacement] 중단된 미디어 작업 복구: %s (%s)', entry['relative_path'], entry['status'])
-            except Exception:
-                logger.exception('[MediaReplacement] 미디어 작업 복구 보류: %s', filename)
+        entry['status'] = 'rolling_back'
+        backup_exists = bool(entry['backup'] and cls.exists(entry, entry['backup']))
+        if entry['had_original'] and not backup_exists and not cls.original_at_target(entry):
+            raise StorageConflict('원본 백업이 없어 파일 복원을 완료하지 못했습니다.')
+        target_exists = cls.exists(entry, entry['target'])
+        if (backup_exists or not entry['had_original']) and target_exists:
+            if entry['storage'] == 'local':
+                if not entry.get('new_file'):
+                    raise StorageConflict('현재 호출의 생성 파일을 확인하지 못해 삭제·복원을 보류합니다.')
+            else:
+                if not entry.get('new_id'):
+                    raise StorageConflict('새 File ID 불명으로 파일 삭제·백업 복원을 보류합니다.')
+                current = MetaPreviewUtil.remote_stat([entry['rclone'], '--config', entry['config'], 'lsjson', '--stat', entry['target']], category=entry.get('category', ''), purpose='cleanup')
+                if current is None or (current.get('ID') or current.get('id')) != entry['new_id']:
+                    raise StorageConflict('새 원격 파일 ID가 달라 삭제·복원을 보류합니다.')
+            cls.delete(entry, entry['target'])
+        if backup_exists:
+            cls.move(entry, entry['backup'], entry['target'])
+            logger.debug('[MediaReplacement] 원본 백업 복원 완료: %s', entry['relative_path'])
+        entry['status'] = 'rolled_back'

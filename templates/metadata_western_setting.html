@@ -78,7 +78,6 @@
   <div id="western_use_preview_clip_div" class="collapse">
     {{ macros.setting_checkbox('western_video_auto_download_trailer', '트레일러 영상 자동 저장', value=arg.get('western_video_auto_download_trailer'), desc=['메타데이터 생성 시 공식 사이트의 트레일러 영상을 다운로드하여 저장소에 보관합니다.']) }}
     {{ macros.setting_checkbox('western_preview_auto_create', '프리뷰 클립 자동 생성', value=arg.get('western_preview_auto_create'), desc=['예고편 다운로드에 실패하거나 예고편 정보가 없는 경우 원본 영상에서 프리뷰 클립을 자동 생성합니다.']) }}
-    {{ macros.setting_checkbox('western_video_delete_on_metadata_delete', '메타데이터 삭제시 영상 삭제', value=arg.get('western_video_delete_on_metadata_delete'), desc=['메타데이터 삭제 또는 카테고리 전체 초기화 시 연동된 영상 파일도 함께 영구 삭제됩니다.']) }}
   </div>
 
   {{ macros.m_hr() }}

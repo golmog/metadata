@@ -152,6 +152,19 @@
       ]
     ) }}
 
+    <div id="meta_db_asset_cleanup" class="p-3 mb-3 rounded mx-auto border border-secondary" style="width: 60%; min-width: 380px;">
+      <div class="small font-weight-bold mb-2">미완료 미디어 삭제 후처리</div>
+      <div class="input-group input-group-sm mb-2">
+        <select id="meta_db_cleanup_category" class="form-control" aria-label="삭제 후처리 카테고리">
+          <option value="JAV_CEN">JAV 유수정</option><option value="JAV_UNCEN">JAV 무수정</option>
+          <option value="WESTERN">서양</option><option value="PERSON">인물</option>
+        </select>
+        <div class="input-group-append"><button type="button" id="meta_db_cleanup_refresh" class="btn btn-outline-info">미완료 작업 조회</button></div>
+      </div>
+      <div id="meta_db_cleanup_status" class="small text-muted mb-2" role="status">카테고리를 선택하고 조회하세요. 재시도 버튼을 누른 작업만 파일을 재검증합니다.</div>
+      <div id="meta_db_cleanup_ops" class="small"></div>
+    </div>
+
     <!-- 배우 DB 동기화와 백업/복원 전용 진행 표시 -->
     <div id="meta_db_maintenance_progress" class="p-3 mb-3 rounded mx-auto" style="display: none; width: 60%; min-width: 380px; background: #181b20; border: 1px solid rgba(255,255,255,0.08);" aria-live="polite">
       <div class="d-flex justify-content-between align-items-center mb-1">
@@ -715,6 +728,57 @@ $(document).on('click', '#btn_meta_db_schema_restore', function(e) {
   if (!path) { if (typeof notify === 'function') notify('복원할 백업을 먼저 선택하세요.', 'warning'); return; }
   if (!confirm('선택한 백업으로 현재 메타 DB를 덮어씁니다. 계속하시겠습니까?')) return;
   startMetaDbMaintenance('meta_db_schema_restore', 'restore', {arg1: 'ALL', arg2: path});
+});
+
+// Explicit operations only: no polling, startup replay, or automatic retry.
+var metaDbCleanupBusy = false;
+function requestMetaDbAssetCleanup(command, category, opId) {
+  if (metaDbCleanupBusy) return;
+  metaDbCleanupBusy = true;
+  $('#meta_db_cleanup_refresh, #meta_db_cleanup_category, .meta-db-cleanup-retry').prop('disabled', true);
+  $('#meta_db_cleanup_status').text(command === 'db_asset_cleanup_retry' ? '선택한 작업의 미완료 파일을 재검증하고 있습니다.' : '미완료 작업을 조회하고 있습니다.');
+  var refreshAfter = false;
+  $.ajax({url: '/metadata/ajax/meta_db/command', type: 'POST', dataType: 'json',
+    data: {command: command, arg1: category, arg2: opId || ''}
+  }).done(function(ret) {
+    if (!ret || ret.ret !== 'success') {
+      $('#meta_db_cleanup_status').text((ret && ret.msg) || '결과 확인이 필요합니다. 다시 조회하세요.');
+      return;
+    }
+    if (command === 'db_asset_cleanup_retry') {
+      var states = Object.keys(ret.cleanup_counts || {}).map(function(key) { return key + ': ' + ret.cleanup_counts[key]; }).join(' · ');
+      if (typeof notify === 'function') notify(ret.msg + (states ? ' (' + states + ')' : ''), ret.cleanup_pending ? 'warning' : 'success');
+      refreshAfter = true;
+      return;
+    }
+    var $ops = $('#meta_db_cleanup_ops').empty();
+    (ret.data || []).forEach(function(op) {
+      var $row = $('<div class="border-top pt-2 pb-2"></div>').appendTo($ops);
+      var states = Object.keys(op.cleanup_counts || {}).map(function(key) { return key + ': ' + op.cleanup_counts[key]; }).join(' · ');
+      $('<div></div>').text(op.created_at + ' · ' + op.label + ' · ' + states).appendTo($row);
+      $('<span class="text-muted mr-2"></span>').text(op.note).appendTo($row);
+      $('<button type="button" class="btn btn-sm btn-outline-warning meta-db-cleanup-retry">이 작업 재시도</button>')
+        .prop('disabled', !op.retry_allowed).data('op-id', op.op_id).data('category', category).appendTo($row);
+    });
+    $('#meta_db_cleanup_status').text((ret.data || []).length ? '최근 미완료 작업입니다. 이전 계약·보호 상태는 조회만 가능합니다.' : '미완료 작업이 없습니다.');
+  }).fail(function() {
+    $('#meta_db_cleanup_status').text('응답을 받지 못했습니다. 일부 파일은 이미 처리됐을 수 있습니다. 결과 확인을 위해 다시 조회하세요.');
+  }).always(function() {
+    metaDbCleanupBusy = false;
+    $('#meta_db_cleanup_refresh, #meta_db_cleanup_category').prop('disabled', false);
+    if (refreshAfter) requestMetaDbAssetCleanup('db_asset_cleanup_list', category);
+  });
+}
+$(document).on('click', '#meta_db_cleanup_refresh', function(e) {
+  e.preventDefault(); requestMetaDbAssetCleanup('db_asset_cleanup_list', $('#meta_db_cleanup_category').val());
+});
+$(document).on('click', '.meta-db-cleanup-retry', function(e) {
+  e.preventDefault(); if (this.disabled || metaDbCleanupBusy) return;
+  requestMetaDbAssetCleanup('db_asset_cleanup_retry', $(this).data('category'), $(this).data('op-id'));
+});
+$(document).on('change', '#meta_db_cleanup_category', function() {
+  $('#meta_db_cleanup_ops').empty();
+  $('#meta_db_cleanup_status').text('선택한 카테고리의 미완료 작업을 조회하세요.');
 });
 
 $(document).ready(function() {
