@@ -769,9 +769,8 @@ function injectDbModals() {
                       메타 갱신
                     </button>
                     <div class="dropdown-menu shadow">
-                      <a class="dropdown-item btn_modal_refresh_missing_in_place text-info font-weight-bold" href="#" title="사이트 원본이 있으면 수동 편집값을 포함한 최신 메타로 갱신합니다. 없으면 기존 메타를 유지하고 DB 미디어 등록 오류만 복구합니다.">🩹 현재 사이트 누락 정보 업데이트</a>
-                      <a class="dropdown-item btn_modal_refresh_in_place text-light font-weight-bold" href="#">📌 현재 사이트 제자리 갱신</a>
-                      <a class="dropdown-item btn_modal_refresh_auto_search text-success font-weight-bold" href="#">🔍 전체 우선순위 자동 재검색</a>
+                      <a class="dropdown-item btn_modal_refresh_in_place text-light font-weight-bold" href="#">📌 현재 사이트 갱신</a>
+                      <a class="dropdown-item btn_modal_refresh_auto_search text-success font-weight-bold" href="#">🔍 전체 사이트 재검색</a>
                     </div>
                   </div>
                 </div>
@@ -2291,9 +2290,10 @@ function make_item_list(data) {
             str += '        메타 갱신';
             str += '      </button>';
             str += '      <div class="dropdown-menu dropdown-menu-right shadow">';
-            str += '        <a class="dropdown-item btn_refresh_missing_in_place text-info font-weight-bold" href="#" title="사이트 원본이 있으면 수동 편집값을 포함한 최신 메타로 갱신합니다. 없으면 기존 메타를 유지하고 DB 미디어 등록 오류만 복구합니다." data-code="' + row.code + '" data-category="' + (row.category || '') + '">🩹 현재 사이트 누락 정보 업데이트</a>';
-            str += '        <a class="dropdown-item btn_refresh_in_place font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">📌 현재 사이트 제자리 갱신</a>';
-            str += '        <a class="dropdown-item btn_refresh_auto_search text-success font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔍 전체 우선순위 자동 재검색</a>';
+            str += '        <a class="dropdown-item btn_refresh_in_place font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">📌 현재 사이트 갱신</a>';
+            if ((row.category || get_list_context().category) !== 'JAV_UNCEN') {
+                str += '        <a class="dropdown-item btn_refresh_auto_search text-success font-weight-bold" href="#" data-code="' + row.code + '" data-category="' + (row.category || '') + '">🔍 전체 사이트 재검색</a>';
+            }
             str += '      </div>';
             str += '    </div>';
 
@@ -2541,7 +2541,8 @@ function preparePersonWorks(p) {
             var upper = category.trim().toUpperCase();
             var normalized = {WEST: 'WESTERN', CENSORED: 'JAV_CEN', UNCENSORED: 'JAV_UNCEN'}[upper] || upper;
             entries.push({code: code, category: category, normalized: normalized,
-                title: text(info.title || (object && object.title))});
+                title: text(info.title || (object && object.title)),
+                year: text(info.year || (object && object.year))});
         });
     });
     function compare(a, b) {
@@ -2561,13 +2562,14 @@ function renderPersonWorks(p, $modal) {
     var prepared = preparePersonWorks(p);
     var $container = $modal.find('#p_modal_works_container').empty();
     prepared.items.forEach(function(entry) {
-        var label = '[' + entry.normalized + '] ' + (entry.title || '(제목 정보 없음)');
+        var title = (entry.title || '(제목 정보 없음)') + (entry.year && entry.year !== '1900' ? ' (' + entry.year + ')' : '');
+        var label = '[' + entry.normalized + '] ' + title;
         var $row = $('<div class="badge badge-dark mb-1 p-1 border border-secondary d-flex align-items-center w-100 text-left person-work-row">')
             .attr('data-code', entry.code).attr('data-cat', entry.category).attr('title', label + '\n(클릭하여 작품 메타 편집창 열기)');
         if (entry.code) $row.addClass('work-badge-clickable');
         $row.append($('<span class="badge badge-info mr-1">').text('[' + entry.normalized + ']'));
         var $title = $('<span class="text-truncate font-weight-normal flex-grow-1 work-badge-title">')
-            .addClass(entry.title ? 'text-light' : 'text-muted').text(entry.title || '(제목 정보 없음)');
+            .addClass(entry.title ? 'text-light' : 'text-muted').text(title);
         $row.append($title);
         $container.append($row);
     });
@@ -3042,6 +3044,7 @@ function renderDbEditModalContent(row, $modal) {
     $modal.find('#edit_director').val(jd.director || row.director || '');
 
     var currentCat = (row.category || get_list_context().category || '').toUpperCase();
+    $modal.find('.btn_modal_refresh_auto_search').toggle(currentCat !== 'JAV_UNCEN');
     if (currentCat === 'GENERAL' || currentCat === 'MOVIE' || currentCat === 'KTV' || currentCat === 'FTV') {
         $modal.find('#div_edit_genres').removeClass('col-md-12').addClass('col-md-6');
         $modal.find('#div_edit_mpaa').show();
@@ -4818,57 +4821,6 @@ $(document).on('click', '.btn_modal_refresh_image_only', function(e){
         } else {
             $modal.data('imageWriteBusy',false);
             setModalLoadingState($modal,false,'',$toggleBtn);
-        }
-    });
-});
-
-$(document).off('click', '.btn_refresh_missing_in_place').on('click', '.btn_refresh_missing_in_place', function(e){
-    e.preventDefault();
-    var $dropdown = $(this).closest('.dropdown');
-    $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
-
-    var code = $(this).attr('data-code') || $(this).data('code');
-    if (!code) return;
-    var cat = $(this).attr('data-category') || $(this).data('category') || '';
-    if (typeof notify === 'function') notify('[' + code + '] 누락 정보 갱신을 요청합니다...', 'info');
-
-    globalSendCommand('db_refresh_missing_in_place', String(code), cat, null, function(ret){
-        if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
-        if (ret && (ret.ret === 'success' || ret.committed && ret.is_updated)) {
-            window.globalRequestSearch(null, true);
-        }
-    });
-});
-
-$(document).on('click', '.btn_modal_refresh_missing_in_place', function(e){
-    e.preventDefault();
-    var $modal = $(this).closest('.modal');
-    if (dbEditBusy($modal)) return;
-    var $dropdown = $(this).closest('.dropdown');
-    var $toggleBtn = $dropdown.find('.custom-dropdown-toggle');
-    $dropdown.removeClass('show').find('.dropdown-menu').removeClass('show');
-
-    var code = $modal.find('#edit_code').val();
-    if (!code) return;
-    var row = $modal.data('row_data') || {};
-    var cat = row.category || get_list_context().category || '';
-    if (typeof notify === 'function') notify('[' + code + '] 누락 정보 갱신을 요청합니다...', 'info');
-
-    setModalLoadingState($modal, true, '누락 정보 치유 갱신 중...', $toggleBtn);
-
-    globalSendCommand('db_refresh_missing_in_place', String(code), cat, null, function(ret){
-        if (typeof notify === 'function') notify(ret.msg || '갱신 완료', ret.ret === 'success' ? 'success' : 'warning');
-        if (!itemModalCurrent($modal,row)) return;
-        if (ret && ret.site_updated === false && ret.committed === true && ret.is_updated) {
-            applyItemImageResult($modal,row,null,null,function(){
-                if (itemModalCurrent($modal,row)) setModalLoadingState($modal,false,'',$toggleBtn);
-            });
-        } else if (ret && ret.ret === 'success') {
-            reloadDbEditModalData(code, cat, $modal, function(ok, cancelled){
-                if (!cancelled || itemModalCurrent($modal,row)) setModalLoadingState($modal, false, '', $toggleBtn);
-            });
-        } else {
-            setModalLoadingState($modal, false, '', $toggleBtn);
         }
     });
 });
