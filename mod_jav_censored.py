@@ -468,9 +468,6 @@ class ModuleJavCensored(PluginModuleBase):
                     return jsonify(MetaUtil.reconcile_item_media_with_storage(arg1, self.category))
                 return jsonify(MetaUtil.refresh_image_only(self, arg1, self.category, storage_action=arg3 or None))
 
-            elif command == 'db_refresh_missing_in_place':
-                return jsonify(MetaUtil.heal_metadata(self, arg1, self.category))
-
             elif command == 'db_refresh_in_place':
                 return jsonify(MetaUtil.refresh_in_place(self, arg1, self.category))
 

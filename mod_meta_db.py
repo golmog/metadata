@@ -10385,15 +10385,6 @@ class ModuleMetaDb(PluginModuleBase):
                     'person_idx': arg1, 'domain': arg2, 'options': options}
                 return self._storage_sync_response(operation, params)
 
-            elif command == 'db_refresh_missing_in_place':
-                code = arg1
-                target_cat = self.find_item_category(code, hint_category=arg2 or req.form.get('category'))
-                mod_name = 'western' if target_cat == 'WESTERN' else ('jav_uncensored' if target_cat == 'JAV_UNCEN' else 'jav_censored')
-                target_mod = P.get_module(mod_name)
-                if not target_mod:
-                    return jsonify({'ret': 'error', 'msg': f'[{mod_name}] 모듈을 찾을 수 없습니다.'})
-                return jsonify(MetaUtil.heal_metadata(target_mod, code, target_cat))
-
             elif command == 'db_refresh_image_only':
                 code = arg1
                 body = req.get_json(silent=True) if req.is_json else {}
