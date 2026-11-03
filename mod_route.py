@@ -196,6 +196,44 @@ class ModuleRoute(PluginModuleBase):
                 # logger.debug(f"[Metadata] Successfully injected route '{meta_api_rule}'.")
             else:
                 logger.debug(f"[Metadata] Route '{meta_api_rule}' already exists. Injection skipped.")
+
+            settings_api_rule = f'/{P.package_name}/settings_api'
+            settings_api_endpoint = f'{P.package_name}_settings_api'
+            settings_api_exists = any(rule.rule == settings_api_rule for rule in app.url_map.iter_rules())
+
+            if not settings_api_exists:
+                @F.check_api
+                def settings_api():
+                    try:
+                        data = request.get_json(silent=True)
+                        category = data.get('category') if isinstance(data, dict) else request.form.get('category')
+                        if not isinstance(category, str) or category not in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                            return current_app.response_class(
+                                response=json.dumps({'ret': 'error', 'error_code': 'invalid_request', 'msg': '지원하지 않는 카테고리입니다.'}, ensure_ascii=False),
+                                status=400, mimetype='application/json'
+                            )
+
+                        from .util_preview import MetaPreviewUtil
+                        return current_app.response_class(
+                            response=json.dumps({
+                                'ret': 'success',
+                                'category': category,
+                                'media': {
+                                    'enabled': bool(MetaPreviewUtil.is_enabled(category)),
+                                    'auto_download_trailer': bool(MetaPreviewUtil.is_trailer_download_enabled(category)),
+                                    'auto_create_preview': bool(MetaPreviewUtil.is_auto_create_enabled(category)),
+                                },
+                            }, ensure_ascii=False),
+                            status=200, mimetype='application/json'
+                        )
+                    except Exception:
+                        logger.error('[Metadata Settings API] 설정 상태 조회 실패')
+                        return current_app.response_class(
+                            response=json.dumps({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'msg': '설정 상태 조회에 실패했습니다.'}, ensure_ascii=False),
+                            status=500, mimetype='application/json'
+                        )
+
+                app.add_url_rule(settings_api_rule, settings_api_endpoint, settings_api, methods=['POST'])
                 
         except Exception as e_inject:
             logger.error(f"[Metadata] Failed to inject global image route: {e_inject}")
