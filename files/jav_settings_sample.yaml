@@ -212,16 +212,18 @@ filename_with_media_info:
   # 해당 표준 값으로 보정되어 파일명에 사용됩니다. (예: 59.941 -> 59.94)
   standard_fps_values: [23.976, 24, 25, 29.97, 30, 59.94, 60]
 
-    # --- 해상도 표준화 규칙 ---
-  # height 값을 기준으로 해상도 태그를 결정합니다. 위에서부터 순서대로 검사합니다.
+  # --- 해상도 표준화 규칙 ---
+  # 방향과 무관하게 (긴 변 >= min_long AND 짧은 변 >= min_short) 또는
+  # 짧은 변 >= alt_short이면 해당 등급을 사용합니다. 위에서부터 검사하며 마지막은 SD입니다.
+  # 각 임계값에 마진을 적용한 뒤 올림합니다. 구형 min_height/max_height 규칙에는 적용하지 않습니다.
+  resolution_margin_percent: 2
   resolution_tiers:
-    - { min_height: 4000, max_height: 6000, tag: "8K" }
-    - { min_height: 2880, max_height: 4000, tag: "6K" }
-    - { min_height: 1600, max_height: 2880, tag: "4K" }
-    - { min_height: 1200, max_height: 1600, tag: "3K" }
-    - { min_height: 900,  max_height: 1200, tag: "FHD" }
-    - { min_height: 600,  max_height: 900,  tag: "HD" }
-    - { min_height: 0,    max_height: 600,  tag: "SD" }
+    - { tag: "8K",  min_long: 7680, min_short: 2880, alt_short: 4320 }
+    - { tag: "6K",  min_long: 5760, min_short: 2160, alt_short: 3240 }
+    - { tag: "4K",  min_long: 3840, min_short: 1440, alt_short: 2160 }
+    - { tag: "FHD", min_long: 1920, min_short: 720,  alt_short: 1080 }
+    - { tag: "HD",  min_long: 1280, min_short: 480,  alt_short: 720 }
+    - { tag: "SD" }
 
   # --- 미디어 정보 템플릿 ---
   # 파일명에 추가될 미디어 정보 부분의 형식을 정의합니다.
