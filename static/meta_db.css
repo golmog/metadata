@@ -410,6 +410,15 @@
   padding: 0.3rem 0 !important;
 }
 
+/* 인물 모달의 관리 메뉴만 메뉴 문구에 맞춰 너비가 자동 결정되도록 한다. */
+.person-modal-content .person-manage-dropdown > .dropdown-menu {
+  width: max-content !important;
+  min-width: max-content !important;
+}
+.person-modal-content .person-manage-dropdown > .dropdown-menu > .dropdown-item {
+  white-space: nowrap;
+}
+
 /* 버튼과 서브 메뉴 사이 공백을 채워 마우스 이동 시 호버 풀림을 방지하는 투명 브릿지 */
 .modal-footer .dropdown-menu::after {
   content: '';
@@ -659,4 +668,45 @@
 }
 #batch_terminal_logs::-webkit-scrollbar-thumb:hover {
   background: #30363d;
+}
+
+/* 메타 목록 검색 필터: 기본 선택창 폭을 내용 기준으로 줄여 한 줄 배치를 확보한다. */
+#form_search .input-group > select.form-control-sm {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  padding-left: 0.3rem;
+  padding-right: 0.3rem;
+  font-size: 0.8rem;
+}
+
+/* 펼친 메뉴의 긴 항목(스튜디오)도 오른쪽 여백이 충분하도록 최소 너비 확보. */
+#form_search #search_field {
+  width: auto !important;
+  min-width: 84px;
+  field-sizing: content;
+  flex: 0 0 auto;
+  padding-left: 0.3rem;
+  padding-right: 0.8rem;
+  font-size: 0.8rem;
+}
+
+#form_search #search_word {
+  width: 40% !important;
+  min-width: 100px;
+}
+
+/* 배우 목록 필터: 선택 항목에 따른 가변 폭을 유지하되 펼친 메뉴의 긴 이름에 여유를 둔다. */
+#form_search_person .input-group > select.form-control-sm {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 70px;
+  field-sizing: content;
+  padding-left: 0.3rem;
+  padding-right: 1.4rem;
+  font-size: 0.8rem;
+}
+
+#form_search_person .input-group > select.form-control-sm option {
+  padding-right: 1.4rem;
 }

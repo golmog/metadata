@@ -40,7 +40,7 @@
         </select>
       </div>
 
-      <div class="col-md-3 mb-2 mb-md-0">
+      <div id="batch_delay_setting" class="col-md-3 mb-2 mb-md-0">
         <label class="small font-weight-bold text-muted mb-1">작업 간 딜레이 (초)</label>
         <div class="input-group input-group-sm">
           <input type="number" id="batch_delay" class="form-control form-control-sm font-weight-bold" min="0.1" step="0.1" value="0.5">
@@ -67,7 +67,7 @@
       </div>
 
       <button type="button" class="btn btn-sm btn-danger font-weight-bold px-3 shadow mr-1" id="btn_batch_stop" style="display: none;">작업 중단</button>
-      <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_reset_panel" style="background-color: #21262d; border-color: #363b42;">패널 초기화</button>
+      <button type="button" class="btn btn-sm btn-dark border-secondary font-weight-bold px-3 shadow text-light" id="btn_batch_reset_panel" style="background-color: #21262d; border-color: #363b42;" title="진행률·통계·로그·재개 큐만 초기화합니다. 작업 설정과 선택 항목은 유지됩니다.">작업 초기화</button>
     </div>
 
     <!-- 진행 현황 프로그레스 바 -->

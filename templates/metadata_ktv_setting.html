@@ -6,7 +6,10 @@
 {{ macros.m_hr() }}
 <form id="setting">
 {{ macros.setting_input_text('ktv_search_order', '검색 순서', value=arg['ktv_search_order'], desc=['가능한 값: daum, tving, wavve, watcha']) }}
-{{ macros.setting_checkbox('ktv_use_tmdb', 'TMDB 이미지 사용', value=arg['ktv_use_tmdb'], desc=['On : TMDB 매칭시 TMDB 배우 이미지 사용']) }}
+{{ macros.setting_checkbox('ktv_use_tmdb', 'TMDB 이미지 및 부가정보 사용', value=arg['ktv_use_tmdb'], desc=['On : Daum 메타 조회 시 TMDB 작품·배우·에피소드 이미지, 평점, 에피소드 제목·줄거리·방영일 등의 보조 자료를 수집합니다.', '수집한 자료는 Plex에서 우선순위에 따라 사용하며, TMDB 평점이 작품 평점에 반영될 수 있습니다. 기존 정보가 있어도 수집될 수 있습니다.']) }}
+<div id="ktv_use_tmdb_div" class="collapse">
+{{ macros.setting_checkbox('ktv_tmdb_translate', 'TMDB 번역 사용', value=arg['ktv_tmdb_translate'], desc=['On : TMDB 영문 배우 이름·역할명을 한국어로 번역해 배우 이미지 매칭에만 활용합니다. 배우 이름·역할명 텍스트 자체는 변경하지 않습니다.', 'Off : 기계 번역 없이 원문이 직접 일치하는 배우 이미지만 보완합니다. TMDB 이미지·평점·에피소드 부가정보 수집은 유지합니다.']) }}
+</div>
 {{ macros.setting_checkbox('ktv_use_kakaotv', '작품별 부가영상 사용', value=arg['ktv_use_kakaotv'], desc=['On : 최근 영상 20개를 부가영상 항목에 포함']) }}
 {{ macros.setting_checkbox('ktv_use_kakaotv_episode', '에피소드별 부가영상 사용', value=arg['ktv_use_kakaotv_episode'], desc=['On : 에피소드별 부가영상 포함. 현재는 안드로이드 앱에서만 재생 지원']) }}
 <!--{{ macros.setting_checkbox('ktv_use_theme', '테마 음악 적용', value=arg['ktv_use_theme'], desc=['On : 테마 음악이 있는 경우 적용. 적용시 메타용량 증가']) }}-->
@@ -23,7 +26,9 @@
 <script type="text/javascript">
 
 $(document).ready(function(){
+  use_collapse('ktv_use_tmdb');
 });
 
+$('#ktv_use_tmdb').change(function() {use_collapse('ktv_use_tmdb');});
 </script>    
 {% endblock %}

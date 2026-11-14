@@ -90,9 +90,12 @@
 
     {{ macros.setting_checkbox('jav_censored_preview_auto_create', '프리뷰 클립 자동 생성', value=arg.get('jav_censored_preview_auto_create'), desc=['예고편 다운로드에 실패하거나 예고편 정보가 없는 경우 프리뷰 클립을 자동 생성합니다.', '파일 처리, Plex 내에서 메타데이터 매칭 등 동영상 경로가 전달되는 경우에만 생성 가능합니다. (기본값: OFF)']) }}
 
-    {{ macros.setting_input_text('jav_censored_preview_ffmpeg_path', 'FFmpeg 바이너리 경로', value=arg['jav_censored_preview_ffmpeg_path'], placeholder='ffmpeg', desc=['※ FFprobe 바이너리는 FFmpeg 실행 파일과 동일한 디렉토리에서 자동으로 탐색합니다.']) }}
-    {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
-    {{ macros.setting_checkbox('jav_censored_preview_include_audio', '프리뷰 영상에 사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
+    <div id="jav_censored_preview_auto_create_div" class="collapse">
+      {{ macros.setting_input_text('jav_censored_preview_ffmpeg_path', 'FFmpeg 바이너리 경로', value=arg['jav_censored_preview_ffmpeg_path'], placeholder='ffmpeg', desc=['※ FFprobe 바이너리는 FFmpeg 실행 파일과 동일한 디렉토리에서 자동으로 탐색합니다.']) }}
+      {{ macros.setting_radio_with_value('jav_censored_preview_duration', '클립 전체 길이', [['60', '1분 (목표 60초)'], ['120', '2분 (목표 120초)']], value=(arg.get('jav_censored_preview_duration') or '60')) }}
+      {{ macros.setting_checkbox('jav_censored_preview_include_audio', '프리뷰 영상에 사운드 포함', value=arg['jav_censored_preview_include_audio'], desc=['OFF: 무음 처리 (-an, 오디오 코덱 충돌 및 급변 방지)', 'ON: 음성 포함 (원본 오디오가 MP4 표준 지원 코덱인 경우만 스트림 복사)']) }}
+      {{ macros.setting_checkbox('jav_censored_preview_reencode_unsupported', '무인코딩 불가 시 표준 MP4 인코딩', value=arg.get('jav_censored_preview_reencode_unsupported'), desc=['ON: 원본 비디오 코덱이 무인코딩 MP4 변환 대상이 아니면 프리뷰로 추출할 구간만 H.264/AAC로 재인코딩합니다. 기존 무인코딩 가능 코덱은 그대로 복사하며, 변환 시간이 길어질 수 있습니다.', 'OFF: 무인코딩 불가 코덱은 기존처럼 건너뜁니다. 사운드 포함 설정이 OFF이면 인코딩 시에도 무음으로 생성합니다.']) }}
+    </div>
 
   </div>
 
@@ -211,11 +214,16 @@ $(document).ready(function(){
   use_collapse("jav_censored_mgs_label_priority");
   use_collapse("jav_censored_use_ollama");
   use_collapse("jav_censored_use_preview_clip");
+  use_collapse("jav_censored_preview_auto_create");
   use_preview_storage("{{arg.get('jav_censored_preview_storage_type') or 'local'}}");
 });
 
 $('#jav_censored_use_preview_clip').change(function() {
   use_collapse('jav_censored_use_preview_clip');
+});
+
+$('#jav_censored_preview_auto_create').change(function() {
+  use_collapse('jav_censored_preview_auto_create');
 });
 
 $('input[type=radio][name="jav_censored_preview_storage_type"]').change(function() {

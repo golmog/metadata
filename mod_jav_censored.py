@@ -179,6 +179,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_preview_ffprobe_path": "ffprobe",
             f"{self.name}_preview_duration": "60",
             f"{self.name}_preview_include_audio": "False",
+            f"{self.name}_preview_reencode_unsupported": "False",
             f"{self.name}_preview_storage_type": "local",
             f"{self.name}_preview_local_path": "/data/previews",
             f"{self.name}_preview_rclone_playback_remote": "my_gdrive",
@@ -1189,6 +1190,7 @@ class ModuleJavCensored(PluginModuleBase):
     # region INFO
 
     def info(self, code, keyword=None, extra_opts=None, **kwargs):
+        creation_locked = kwargs.pop('_metadata_creation_locked', False)
         opts = dict(extra_opts or {})
         opts.update(kwargs)
         opts['_parallel_media'] = True
@@ -1265,6 +1267,12 @@ class ModuleJavCensored(PluginModuleBase):
                     if completed.get('data'):
                         cached_json.update({key: completed['data'][key] for key in ('extra_info', 'extras', 'original') if key in completed['data']})
                 return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+
+        if (use_db and save_db and not bypass_cache and not creation_locked and not skip_trans
+                and not opts.get('for_db') and not opts.get('_explicit_site_refresh')
+                and ModuleMetaDb._ensure_meta_db_writable(self.category)):
+            with MetaUtil.metadata_creation_lock(self.category, code):
+                return self.info(code, keyword=keyword, extra_opts=opts, _metadata_creation_locked=True)
 
         # 복원된 품번 키워드로 사이트 검색을 수행하여 썸네일 안전 탐색
         if not ps_url and site != 'javdb':

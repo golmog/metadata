@@ -80,7 +80,7 @@ class DeleteReceipts:
 
     @classmethod
     def ensure(cls, engine, enabled=True):
-        """Serialize and validate DDL in one transaction, touching only our table.
+        """Serialize and validate the installed schema without creating it.
 
         No cached readiness: restore/clean-copy can replace a DB underneath an
         existing Engine. Failure never enables an older direct-delete fallback.
@@ -104,7 +104,7 @@ class DeleteReceipts:
                     "SELECT schema_version, migration_state FROM meta_schema_version "
                     "WHERE schema_name='meta_db'" + (' FOR SHARE' if dialect == 'postgresql' else '')
                 )).first()
-                if not status or status[0] != 1 or status[1] != 'complete':
+                if not status or status[0] != 2 or status[1] != 'complete':
                     raise DeleteReceiptError('D02_SCHEMA_NOT_READY')
                 # Restore/copy can hold the existing maintenance lease while the
                 # version row still reads complete. Do not create or renew it.
@@ -116,7 +116,7 @@ class DeleteReceipts:
                     if lease and lease[0] and lease[1] > time.time():
                         raise DeleteReceiptError('D02_MAINTENANCE_LOCKED')
                 if not inspect(conn).has_table(cls.table.name):
-                    cls.table.create(conn)
+                    raise DeleteReceiptError('D02_SCHEMA_UNAVAILABLE')
                 cls._validate(conn)
                 conn.commit()
             except Exception as exc:
@@ -391,7 +391,7 @@ class DeleteReceipts:
         with engine.connect() as conn:
             row = conn.execute(text("SELECT schema_version, migration_state, migration_id, completed_at, updated_at "
                                     "FROM meta_schema_version WHERE schema_name='meta_db'")).first()
-            if not row or row[0] != 1 or row[1] != 'complete':
+            if not row or row[0] != 2 or row[1] != 'complete':
                 raise DeleteReceiptError('D02_DATABASE_NOT_READY')
             if inspect(conn).has_table('meta_db_job_lock'):
                 lock = conn.execute(text("SELECT owner_token, expires_at FROM meta_db_job_lock WHERE lock_name='migration'")).first()

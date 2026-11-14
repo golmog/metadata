@@ -23,6 +23,7 @@
             <select id="search_status" name="search_status" class="form-control form-control-sm">
               <option value="all">전체 상태</option>
               <option value="no_poster">포스터 누락</option>
+              <option value="duplicate_meta">중복 메타</option>
               <option value="no_plot">줄거리 누락</option>
               <option value="no_actor">인물 정보 누락</option>
               <option value="complete">정상 완료</option>
@@ -42,7 +43,15 @@
           </div>
         </span>
         <span class="col-md-5 text-right">
-          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="제목, 코드 또는 스튜디오 검색" aria-label="Search">
+          <select id="search_field" name="search_field" class="form-control form-control-sm" style="width:auto" aria-label="검색 대상">
+            <option value="all">전체</option>
+            <option value="title">제목</option>
+            <option value="code">코드</option>
+            <option value="studio">스튜디오</option>
+            <option value="director">감독</option>
+            <option value="actor">배우</option>
+          </select>
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-50" type="text" placeholder="검색어" aria-label="Search">
           <button id="search" class="btn btn-sm btn-outline-success">검색</button>
           <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
         </span>

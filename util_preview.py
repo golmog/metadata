@@ -220,7 +220,9 @@ class MetaPreviewUtil:
             raw_trailer = next((entry.get('content_url') for entry in data.get('extras') or []
                                 if isinstance(entry, dict) and entry.get('content_type') == 'trailer'
                                 and entry.get('content_url') and 'mode=preview_' not in entry['content_url']), None)
-        if raw_trailer and cls.is_trailer_download_enabled(category) and not extra.get('trailer_video'):
+        if (raw_trailer and cls.is_trailer_download_enabled(category)
+                and not extra.get('trailer_video')
+                and (not extra.get('preview_clip') or opts.get('reuse_existing_media') is False)):
             logger.debug('[MetaPreview] [%s] 공식 트레일러 처리 시작: %s', category, code)
             success, result = cls.process_trailer_download_workflow(code, raw_trailer, category,
                 force=not opts.get('reuse_existing_media', False), item_dict=data,
@@ -419,7 +421,9 @@ class MetaPreviewUtil:
             return False, "비디오 스트림 정보를 읽을 수 없습니다."
 
         allowed_v_codecs = ['h264', 'avc', 'avc1', 'hevc', 'h265', 'av01', 'av1', 'vp9']
-        if v_codec not in allowed_v_codecs:
+        reencode = (v_codec not in allowed_v_codecs and
+            cls.get_setting("preview_reencode_unsupported", category, default="False") == "True")
+        if v_codec not in allowed_v_codecs and not reencode:
             logger.info(f"[MetaPreview] 소스 비디오 코덱({v_codec})이 MP4 패키징 비권장 코덱이므로 생성을 건너뜁니다: {os.path.basename(source_video_path)}")
             return False, f"무인코딩 변환 불가 코덱 ({v_codec}). 생성을 건너뜁니다."
 
@@ -435,7 +439,11 @@ class MetaPreviewUtil:
         timestamps = [i * segment_interval for i in range(num_segments)]
         timestamps[-1] = last_start
 
-        logger.info(f"[MetaPreview] 원본 영상의 여러 구간에서 프리뷰 생성 시작 (재인코딩 없음): {os.path.basename(source_video_path)} (총 {duration:.1f}초, 목표: {total_duration}초, {num_segments}구간 추출, 코덱: {v_codec})")
+        if reencode:
+            logger.info('[MetaPreview] 비디오 코덱 불일치 → 표준 MP4 인코딩 폴백 시작 (코덱=%s, 목표=%s초, %s구간)',
+                v_codec, total_duration, num_segments)
+        else:
+            logger.info(f"[MetaPreview] 원본 영상의 여러 구간에서 프리뷰 생성 시작 (재인코딩 없음): {os.path.basename(source_video_path)} (총 {duration:.1f}초, 목표: {total_duration}초, {num_segments}구간 추출, 코덱: {v_codec})")
 
         tmp_dir = os.path.join(path_data, 'tmp', f"preview_seg_{int(time.time())}_{os.urandom(3).hex()}")
         os.makedirs(tmp_dir, exist_ok=True)
@@ -448,6 +456,17 @@ class MetaPreviewUtil:
         can_copy_audio = include_audio and (a_codec in allowed_a_codecs)
 
         t_start = time.time()
+        encode_start = time.monotonic() if reencode else None
+        encode_success = False
+        encode_result = '구간 추출/인코딩 실패'
+        encode_stage = '구간 인코딩'
+        # Reserve the existing final duration probe's 15 seconds within the 600-second budget.
+        def encoding_timeout(limit):
+            remaining = 600 - (time.monotonic() - encode_start) - 15
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(ffmpeg_bin, 600)
+            return min(limit, remaining)
+
         try:
             for idx, ts in enumerate(timestamps):
                 seg_path = os.path.join(tmp_dir, f"seg_{idx:03d}.mp4")
@@ -460,27 +479,42 @@ class MetaPreviewUtil:
                     cmd_cut.extend(["-t", f"{target_unit:.2f}"])
                 cmd_cut.extend([
                     "-i", source_video_path,
-                    "-map", "0:v:0",
-                    "-c:v", "copy"
+                    "-map", "0:v:0"
                 ])
+                if reencode:
+                    cmd_cut.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-preset", "veryfast", "-crf", "23",
+                        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=PTS-STARTPTS"])
+                else:
+                    cmd_cut.extend(["-c:v", "copy"])
 
                 if v_codec in ['hevc', 'h265']:
                     cmd_cut.extend(["-tag:v", "hvc1"])
 
-                if can_copy_audio:
+                if reencode and include_audio and a_codec:
+                    cmd_cut.extend(["-map", "0:a:0", "-c:a", "aac", "-profile:a", "aac_low",
+                        "-b:a", "128k", "-ac", "2", "-ar", "48000", "-af", "asetpts=PTS-STARTPTS"])
+                elif can_copy_audio:
                     cmd_cut.extend(["-map", "0:a:0", "-c:a", "copy"])
                 else:
                     cmd_cut.append("-an")
 
                 cmd_cut.extend(["-avoid_negative_ts", "make_zero", seg_path])
 
-                res_cut = subprocess.run(cmd_cut, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+                res_cut = subprocess.run(cmd_cut, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    timeout=encoding_timeout(120) if reencode else 15)
                 if res_cut.returncode == 0 and os.path.exists(seg_path) and os.path.getsize(seg_path) > 1024:
                     segment_files.append(seg_path)
                 else:
                     logger.debug('[MetaPreview] 구간 컷팅 실패: index=%s position=%s exit=%s', idx, ts, res_cut.returncode)
+                    if reencode and 'unknown encoder' in str(res_cut.stderr or '').lower():
+                        encode_result = '표준 MP4 인코더 불가 (libx264/AAC 지원 확인 필요)'
+                        return False, encode_result
 
             if len(segment_files) < 3:
+                if reencode:
+                    encode_result = f'구간 추출/인코딩 실패 (성공: {len(segment_files)}구간).'
+                    return False, encode_result
                 return False, f"유효한 비디오 구간을 추출하지 못했습니다 (성공: {len(segment_files)}구간)."
 
             with open(concat_list_file, 'w', encoding='utf-8') as f_list:
@@ -498,29 +532,57 @@ class MetaPreviewUtil:
             if v_codec in ['hevc', 'h265']:
                 cmd_concat.extend(["-tag:v", "hvc1"])
 
+            concat_output = os.path.join(tmp_dir, 'preview.mp4') if reencode else output_filepath
             cmd_concat.extend([
                 "-movflags", "+faststart",
-                output_filepath
+                concat_output
             ])
 
-            res_concat = subprocess.run(cmd_concat, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=40)
+            encode_stage = '병합'
+            res_concat = subprocess.run(cmd_concat, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                timeout=encoding_timeout(40) if reencode else 40)
             if res_concat.returncode != 0:
+                if reencode:
+                    encode_result = '표준 MP4 프리뷰 병합 실패 (exit=%s).' % res_concat.returncode
+                    return False, encode_result
                 logger.error('[MetaPreview] FFmpeg 무인코딩 병합 실패: exit=%s', res_concat.returncode)
                 return False, '프리뷰 병합에 실패했습니다 (exit=%s).' % res_concat.returncode
 
-            if os.path.exists(output_filepath) and os.path.getsize(output_filepath) > 0:
+            if os.path.exists(concat_output) and os.path.getsize(concat_output) > 0:
                 elapsed = time.time() - t_start
-                fsize_mb = os.path.getsize(output_filepath) / (1024 * 1024)
-                actual_dur = cls.get_video_duration(output_filepath, ffprobe_bin)
-                logger.info(f"[MetaPreview] 무인코딩 프리뷰 클립 생성 완료: {output_filepath} ({fsize_mb:.2f}MB, 길이: {actual_dur:.1f}초, {elapsed:.1f}초 소요, 총 {len(segment_files)}구간)")
+                fsize_mb = os.path.getsize(concat_output) / (1024 * 1024)
+                actual_dur = cls.get_video_duration(concat_output, ffprobe_bin)
+                if reencode:
+                    shutil.move(concat_output, output_filepath)
+                    encode_success = True
+                    encode_result = '%.2fMB, 길이 %.1f초, 성공 %s/%s구간' % (fsize_mb, actual_dur, len(segment_files), num_segments)
+                else:
+                    logger.info(f"[MetaPreview] 무인코딩 프리뷰 클립 생성 완료: {output_filepath} ({fsize_mb:.2f}MB, 길이: {actual_dur:.1f}초, {elapsed:.1f}초 소요, 총 {len(segment_files)}구간)")
                 return True, output_filepath
             else:
+                encode_result = "최종 결합된 프리뷰 파일이 비어있습니다."
                 return False, "최종 결합된 프리뷰 파일이 비어있습니다."
 
+        except subprocess.TimeoutExpired as e:
+            if reencode:
+                encode_result = f'표준 MP4 프리뷰 {encode_stage} 시간 초과 (구간 최대 120초, 전체 최대 600초).'
+                return False, encode_result
+            logger.exception('[MetaPreview] 프리뷰 생성 시간 초과')
+            if e.timeout == 15:
+                return False, 'FFmpeg 프리뷰 구간 추출 시간 초과(15초)'
+            if e.timeout == 40:
+                return False, 'FFmpeg 프리뷰 병합 시간 초과(40초)'
+            return False, '프리뷰 생성 중 오류가 발생했습니다.'
         except Exception as e:
+            if reencode:
+                encode_result = f'표준 MP4 프리뷰 {encode_stage} 실패 ({type(e).__name__}).'
+                return False, encode_result
             logger.exception('[MetaPreview] 프리뷰 생성 예외')
             return False, '프리뷰 생성 중 오류가 발생했습니다.'
         finally:
+            if reencode:
+                logger.info('[MetaPreview] 표준 MP4 인코딩 폴백 %s (코덱=%s, 결과=%s, 소요=%.1f초)',
+                    '완료' if encode_success else '실패', v_codec, encode_result, time.monotonic() - encode_start)
             if os.path.exists(tmp_dir):
                 try:
                     shutil.rmtree(tmp_dir)
@@ -1366,7 +1428,7 @@ class MetaPreviewUtil:
 
     @classmethod
     def remove_official_trailer(cls, target, url):
-        """Remove the failed download URL without recording or blocking it."""
+        """Remove a URL when fresh site metadata explicitly omits that trailer."""
         is_dict = isinstance(target, dict)
         extra = dict((target.get('extra_info') if is_dict else target.extra_info) or {})
         rejected = cls.trailer_source_url(url)
@@ -1590,12 +1652,9 @@ class MetaPreviewUtil:
                             response.close()
 
             if not download_success or not os.path.exists(temp_output) or os.path.getsize(temp_output) < 1024:
-                cls.remove_official_trailer(target_obj, trailer_url)
-                if sess:
-                    sess.commit()
                 status = 'HTTP %s' % last_status_code if last_status_code is not None else 'HTTP 응답 확인 불가'
-                logger.warning('[MetaPreview] FF 트레일러 다운로드 실패: %s [%s/%s] %s %s; 공식 URL %s',
-                    code, std_cat, site_key or '미지정', status, source_failure or '영상 응답 미확인', '제거')
+                logger.warning('[MetaPreview] FF 트레일러 다운로드 실패: %s [%s/%s] %s %s; 원본 URL 보존',
+                    code, std_cat, site_key or '미지정', status, source_failure or '영상 응답 미확인')
                 return False, '트레일러 FF 프록시 다운로드 실패 (%s, %s)' % (status, source_failure or '영상 응답 미확인')
 
             ffprobe_bin = cls.get_ffprobe_path(std_cat)
@@ -2236,6 +2295,8 @@ class MediaReplacement:
         if entry.get('staged'):
             return
         if entry['storage'] == 'gdrive' and 'system_candidates' in plan:
+            if len(plan['system_candidates']) > 1:
+                raise StorageConflict('복수 이미지 후보의 교체를 보류합니다.')
             for index, row in enumerate(plan['system_candidates']):
                 row['backup_name'] = row['Name'] + '.old_' + entry['identifier'] + '_' + str(index)
                 if any(value['Name'].casefold() == row['backup_name'].casefold() for value in entry['initial_observation']['files']):
@@ -2261,6 +2322,9 @@ class MediaReplacement:
                 cls.image_mutate(entry, old['fid'], old['name'], old.get('parent_id'), backup)
             else:
                 MetaUtil.validate_image_local_target(entry['target'], plan['root'])
+                MetaUtil.validate_image_local_target(entry['original_target'], plan['root'])
+                if MetaUtil._manual_file_stat(entry['original_target']) != old.get('stat'):
+                    raise StorageConflict('기존 로컬 이미지가 변경되어 교체를 보류합니다.')
                 if os.path.lexists(entry['backup']):
                     raise StorageConflict('로컬 이미지 백업 이름 충돌')
                 os.replace(entry['original_target'], entry['backup'])
@@ -2358,7 +2422,11 @@ class MediaReplacement:
                             raise StorageConflict('기존 이미지 복원 상태 불명')
             else:
                 MetaUtil.validate_image_local_target(entry['target'], plan['root'])
+                if entry['had_original'] and entry.get('stage_started') and MetaUtil._manual_file_stat(entry['backup']) != old.get('stat'):
+                    raise StorageConflict('백업 이미지가 변경되어 삭제·복원을 보류합니다.')
                 if entry.get('new_file') and os.path.isfile(entry['target']):
+                    if MetaUtil._user_image_checksum(entry['target']) != entry.get('new_checksum'):
+                        raise StorageConflict('신규 이미지가 변경되어 삭제·복원을 보류합니다.')
                     os.remove(entry['target'])
                 if entry['had_original'] and entry.get('stage_started'):
                     if os.path.lexists(entry['original_target']):
@@ -2385,64 +2453,68 @@ class MediaReplacement:
 
     @classmethod
     def system_image_finish(cls, entry, commit):
-        """Settle only this system slot; never delete unowned or DB-referenced IDs."""
+        """Settle exactly one observed slot; rollback always restores the original ID/name."""
         from .util_metadata import MetaUtil
         from .util_runtime import StorageConflict
         plan = entry['image_plan']
         name = plan['filename']
+        pattern = MetaUtil.image_slot_pattern(name)
+        directory = os.path.dirname(entry['relative_path'])
         stem = re.sub(r'_(?:p|pl|art_\d+)\.[^.]+$', '', name, flags=re.I)
-        files = MetaUtil.query_gdrive_remote_dir_files(os.path.dirname(entry['relative_path']),
-            entry['category'], code_lower=stem, strict=True)
+        files = MetaUtil.query_gdrive_remote_dir_files(directory, entry['category'], code_lower=stem, strict=True)
         observed = MetaUtil.image_initial_observation(entry['relative_path'], entry['category'], {}, files)['files']
         old = {row['ID']: row for row in plan['system_candidates']}
-        known = set(old) | ({entry['new_id']} if entry.get('new_id') else set())
-        current = [row for row in observed if row['Name'].casefold() == name.casefold()]
+        current = [row for row in observed if pattern.fullmatch(row['Name'])]
         by_id = {row['ID']: row for row in observed}
-        changed_backups = any(row.get('staged') and (row['ID'] not in by_id or
-                              by_id[row['ID']]['Name'] != row['backup_name']) for row in old.values())
-        if changed_backups or any(row['ID'] not in known for row in current):
+        if not commit and entry.get('image_write_started') and not entry.get('image_verified'):
+            entry['cleanup_pending'] = True
+            raise StorageConflict('원격 업로드 결과 불명; 신규 파일·기존 백업을 보존합니다.')
+        known = set(old) | ({entry['new_id']} if entry.get('new_id') else set())
+        changed = any(row.get('staged') and (row['ID'] not in by_id or by_id[row['ID']]['Name'] != row['backup_name'])
+                      for row in old.values())
+        if changed or any(row['ID'] not in known for row in current):
             entry['cleanup_pending'] = True
             if commit:
                 entry['status'] = 'committed'
                 return
-            raise StorageConflict('동시 업로드의 소유권이 불명확하여 해당 슬롯을 보존합니다.')
-        backups = [row for row in observed if row['ID'] in old and
-                   row['Name'] == old[row['ID']].get('backup_name')]
-        def referenced(row):
+            raise StorageConflict('이미지 슬롯/백업의 동시 변경 또는 신규 ID 불명; 삭제·복원 보류')
+        def referenced(row, exclude_owner=False):
             return MetaUtil._manual_image_references(dict(category=entry['category'], old=dict(
                 fid=row['ID'], url=MetaUtil.format_gdrive_thumbnail_url(row['ID']),
-                relative_path=entry['relative_path'])), exclude_owner=False)
+                relative_path='/'.join(filter(None, (directory, row['Name']))), owner_code=entry.get('owner_code') or entry['code'])),
+                exclude_owner=exclude_owner)
         if commit:
             if entry['status'] not in ('generated', 'removed'):
                 raise StorageConflict('이미지 교체 미완료로 백업 정리를 보류합니다.')
-            if entry['status'] == 'generated' and not any(row['ID'] == entry.get('new_id') for row in current):
+            if entry['status'] == 'generated' and not any(row['ID'] == entry.get('new_id') and row['Name'] == name for row in current):
                 raise StorageConflict('정식 이름의 신규 이미지 ID를 확인하지 못했습니다.')
-            keep = entry.get('new_id')
+            for row in old.values():
+                if not row.get('staged'): continue
+                if referenced(row):
+                    entry['cleanup_pending'] = True
+                    continue
+                cls.image_mutate(entry, row['ID'], row['backup_name'], None)
+            keep, relative = entry.get('new_id'), entry['relative_path']
         else:
-            entry['status'] = 'rolling_back'
-            chosen = MetaUtil.select_image_candidate(current + backups)
-            if not chosen and (current or backups):
-                raise StorageConflict('복구 이미지의 최신 시각을 확인하지 못해 보존합니다.')
-            keep = chosen['ID'] if chosen else None
-            if chosen and chosen['Name'] != name and any(referenced(row) for row in current if row['ID'] != keep):
-                raise StorageConflict('다른 DB가 참조하는 정식 이미지가 있어 복원을 보류합니다.')
-        for row in current + backups:
-            if row['ID'] == keep:
-                continue
-            if referenced(row):
-                entry['cleanup_pending'] = True
-                continue
-            cls.image_mutate(entry, row['ID'], row['Name'], None)
-        if not commit and keep:
-            if chosen['Name'] != name:
-                cls.image_mutate(entry, keep, chosen['Name'], None, name)
+            new = by_id.get(entry.get('new_id'))
+            if new:
+                if new['Name'] != name or not entry.get('image_verified') or referenced(new):
+                    raise StorageConflict('신규 이미지 소유/참조 불명; 삭제·복원 보류')
+                cls.image_mutate(entry, new['ID'], name, None)
+            for row in old.values():
+                if not row.get('staged'): continue
+                if any(value['ID'] not in old for value in current if value['ID'] != entry.get('new_id')):
+                    raise StorageConflict('이미지 원본 복원 이름 충돌')
+                cls.image_mutate(entry, row['ID'], row['backup_name'], None, row['Name'])
+            previous = next(iter(old.values()), None)
+            keep = previous['ID'] if previous else None
+            relative = '/'.join(filter(None, (directory, previous['Name']))) if previous else ''
             entry['recovered_id'] = keep
         entry['status'] = 'committed' if commit else 'rolled_back'
-        key = (entry['category'], True, os.path.dirname(entry['relative_path']))
+        key = (entry['category'], True, directory)
         MetaPreviewUtil._remote_dir_cache.pop(key, None)
         MetaPreviewUtil._verified_remote_dirs.discard(key)
-        if keep:
-            MetaPreviewUtil.register_remote_file(entry['relative_path'], keep, entry['category'], is_image=True)
+        if keep: MetaPreviewUtil.register_remote_file(relative, keep, entry['category'], is_image=True)
 
     @classmethod
     def original_at_target(cls, entry):

@@ -704,6 +704,7 @@ class ModuleJavUncensored(PluginModuleBase):
     # region INFO
 
     def info(self, code, extra_opts=None, **kwargs):
+        creation_locked = kwargs.pop('_metadata_creation_locked', False)
         opts = dict(extra_opts or {})
         opts.update(kwargs)
         opts['_parallel_media'] = True
@@ -758,6 +759,12 @@ class ModuleJavUncensored(PluginModuleBase):
                     if completed.get('data'):
                         cached_json.update({key: completed['data'][key] for key in ('extra_info', 'extras', 'original') if key in completed['data']})
                 return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+
+        if (use_db and save_db and not bypass_cache and not creation_locked and not skip_trans
+                and not opts.get('for_db') and not opts.get('_explicit_site_refresh')
+                and ModuleMetaDb._ensure_meta_db_writable(self.category)):
+            with MetaUtil.metadata_creation_lock(self.category, code):
+                return self.info(code, extra_opts=opts, _metadata_creation_locked=True)
 
         ret = None
         MetaUtil.mark_batch_site_request(opts)

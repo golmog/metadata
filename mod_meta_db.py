@@ -22,7 +22,7 @@ from sqlalchemy import (
     Text, JSON, DateTime, ForeignKey, or_, and_, func, text, Index,
     case, cast
 )
-from sqlalchemy.orm import sessionmaker, scoped_session, relationship, lazyload
+from sqlalchemy.orm import sessionmaker, scoped_session, relationship, lazyload, deferred
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.pool import NullPool, QueuePool
 from sqlalchemy import event, inspect
@@ -136,6 +136,83 @@ class MetaItem(Base):
     original = Column(JSON, default=dict)
     spec_data = Column(JSON, default=dict)
     extra_info = Column(JSON, default=dict)
+    # Deferred so v1 read-only detail access does not select the not-yet-installed column.
+    actor_search_text = deferred(Column(Text))
+
+    @staticmethod
+    def build_actor_search_text(extra_info, original):
+        """Names from saved JSON only; never infer identities from relationships."""
+        if isinstance(extra_info, str):
+            try:
+                extra_info = json.loads(extra_info)
+            except Exception:
+                extra_info = {}
+        if isinstance(original, str):
+            try:
+                original = json.loads(original)
+            except Exception:
+                original = {}
+        extra = extra_info if isinstance(extra_info, dict) else {}
+        raw = original if isinstance(original, dict) else {}
+        overrides = extra.get('_actor_manual_overrides') or {}
+        excluded = overrides.get('excluded') or []
+
+        def is_actor_excluded(actor):
+            if not excluded or not actor:
+                return False
+            if isinstance(actor, dict):
+                a_idx = str(actor.get('actor_idx') or actor.get('person_idx') or '').strip().lower()
+                a_name = str(actor.get('name_org') or actor.get('name') or '').strip().lower()
+                for exc in excluded:
+                    e_idx = str(exc.get('actor_idx') or exc.get('person_idx') or '').strip().lower()
+                    if a_idx and e_idx:
+                        if a_idx == e_idx:
+                            return True
+                    elif not a_idx and not e_idx:
+                        e_name = str(exc.get('name_org') or exc.get('name') or '').strip().lower()
+                        if a_name and e_name and a_name == e_name:
+                            return True
+                    elif not a_idx and e_idx:
+                        e_name = str(exc.get('name_org') or exc.get('name') or '').strip().lower()
+                        if a_name and e_name and a_name == e_name:
+                            return True
+                return False
+            elif isinstance(actor, str):
+                act_str = actor.strip().lower()
+                for exc in excluded:
+                    e_name = str(exc.get('name_org') or exc.get('name') or '').strip().lower()
+                    e_ko = str(exc.get('name_ko') or '').strip().lower()
+                    if (e_name and e_name == act_str) or (e_ko and e_ko == act_str):
+                        return True
+                return False
+            return False
+
+        has_overrides = bool(overrides.get('included') or overrides.get('excluded'))
+        sources = [extra.get('_actors'), extra.get('actor_cache'), extra.get('actors')]
+        if not (has_overrides and extra.get('_actors') is not None):
+            sources.append(raw.get('actor'))
+        elif raw.get('actor'):
+            filtered_raw = [
+                a for a in raw.get('actor')
+                if not is_actor_excluded(a)
+            ]
+            sources.append(filtered_raw)
+
+        names, seen = [], set()
+        for actors in sources:
+            if not isinstance(actors, list):
+                continue
+            for actor in actors:
+                if is_actor_excluded(actor):
+                    continue
+                values = (actor,) if isinstance(actor, str) else (
+                    tuple(actor.get(key) for key in ('name_org', 'name_ko', 'name_en', 'name'))
+                    if isinstance(actor, dict) else ())
+                for value in values:
+                    if isinstance(value, str) and value and value not in seen:
+                        seen.add(value)
+                        names.append(value)
+        return '\n'.join(names)
 
     created_time = Column(DateTime, default=datetime.now, index=True)
     updated_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -351,7 +428,7 @@ class MetaSchemaMigrationHistory(Base):
 
 class ModuleMetaDb(PluginModuleBase):
     META_DB_SCHEMA_NAME = 'meta_db'
-    META_DB_SCHEMA_VERSION = 1
+    META_DB_SCHEMA_VERSION = 2
     PERSON_SOURCE_FIELDS = (
         'name_org', 'name_ko', 'name_en', 'other_names',
         'birth', 'height', 'body_size', 'bra_size', 'debut',
@@ -363,6 +440,8 @@ class ModuleMetaDb(PluginModuleBase):
     _is_postgres = False
     _cached_actors_map = None
     _cached_actors_ver = None
+    _last_preflight = None
+    _transfer_start_lock = None
 
     def __init__(self, P):
         super(ModuleMetaDb, self).__init__(P, name='meta_db', first_menu='setting')
@@ -409,6 +488,9 @@ class ModuleMetaDb(PluginModuleBase):
             'current_code': '',
             'stop_flag': False
         }
+        if self.__class__._transfer_start_lock is None:
+            self.__class__._transfer_start_lock = threading.Lock()
+        self._transfer_start_lock = self.__class__._transfer_start_lock
         self.import_status = {'is_running': False, 'status': '대기 중', 'total': 0, 'current': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'fail': 0, 'current_code': '', 'stop_flag': False}
 
         # 영상(item)과 인물(person) 독립 배치를 위한 2트랙 상태 딕셔너리
@@ -417,6 +499,9 @@ class ModuleMetaDb(PluginModuleBase):
                 'is_running': False,
                 'status': '대기 중',
                 'mode': default_mode,
+                'delay': 0.5 if default_mode == 'person_image_sync' else 0,
+                'batch_options': {'person_skip_existing': True} if default_mode == 'person_image_sync' else {},
+                'search_field': 'all',
                 'category': default_category,
                 'total': 0,
                 'current': 0,
@@ -832,6 +917,12 @@ class ModuleMetaDb(PluginModuleBase):
                     ),
                     {'schema_name': cls.META_DB_SCHEMA_NAME}
                 ).fetchone()
+                needs_index_repair = False
+                if (row and engine.dialect.name == 'sqlite'
+                        and int(row[0] or 0) == cls.META_DB_SCHEMA_VERSION
+                        and row[1] == 'complete'):
+                    from .migrations.revisions.rev_002_v1_to_v2 import RevisionV1ToV2
+                    needs_index_repair = not RevisionV1ToV2.is_sqlite_covering_index_valid(conn)
             if not row:
                 return {
                     'schema_name': cls.META_DB_SCHEMA_NAME,
@@ -839,7 +930,7 @@ class ModuleMetaDb(PluginModuleBase):
                     'migration_state': 'migration_required',
                     'physical_name': domain or ''
                 }
-            return {
+            status_dict = {
                 'schema_name': cls.META_DB_SCHEMA_NAME,
                 'schema_version': int(row[0] or 0),
                 'migration_state': row[1] or 'legacy',
@@ -848,8 +939,10 @@ class ModuleMetaDb(PluginModuleBase):
                 'completed_at': row[4],
                 'last_error': row[5] or '',
                 'backup_path': row[6] or '',
-                'physical_name': domain or ''
+                'physical_name': domain or '',
+                'needs_index_repair': needs_index_repair
             }
+            return status_dict
         except Exception as e_status:
             logger.error(f"[MetaDB Schema] 상태 조회 실패 ({domain}): {e_status}")
             return {
@@ -877,7 +970,7 @@ class ModuleMetaDb(PluginModuleBase):
         status = cls.get_meta_schema_status(category)
         version = int(status.get('schema_version') or 0)
         state = status.get('migration_state')
-        return bool(version >= cls.META_DB_SCHEMA_VERSION and state in ['complete', 'backfilling'])
+        return bool(version == cls.META_DB_SCHEMA_VERSION and state == 'complete')
 
     @classmethod
     def _meta_db_targets(cls):
@@ -1573,6 +1666,169 @@ class ModuleMetaDb(PluginModuleBase):
 
         return bust, waist, hip, cup
 
+    @staticmethod
+    def _actor_matches_override(actor, override_entry, domain=None):
+        if not actor or not override_entry:
+            return False
+        if isinstance(actor, str):
+            a_name_org = actor.strip()
+            a_idx = ''
+            a_name_ko = ''
+        elif isinstance(actor, dict):
+            a_name_org = (actor.get('name_org') or actor.get('name') or '').strip()
+            a_idx = str(actor.get('actor_idx') or actor.get('person_idx') or '').strip()
+            a_name_ko = (actor.get('name_ko') or '').strip()
+        else:
+            return False
+
+        o_idx = str(override_entry.get('actor_idx') or override_entry.get('person_idx') or '').strip()
+        o_name_org = str(override_entry.get('name_org') or override_entry.get('name') or '').strip()
+        o_name_ko = str(override_entry.get('name_ko') or '').strip()
+        o_domain = str(override_entry.get('domain') or '').strip().upper()
+
+        if domain and o_domain and str(domain).strip().upper() != o_domain:
+            return False
+
+        # 1. ID 일치 (최우선)
+        if a_idx and o_idx:
+            return a_idx.lower() == o_idx.lower()
+
+        # 2. 미등록 예명 등 ID가 없거나 o_idx가 없는 경우: name_org 원문 정확 일치
+        if o_name_org and a_name_org:
+            if o_name_org == a_name_org:
+                return True
+
+        # 3. name_org가 없고 name_ko만 있는 경우
+        if not o_name_org and o_name_ko and a_name_ko and o_name_ko == a_name_ko:
+            return True
+
+        return False
+
+    @classmethod
+    def _apply_actor_edit_delta(cls, current_overrides, delta):
+        if not isinstance(current_overrides, dict):
+            current_overrides = {}
+        included = list(current_overrides.get('included') or [])
+        excluded = list(current_overrides.get('excluded') or [])
+
+        if not delta or not isinstance(delta, dict):
+            return current_overrides
+
+        # 1. release: 수동 보호 해제 (included에서 제거, excluded에서도 제거)
+        for rel_item in (delta.get('released') or []):
+            if not rel_item: continue
+            included = [inc for inc in included if not cls._actor_matches_override(inc, rel_item)]
+            excluded = [exc for exc in excluded if not cls._actor_matches_override(exc, rel_item)]
+
+        # 2. include: 수동 추가/지정된 배우
+        for inc_item in (delta.get('included') or []):
+            if not inc_item: continue
+            excluded = [exc for exc in excluded if not cls._actor_matches_override(exc, inc_item)]
+            found = False
+            for idx, existing in enumerate(included):
+                if cls._actor_matches_override(existing, inc_item):
+                    included[idx] = copy.deepcopy(inc_item)
+                    found = True
+                    break
+            if not found:
+                included.append(copy.deepcopy(inc_item))
+
+        # 3. exclude: 수동 삭제된 배우
+        for exc_item in (delta.get('excluded') or []):
+            if not exc_item: continue
+            included = [inc for inc in included if not cls._actor_matches_override(inc, exc_item)]
+            if not any(cls._actor_matches_override(exc, exc_item) for exc in excluded):
+                excluded.append({
+                    'actor_idx': str(exc_item.get('actor_idx') or exc_item.get('person_idx') or '').strip(),
+                    'name_org': str(exc_item.get('name_org') or exc_item.get('name') or '').strip(),
+                    'name_ko': str(exc_item.get('name_ko') or '').strip(),
+                    'domain': str(exc_item.get('domain') or '').strip().upper()
+                })
+
+        # 4. unexclude (제외 취소 / 복원)
+        for unexc_item in (delta.get('unexcluded') or []):
+            if not unexc_item: continue
+            excluded = [exc for exc in excluded if not cls._actor_matches_override(exc, unexc_item)]
+
+        res = {}
+        if included:
+            res['included'] = included
+        if excluded:
+            res['excluded'] = excluded
+        return res
+
+    @classmethod
+    def _merge_actors_with_manual_overrides(cls, site_actors, overrides, orig_actors=None, domain=None):
+        site_list = list(site_actors or [])
+        if not overrides or not isinstance(overrides, dict):
+            overrides = {}
+
+        included = overrides.get('included') or []
+        excluded = overrides.get('excluded') or []
+
+        merged = []
+
+        for act in site_list:
+            is_inc = any(cls._actor_matches_override(act, inc, domain=domain) for inc in included)
+            if not is_inc:
+                is_exc = any(cls._actor_matches_override(act, exc, domain=domain) for exc in excluded)
+                if is_exc:
+                    continue
+            merged.append(copy.deepcopy(act) if isinstance(act, dict) else act)
+
+        for inc in included:
+            found_idx = -1
+            for m_idx, m_act in enumerate(merged):
+                if cls._actor_matches_override(m_act, inc, domain=domain):
+                    found_idx = m_idx
+                    break
+            if found_idx != -1:
+                existing = merged[found_idx]
+                if isinstance(existing, dict):
+                    if inc.get('actor_idx'):
+                        existing['actor_idx'] = inc['actor_idx']
+                        if 'person_idx' in existing:
+                            existing['person_idx'] = inc['actor_idx']
+                    if inc.get('name_org'):
+                        existing['name_org'] = inc['name_org']
+                    if inc.get('name_ko'):
+                        existing['name_ko'] = inc['name_ko']
+                    if inc.get('name_en'):
+                        existing['name_en'] = inc['name_en']
+                    if inc.get('thumb'):
+                        existing['thumb'] = inc['thumb']
+            else:
+                new_act = copy.deepcopy(inc)
+                if isinstance(new_act, dict) and 'role' not in new_act:
+                    new_act['role'] = '출연'
+                merged.append(new_act)
+
+        deduped = []
+        seen_ids = set()
+        seen_names = set()
+        for act in merged:
+            if isinstance(act, dict):
+                a_idx = str(act.get('actor_idx') or act.get('person_idx') or '').strip().lower()
+                a_name = str(act.get('name_org') or act.get('name') or '').strip()
+            elif isinstance(act, str):
+                a_idx = ''
+                a_name = act.strip()
+            else:
+                a_idx = ''
+                a_name = ''
+
+            if a_idx:
+                if a_idx in seen_ids:
+                    continue
+                seen_ids.add(a_idx)
+            elif a_name:
+                if a_name in seen_names:
+                    continue
+                seen_names.add(a_name)
+            deduped.append(act)
+
+        return deduped
+
     @classmethod
     def _upsert_person_from_actor(
         cls,
@@ -2210,7 +2466,7 @@ class ModuleMetaDb(PluginModuleBase):
                 resolved_poster_url = entity_dict.get('poster_url') or ''
             if isinstance(resolved_poster_url, str) and '/metadata/normal/' in resolved_poster_url:
                 resolved_poster_url = ''
-            if not resolved_poster_url and not image_storage_incomplete:
+            if not resolved_poster_url and not image_storage_incomplete and not (entity_dict.get('extra_info') or {}).get('_image_results'):
                 resolved_poster_url = next(
                     (value for value in ((raw_site_p,) if std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') else (raw_site_p, raw_site_pl)) if cls._is_http_url(value)),
                     ''
@@ -2238,13 +2494,28 @@ class ModuleMetaDb(PluginModuleBase):
             if ('landscape', 1) in removed_image_slots:
                 resolved_landscape_url = ''
 
+            # An absent/failed fresh slot is not an authorized image deletion.
+            retained_image_slots = set()
+            if std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
+                fresh_slots = {(t.get('aspect'), 1 if t.get('aspect') == 'landscape' else 0)
+                               for t in thumbs_list if isinstance(t, dict) and t.get('value')}
+                fresh_slots.update(('fanart', i) for i, url in enumerate(fanarts_list) if url)
+                for media in item.media_files:
+                    slot = (media.media_type, media.sort_order or 0 if media.media_type == 'fanart' else 1 if media.media_type == 'landscape' else 0)
+                    if media.media_type in ('poster', 'landscape', 'fanart') and slot not in fresh_slots | removed_image_slots:
+                        retained_image_slots.add(slot)
+                if ('poster', 0) in retained_image_slots:
+                    resolved_poster_url = item.poster_url or next((m.url for m in item.media_files if m.media_type == 'poster'), '')
+                if ('landscape', 1) in retained_image_slots:
+                    resolved_landscape_url = (item.extra_info or {}).get('landscape_url') or next((m.url for m in item.media_files if m.media_type == 'landscape'), '')
+
             # 저장소에 이미 존재하는 비디오 파일 자동 감지 및 흡수
             from .util_preview import MetaPreviewUtil
             MetaPreviewUtil.check_and_adopt_existing_video(entity_dict, category=std_cat)
 
             # DB 및 extra_info에는 항상 순수 정규 URL만 깨끗하게 저장
             merged_extra_info = copy.deepcopy(item.extra_info or {}) if _refresh_owner is None else {
-                key:copy.deepcopy(value) for key,value in (item.extra_info or {}).items() if key in ('preview_clip','trailer_video')}
+                key:copy.deepcopy(value) for key,value in (item.extra_info or {}).items() if key in ('preview_clip','trailer_video','_actor_manual_overrides')}
             merged_extra_info.pop('source_video_path', None)
             merged_extra_info.pop('_image_storage_state', None)
             merged_extra_info.pop('storage_error', None)
@@ -2252,6 +2523,14 @@ class ModuleMetaDb(PluginModuleBase):
             input_extra_info.pop('source_video_path', None)
             if isinstance(input_extra_info, dict):
                 input_extra_info.pop('actor_cache', None)
+                if _refresh_owner is not None:
+                    # 명세: 사이트 갱신 시 원본 JSON의 임의 _actor_manual_overrides로 기존 DB 기록을 덮어쓰지 않음
+                    input_extra_info.pop('_actor_manual_overrides', None)
+                elif '_actor_manual_overrides' in input_extra_info:
+                    override_val = input_extra_info['_actor_manual_overrides']
+                    if not override_val or not (isinstance(override_val, dict) and (override_val.get('included') or override_val.get('excluded'))):
+                        merged_extra_info.pop('_actor_manual_overrides', None)
+                        input_extra_info.pop('_actor_manual_overrides', None)
                 for k_extra, v_extra in input_extra_info.items():
                     if v_extra is not None: merged_extra_info[k_extra] = v_extra
             merged_extra_info.pop('media_errors', None)
@@ -2294,6 +2573,7 @@ class ModuleMetaDb(PluginModuleBase):
             item.poster_url = resolved_poster_url
             item.original = clean_original
             merged_extra_info.pop('_storage_media', None)
+            merged_extra_info.pop('_image_results', None)
             merged_extra_info.pop('unavailable_trailer', None)
             item.extra_info = copy.deepcopy(merged_extra_info)
             item.spec_data = copy.deepcopy(entity_dict.get('spec_data') or {})
@@ -2321,6 +2601,7 @@ class ModuleMetaDb(PluginModuleBase):
                 if (user_asset(media) and (_refresh_owner is None or not MetaUtil.media_in_storage(media,active_image_mode) or
                     any(user_asset(a) and a.get('media_type')==media.media_type and (media.media_type!='fanart' or a.get('sort_order',0)==(media.sort_order or 0))
                         for a in list(input_extra_info.get('_storage_media') or [])+list(entity_dict.get('media') or []) if isinstance(a,dict)))) or media.media_type in ('trailer', 'preview') or
+                ((media.media_type, (media.sort_order or 0) if media.media_type == 'fanart' else 0 if media.media_type == 'poster' else 1) in retained_image_slots) or
                 (_refresh_owner is None and image_storage_incomplete and (media.media_type, (media.sort_order or 0) if media.media_type == 'fanart' else 0 if media.media_type == 'poster' else 1) not in incoming_image_slots | removed_image_slots) or
                 (std_cat in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') and media.media_type in ('poster', 'landscape', 'fanart') and
                  (media.gdrive_fileid or media.relative_path) and
@@ -2491,6 +2772,12 @@ class ModuleMetaDb(PluginModuleBase):
             person_dom = cls._person_domain_from_item_category(std_cat)
             if entity_dict.get('person_domain'):
                 person_dom = entity_dict['person_domain']
+
+            overrides = merged_extra_info.get('_actor_manual_overrides')
+            if overrides and isinstance(overrides, dict):
+                actors_list = cls._merge_actors_with_manual_overrides(
+                    actors_list, overrides, orig_actors=clean_original.get('actor') or orig_dict.get('actor'), domain=person_dom
+                )
 
             stored_actors = []
 
@@ -2754,6 +3041,7 @@ class ModuleMetaDb(PluginModuleBase):
                 merged_extra_info['fingerprints'] = sync_json_list
                 item.extra_info = copy.deepcopy(merged_extra_info)
 
+            item.actor_search_text = MetaItem.build_actor_search_text(item.extra_info, item.original)
             nested_item.commit()
             if nested_person:
                 nested_person.commit()
@@ -2795,7 +3083,7 @@ class ModuleMetaDb(PluginModuleBase):
     def _schema_write_guard(cls, category, operation):
         status = cls.get_meta_schema_status(category)
         if (
-            int(status.get('schema_version') or 0) < cls.META_DB_SCHEMA_VERSION or
+            int(status.get('schema_version') or 0) != cls.META_DB_SCHEMA_VERSION or
             status.get('migration_state') != 'complete' or not cls._ensure_meta_db_writable(category)
         ):
             msg = (
@@ -3559,6 +3847,57 @@ class ModuleMetaDb(PluginModuleBase):
             return error('storage_sync_failed', '저장소 동기화에 실패했습니다. FF 로그를 확인하세요.', 500)
 
     @classmethod
+    def _resolve_person_storage_target_path(cls, person, dom, mode):
+        """
+        인물 이미지 개인 저장소 대상 상대 경로를 결정한다.
+        - JAV 공식 이미지의 경우 원본 local_img_path에 '_<person_idx>_N.ext'(N: 양의 정수) 버전 접미사가 있으면
+          개인 저장소 기본 캐시 경로에 '_N'을 반영한 별도 버전 경로를 반환한다.
+        - 기존 캐시(remote_img_path/cached_local_img_path)가 과거 버전이더라도 최신 원본 버전을 인식하여 새 대상 경로를 생성한다.
+        - WESTERN 및 버전 없는 이미지는 기존 actor_storage_relative_path의 동작을 그대로 유지한다.
+        """
+        from support_site import SiteAvBase
+
+        # 기본 상대 경로 획득
+        base_path = SiteAvBase.actor_storage_relative_path(person, dom, mode)
+        if str(dom or '').upper() != 'JAV':
+            return base_path
+
+        p_idx = str(getattr(person, 'person_idx', '') or '').strip()
+        if not p_idx:
+            return base_path
+
+        media = cls.person_media(person)
+        official = media.get('official') or {}
+        official_local = str(official.get('local_img_path') or '').strip()
+        if not official_local:
+            return base_path
+
+        # 원본 local_img_path에서 '_<person_idx>_N.ext' 패턴 확인 (N: 양의 정수)
+        m_ver = re.search(rf"_{re.escape(p_idx)}_([1-9]\d*)\.([a-zA-Z0-9]+)$", official_local, re.IGNORECASE)
+        if not m_ver:
+            # 원본에 버전 접미사가 없는 경우: 과거 버전 접미사(_N)가 붙어있다면 원본에 맞춰 베이스로 복원
+            clean_base = re.sub(rf"_{re.escape(p_idx)}_([1-9]\d*)\.([a-zA-Z0-9]+)$", rf"_{p_idx}.\2", base_path, flags=re.IGNORECASE)
+            return clean_base
+
+        new_ver = m_ver.group(1)
+
+        # base_path에서 기존 버전 접미사가 있다면 제거하여 순수 base 경로 획득
+        clean_base = re.sub(rf"_{re.escape(p_idx)}_([1-9]\d*)\.([a-zA-Z0-9]+)$", rf"_{p_idx}.\2", base_path, flags=re.IGNORECASE)
+
+        # clean_base의 '_<person_idx>.ext' 뒤에 '_N' 삽입
+        if re.search(rf"_{re.escape(p_idx)}\.([a-zA-Z0-9]+)$", clean_base, re.IGNORECASE):
+            target_path = re.sub(rf"_{re.escape(p_idx)}\.([a-zA-Z0-9]+)$", rf"_{p_idx}_{new_ver}.\1", clean_base, flags=re.IGNORECASE)
+        else:
+            root_part, ext_part = os.path.splitext(clean_base)
+            target_path = f"{root_part}_{new_ver}{ext_part}"
+
+        target_norm = target_path.replace('\\', '/')
+        if target_norm.startswith('/') or ':' in target_norm or '..' in target_norm.split('/'):
+            return base_path
+
+        return target_path
+
+    @classmethod
     def sync_person_image_to_storage(cls, person_idx=None, domain=None, skip_existing=True,
                                      use_dir_cache=True, *, person_id=None, source_url=None):
         """Sync one official cache. Public identity is domain + person_idx, never a name."""
@@ -3624,7 +3963,9 @@ class ModuleMetaDb(PluginModuleBase):
             media = cls.person_media(person)
             if source_url:
                 media['official']['site_img_url'] = source_url
-            relative_path = SiteAvBase.actor_storage_relative_path(person, dom, mode)
+            relative_path = cls._resolve_person_storage_target_path(person, dom, mode)
+            old_recorded_path = str(media['official'].get('remote_img_path' if mode == 'gdrive' else 'cached_local_img_path') or '').strip()
+            is_version_upgrade = bool(old_recorded_path and relative_path != old_recorded_path)
             def begin_replacement(old_id=''):
                 nonlocal operation
                 owner = dict(subject_type='person', person_id=person.id,
@@ -3697,12 +4038,26 @@ class ModuleMetaDb(PluginModuleBase):
             after = (person.media_src, person.official_cached_gdrive_fileid, person.official_cached_local_path,
                      person.official_remote_path, person.thumb_url, person.has_photo)
             changed = before != after
+            if uploaded:
+                msg = '새 버전 이미지 저장·DB 연결 완료' if is_version_upgrade else '동기화 완료'
+            elif changed:
+                msg = '이미 존재하는 최신 버전으로 DB 재연결 완료'
+            else:
+                msg = '기존 이미지 유지'
+
+            changes = []
+            if uploaded:
+                changes.append('GDrive 새 버전 이미지 저장' if mode == 'gdrive' and is_version_upgrade else
+                               '로컬 새 버전 이미지 저장' if is_version_upgrade else
+                               ('GDrive 이미지 저장' if mode == 'gdrive' else '로컬 이미지 저장'))
+            if changed:
+                changes.append('최신 버전 인물 이미지 DB 재연결' if is_version_upgrade else '인물 이미지 DB 연동')
+
             result.update(is_updated=changed or uploaded, skipped=not (changed or uploaded),
-                          changes=([('GDrive 이미지 저장' if mode == 'gdrive' else '로컬 이미지 저장')] if uploaded else []) +
-                                  (['인물 이미지 DB 연동'] if changed else []),
+                          changes=changes,
                           relative_path=relative_path,
                           google_fileid=person.official_cached_gdrive_fileid if mode == 'gdrive' else '',
-                          msg='동기화 완료' if changed or uploaded else '기존 이미지 유지')
+                          msg=msg)
             if changed or uploaded:
                 with batch_stage(logger, 'Person DB commit', person.person_idx):
                     commit_storage_record(sess, person, snapshot)
@@ -3710,7 +4065,9 @@ class ModuleMetaDb(PluginModuleBase):
             result['commit_state'] = 'committed' if committed else 'not_attempted'
             logger.debug('[MetaDB PersonSync] [%s] %s: %s의 %s',dom,person.person_idx,
                 'Google Drive' if mode=='gdrive' else '로컬 저장소',
-                '인물 이미지 저장·DB 연결 완료' if uploaded else '인물 이미지 DB 연결 보정 완료' if changed else '기존 인물 이미지 사용 (변경 없음)')
+                f"{'새 버전 ' if is_version_upgrade else ''}인물 이미지 저장·DB 연결 완료" if uploaded
+                else '이미 존재하는 최신 버전으로 DB 재연결 완료' if changed
+                else '기존 인물 이미지 사용 (변경 없음)')
             return result
         except Exception as exc:
             state = sess.info.get('storage_commit_state', 'not_attempted')
@@ -3869,11 +4226,12 @@ class ModuleMetaDb(PluginModuleBase):
             data = cls.to_entity_dict(item)
             data['original'] = copy.deepcopy(item.original or {})
             if cached_item:
-                report = MetaPreviewUtil.complete_media(data, std_cat, str(media_path),
+                # Already registered videos need no new file or DB work.  An
+                # explicit source path can still complete *missing* media.
+                cached_report = MetaPreviewUtil.complete_media(data, std_cat, str(media_path),
                     options={'_cached_metadata': True})
-                result = {'ret': 'warning' if report['failures'] else 'success',
-                          'data': data, 'failures': report['failures']}
-                return result
+                if cached_report['trailer'] or cached_report['preview']:
+                    return {'ret': 'success', 'data': data, 'failures': {}}
             snapshot = stage_storage_record(session, item, ('media_files',))
             report = MetaPreviewUtil.complete_media(data, std_cat, str(media_path))
             extra = data.get('extra_info') or {}
@@ -3885,21 +4243,29 @@ class ModuleMetaDb(PluginModuleBase):
                     result['commit_state'] = 'unknown'
                 session.rollback()
                 return result
-            updated_extra = copy.deepcopy(item.extra_info or {})
+            original_extra = item.extra_info or {}
+            updated_extra = copy.deepcopy(original_extra)
             updated_extra.pop('source_video_path', None)
             updated_extra.pop('media_errors', None)
+            updated_extra.pop('unavailable_trailer', None)
             for key in ('trailer_video', 'preview_clip'):
                 if key in extra:
                     updated_extra[key] = copy.deepcopy(extra[key])
                 else:
                     updated_extra.pop(key, None)
-            item.extra_info = updated_extra
-            item.original = copy.deepcopy(data.get('original') or {})
-            cls.sync_item_video_assets(item)
-            item.updated_time = datetime.now()
             result = {'ret': 'warning' if report['failures'] else 'success', 'data': data, 'failures': report['failures']}
             if report.get('error_code'):
                 result['error_code'] = report['error_code']
+            if cached_item and all(updated_extra.get(key) == original_extra.get(key)
+                                   for key in ('trailer_video', 'preview_clip')):
+                # A failed trailer request alone must not rewrite existing metadata.
+                return result
+            item.extra_info = updated_extra
+            if not cached_item:
+                item.original = copy.deepcopy(data.get('original') or {})
+                item.actor_search_text = MetaItem.build_actor_search_text(item.extra_info, item.original)
+            cls.sync_item_video_assets(item)
+            item.updated_time = datetime.now()
             commit_storage_record(session, item, snapshot, ('media_files',))
             committed = True
             return result
@@ -3919,10 +4285,10 @@ class ModuleMetaDb(PluginModuleBase):
                       'commit_state': state}
             return result
         finally:
-            if not cached_item and not entries and data:
+            if not entries and data:
                 entries = (data.get('extra_info') or {}).pop('_media_replacements', [])
             state = session.info.get('storage_commit_state', 'not_attempted')
-            warnings = [] if cached_item else settle(entries, report, True if committed else None if state == 'unknown' else False)
+            warnings = settle(entries, report, True if committed else None if state == 'unknown' else False)
             try:
                 session.close()
             except Exception:
@@ -4321,8 +4687,13 @@ class ModuleMetaDb(PluginModuleBase):
             []
         )
 
+        overrides = raw_extra.get('_actor_manual_overrides') or {}
+        has_overrides = bool(overrides.get('included') or overrides.get('excluded'))
+        is_explicit_empty = '_actors' in raw_extra and isinstance(raw_extra['_actors'], list) and len(raw_extra['_actors']) == 0
+
         # 관계 테이블(MetaItemPersonMap) 매핑 확인
-        if not actors_bridge and hasattr(item, 'person_maps') and item.person_maps:
+        # 명세: _actors=[]이고 수동 제외된 인물이 있는 상황에서는 과거 person_maps/original.actor를 근거로 삭제 배우 부활 금지
+        if not actors_bridge and not (is_explicit_empty and has_overrides) and hasattr(item, 'person_maps') and item.person_maps:
             for pm in item.person_maps:
                 if pm.person:
                     p = pm.person
@@ -4336,12 +4707,19 @@ class ModuleMetaDb(PluginModuleBase):
                     })
 
         # 원문 백업 데이터(original.actor) 확인
-        if not actors_bridge and isinstance(raw_original.get('actor'), list):
+        if not actors_bridge and not (is_explicit_empty and has_overrides) and isinstance(raw_original.get('actor'), list):
             for act in raw_original['actor']:
                 if isinstance(act, dict):
                     actors_bridge.append(act)
                 elif isinstance(act, str) and act.strip():
                     actors_bridge.append({'name_org': act.strip(), 'name_ko': '', 'role': '출연'})
+
+        # 수동 제외된 인물이 actors_bridge에 남아있지 않도록 필터링
+        if overrides.get('excluded'):
+            actors_bridge = [
+                a for a in actors_bridge
+                if not any(cls._actor_matches_override(a, exc) for exc in overrides['excluded'])
+            ]
 
         if actors_bridge:
             if for_list:
@@ -6139,6 +6517,14 @@ class ModuleMetaDb(PluginModuleBase):
             if not fp_matches:
                 return []
 
+            item_ids = {fp.item_id for fp in fp_matches if fp.item_id is not None}
+            rows = sess.query(
+                MetaItem.id, MetaItem.category, MetaItem.code, MetaItem.site, MetaItem.ui_code,
+                MetaItem.originaltitle, MetaItem.sorttitle, MetaItem.title, MetaItem.poster_url,
+                MetaItem.year, MetaItem.studio,
+            ).filter(MetaItem.id.in_(item_ids)).all()
+            items_by_id = {row.id: row for row in rows}
+
             # 사용자가 설정한 사이트 우선순위 로드 (기본: stashdb, tpdb)
             priority_setting_key = "western_order" if std_cat == "WESTERN" else f"{domain}_order"
             site_order_raw = P.ModelSetting.get(priority_setting_key) or "stashdb, tpdb"
@@ -6160,12 +6546,15 @@ class ModuleMetaDb(PluginModuleBase):
                     return 99
 
             # 우선순위 순으로 정렬
-            sorted_fps = sorted(fp_matches, key=lambda x: get_site_rank(x.code, x.item.site if x.item else None))
+            sorted_fps = sorted(fp_matches, key=lambda x: get_site_rank(x.code, items_by_id[x.item_id].site if x.item_id in items_by_id else None))
 
             results = []
             for fp in sorted_fps:
-                if fp.item:
-                    item = fp.item
+                item = items_by_id.get(fp.item_id)
+                if item is not None:
+                    ui_code = item.ui_code
+                    if item.category == 'WESTERN' and (not ui_code or ui_code == item.code):
+                        ui_code = item.originaltitle or ui_code or item.code
                     results.append({
                         'code': item.code,
                         'site': item.site,
@@ -6174,7 +6563,8 @@ class ModuleMetaDb(PluginModuleBase):
                         'title': item.title,
                         'poster_url': item.poster_url,
                         'has_item': True,
-                        'json_data': cls.to_entity_dict(item)
+                        'json_data': {'ui_code': ui_code, 'originaltitle': item.originaltitle,
+                                      'year': item.year, 'studio': item.studio or ''}
                     })
                 else:
                     # 지문은 있으나 MetaItem이 없는 고아 지문인 경우 (새로 사이트에서 다운로드 유도)
@@ -6315,6 +6705,67 @@ class ModuleMetaDb(PluginModuleBase):
         except Exception as e:
             sess.rollback()
             logger.debug(f"[MetaDB] append_fingerprint 예외: {e}")
+            return False
+        finally:
+            sess.remove()
+
+    @classmethod
+    def rebind_user_oshash(cls, code, hash_value):
+        """Plex 최종 작품에 사용자 OSHash를 정정하고 공식 지문 충돌은 보존한다."""
+        if not code or not hash_value or not cls._ensure_meta_db_writable('WESTERN'):
+            return False
+        sess, _, std_cat = cls.get_session_and_domain('WESTERN')
+        if not sess:
+            return False
+        clean_hash = str(hash_value).strip().lower()
+        if not clean_hash:
+            sess.remove()
+            return False
+        try:
+            target = sess.query(MetaItem).options(lazyload('*')).filter_by(category=std_cat, code=code).first()
+            if target is None:
+                return False
+            matches = sess.query(MetaFingerprint).filter_by(
+                category=std_cat, algorithm='OSHASH', hash_value=clean_hash,
+            ).all()
+            if any(fp.source == 'site' and fp.code != code for fp in matches):
+                logger.warning('[MetaDB OSHash] %s (%s): 다른 작품의 공식 지문과 충돌하여 정정을 보류합니다.', code, clean_hash)
+                return False
+
+            moving = [fp for fp in matches if fp.source == 'user' and fp.code != code]
+            item_ids = {target.id} | {fp.item_id for fp in moving}
+            changed = bool(moving)
+            for fp in moving:
+                sess.delete(fp)
+            if not any(fp.code == code and fp.source in ('site', 'user') for fp in matches):
+                sess.add(MetaFingerprint(item_id=target.id, category=std_cat, code=code,
+                                         algorithm='OSHASH', hash_value=clean_hash, source='user'))
+                changed = True
+            sess.flush()
+
+            remaining = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.item_id.in_(item_ids), MetaFingerprint.category == std_cat,
+                MetaFingerprint.algorithm == 'OSHASH', MetaFingerprint.hash_value == clean_hash,
+            ).all()
+            for item in sess.query(MetaItem).options(lazyload('*')).filter(MetaItem.id.in_(item_ids)).all():
+                extra = dict(item.extra_info or {})
+                current = list(extra.get('fingerprints') or [])
+                preserved = [fp for fp in current if not (
+                    isinstance(fp, dict) and str(fp.get('algorithm') or 'OSHASH').strip().upper() == 'OSHASH'
+                    and str(fp.get('hash') or fp.get('hash_value') or '').strip().lower() == clean_hash
+                )]
+                synced = preserved + [{'algorithm': fp.algorithm, 'hash': fp.hash_value, 'source': fp.source}
+                                      for fp in remaining if fp.item_id == item.id]
+                if cls._ordered_fingerprints(synced) != cls._ordered_fingerprints(current):
+                    extra['fingerprints'] = cls._ordered_fingerprints(synced)
+                    item.extra_info = extra
+                    changed = True
+            if changed:
+                sess.commit()
+            return True
+        except Exception as exc:
+            sess.rollback()
+            logger.warning('[MetaDB OSHash] %s (%s): 사용자 지문 정정 실패: %s', code, clean_hash, exc)
             return False
         finally:
             sess.remove()
@@ -6491,6 +6942,85 @@ class ModuleMetaDb(PluginModuleBase):
             session.close()
 
     @classmethod
+    def _item_search_condition(cls, search_word, search_field='all'):
+        """Search saved item fields, independently of person identities/relations."""
+        word = str(search_word or '').strip()
+        if not word:
+            return None
+        field = str(search_field or 'all').strip().lower()
+        like = f'%{word}%'
+        code_like = f"%{word.replace('-', '%')}%"
+        text_conditions = {
+            'code': or_(MetaItem.code.ilike(code_like), MetaItem.ui_code.ilike(code_like),
+                        MetaItem.originaltitle.ilike(code_like)),
+            'title': or_(MetaItem.title.ilike(like), MetaItem.sorttitle.ilike(like)),
+            'studio': MetaItem.studio.ilike(like),
+            'director': MetaItem.director.ilike(like)
+        }
+        if field in text_conditions:
+            return text_conditions[field]
+
+        actor_condition = MetaItem.actor_search_text.ilike(like)
+        if field == 'actor':
+            return actor_condition
+        return or_(*text_conditions.values(), actor_condition)
+
+    @classmethod
+    def _duplicate_meta_condition(cls, categories):
+        """Cross-site candidates first; resolve only their person IDs across DBs."""
+        from sqlalchemy import false
+        from sqlalchemy.orm import sessionmaker
+        conditions = []
+        for category in categories:
+            registry, _, std_cat = cls.get_session_and_domain(category)
+            if registry is None:
+                raise RuntimeError('중복 메타 검색 DB를 조회할 수 없습니다: ' + category)
+            with sessionmaker(bind=registry.get_bind())() as session:
+                # Only identity columns are read here, never actor JSON/ORM relationships.
+                # Python casefold/split also handles Unicode consistently on SQLite/PG.
+                keys = {}
+                for item_id, ui_code, site in session.query(MetaItem.id, MetaItem.ui_code, MetaItem.site).filter(
+                        MetaItem.category == std_cat, MetaItem.ui_code != '', MetaItem.site != ''):
+                    ui_key = ''.join((ui_code or '').split()).casefold()
+                    site_key = (site or '').strip().casefold()
+                    if ui_key and site_key:
+                        keys.setdefault(ui_key, []).append((item_id, ui_key, site_key))
+                candidates = [row for rows in keys.values() if len({row[2] for row in rows}) > 1 for row in rows]
+                if not candidates:
+                    continue
+                if std_cat != 'WESTERN':
+                    duplicate_ids = [row[0] for row in candidates]
+                else:
+                    ids = [row[0] for row in candidates]
+                    linked = {item_id: set() for item_id in ids}
+                    for offset in range(0, len(ids), 500):
+                        for item_id, person_id in session.query(MetaItemPersonMap.item_id, MetaItemPersonMap.person_id).filter(
+                                MetaItemPersonMap.item_id.in_(ids[offset:offset + 500])):
+                            linked[item_id].add(person_id)
+                    person_ids = sorted(set().union(*linked.values()))
+                    genders = {}
+                    if person_ids:
+                        person_registry, _, _ = cls.get_session_and_domain('PERSON')
+                        if person_registry is None:
+                            raise RuntimeError('중복 메타 검색의 PERSON DB를 조회할 수 없습니다.')
+                        with sessionmaker(bind=person_registry.get_bind())() as person_session:
+                            for offset in range(0, len(person_ids), 500):
+                                genders.update(person_session.query(MetaPerson.id, MetaPerson.gender).filter(
+                                    MetaPerson.id.in_(person_ids[offset:offset + 500])).all())
+                    groups = {}
+                    for item_id, ui_key, site_key in candidates:
+                        people = linked[item_id]
+                        if not people or any(genders.get(pid) not in ('female', 'male') for pid in people):
+                            continue
+                        female_ids = frozenset(pid for pid in people if genders[pid] == 'female')
+                        if female_ids:
+                            groups.setdefault((ui_key, female_ids), []).append((item_id, site_key))
+                    duplicate_ids = [row[0] for rows in groups.values() if len({row[1] for row in rows}) > 1 for row in rows]
+                if duplicate_ids:
+                    conditions.append(and_(MetaItem.category == std_cat, MetaItem.id.in_(duplicate_ids)))
+        return or_(*conditions) if conditions else false()
+
+    @classmethod
     def web_list(cls, req, category=None):
         if not cls.ensure_db_ready():
             return {'success': False, 'paging': None, 'list': []}
@@ -6546,19 +7076,32 @@ class ModuleMetaDb(PluginModuleBase):
             if page_size < 1: page_size = 10
 
             search_word = str(params.get('search_word', '')).strip()
+            search_field = params.get('search_field', 'all')
             search_site = str(params.get('search_site', 'all')).strip()
             search_order = str(params.get('search_order', 'desc')).strip()
             search_status = str(params.get('search_status', 'all')).strip()
 
             av_categories = ['JAV_CEN', 'JAV_UNCEN', 'WESTERN']
 
+            # Never serve partial search/count results during a v2 backfill.
+            for cat in (av_categories if is_all_category else [std_cat]):
+                status = cls.get_meta_schema_status(cat)
+                if (status.get('schema_version') != cls.META_DB_SCHEMA_VERSION
+                        or status.get('migration_state') != 'complete'):
+                    return {'success': False, 'paging': None, 'list': [],
+                            'msg': '메타 DB v2 마이그레이션을 완료한 뒤 목록을 조회하세요.'}
+
             # 공통 필터 조건 생성 헬퍼 함수
+            duplicate_condition = cls._duplicate_meta_condition(av_categories if is_all_category else [std_cat]) if search_status == 'duplicate_meta' else None
             def build_common_filters(cat_condition):
                 conds = [cat_condition]
                 if search_site and search_site.lower() not in ['all', '']:
-                    conds.append(func.lower(MetaItem.site) == search_site.lower())
+                    site_column = func.trim(MetaItem.site) if search_status == 'duplicate_meta' else MetaItem.site
+                    conds.append(func.lower(site_column) == search_site.lower())
 
-                if search_status == 'no_poster':
+                if search_status == 'duplicate_meta':
+                    conds.append(duplicate_condition)
+                elif search_status == 'no_poster':
                     conds.append(or_(
                         MetaItem.poster_url == '',
                         MetaItem.poster_url == None,
@@ -6601,16 +7144,9 @@ class ModuleMetaDb(PluginModuleBase):
                         MetaItem.plot != None
                     ))
 
-                if search_word:
-                    search_like = f"%{search_word.replace('-', '%')}%"
-                    conds.append(or_(
-                        MetaItem.originaltitle.ilike(search_like),
-                        MetaItem.ui_code.ilike(search_like),
-                        MetaItem.code.ilike(search_like),
-                        MetaItem.title.ilike(f'%{search_word}%'),
-                        MetaItem.studio.ilike(f'%{search_word}%'),
-                        MetaItem.director.ilike(f'%{search_word}%')
-                    ))
+                search_condition = cls._item_search_condition(search_word, search_field)
+                if search_condition is not None:
+                    conds.append(search_condition)
                 return conds
 
             # SQLite 환경에서 ALL(통합) 조회 시 3개 분산 DB 병합 처리
@@ -7571,6 +8107,55 @@ class ModuleMetaDb(PluginModuleBase):
             cls._close_delete_session(sess,result)
         return result['status']=='success',result['count']
 
+    @staticmethod
+    def _batch_refresh_settings(mode, batch_type, delay=None, batch_options=None):
+        """Persist only the selected mode's JSON-safe settings; fill legacy defaults."""
+        defaults = {
+            'person_image_sync': {'person_skip_existing': True},
+            'western_person_refresh': {'western_protect_manual': True, 'western_skip_existing': True},
+            'works_sync': {'works_sync_clean_orphan': True},
+            'in_place': {'reuse_existing_media': False},
+            'auto_search': {'reuse_existing_media': False}
+        }
+        options = defaults.get(mode, {}).copy()
+        if isinstance(batch_options, dict):
+            for key in options:
+                if isinstance(batch_options.get(key), bool):
+                    options[key] = batch_options[key]
+        try:
+            delay = float(delay) if delay is not None else (0.5 if batch_type == 'person' else 2.0)
+        except (TypeError, ValueError):
+            delay = 0.5 if batch_type == 'person' else 2.0
+        if mode in ('missing', 'media_sync', 'person_image_sync', 'works_sync'):
+            delay = 0.0
+        # Nonfinite input cannot be a usable delay or a portable JSON value.
+        if not 0 <= delay < float('inf'):
+            delay = 0.0
+        return delay, options
+
+    def _get_resume_batch_state(self, batch_type):
+        """Read the full saved queue, including updates made by another worker process."""
+        status = dict(self.batch_status[batch_type])
+        state_file = self.batch_state_files.get(batch_type)
+        if state_file and os.path.exists(state_file):
+            try:
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    status = json.load(f)['status_data']
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning('[MetaDB Batch] 재개 상태 조회 실패 (%s): %s', batch_type, exc)
+                return None
+        modes = ('person_image_sync', 'western_person_refresh', 'works_sync', 'local_sync') if batch_type == 'person' else (
+            'missing', 'media_sync', 'media_reprocess', 'in_place', 'auto_search', 'local_sync')
+        if not isinstance(status, dict):
+            return None
+        queue = status.get('target_items')
+        index = status.get('resume_index', 0)
+        if (status.get('is_running') or not status.get('can_resume') or status.get('mode') not in modes
+                or not isinstance(queue, list) or not queue or not isinstance(index, int)
+                or not 0 <= index < len(queue)):
+            return None
+        return status
+
     def _get_batch_snapshot(self, batch_type='item'):
         """Read worker state without replacing the web process's local job state."""
         batch_key = 'person' if str(batch_type).lower() == 'person' else 'item'
@@ -7593,19 +8178,23 @@ class ModuleMetaDb(PluginModuleBase):
             logger.debug(f"[MetaDB Batch] 공유 상태 조회 실패 ({batch_key}): {exc}")
         # The full resume queue belongs in persistent state, not every UI update.
         status.pop('target_items', None)
+        if status.get('mode'):
+            status['delay'], status['batch_options'] = self._batch_refresh_settings(
+                status['mode'], batch_key, status.get('delay'), status.get('batch_options'))
         return status, logs[-300:]
 
-    def _broadcast_batch_log(self, log_line, event_type="log", is_updated=False, batch_type='item'):
-        """트랙(item/person)별 실시간 SSE 구독자들에게 로그 및 상태를 전송하고 링 버퍼에 보관."""
+    def _broadcast_batch_log(self, log_line, event_type="log", is_updated=False, batch_type='item', store=True):
+        """트랙별 상태/SSE 전파. reset sync는 오래된 로그를 재생성하지 않는다."""
         batch_key = 'person' if str(batch_type).lower() == 'person' else 'item'
         timestamp_str = datetime.now().strftime('%H:%M:%S')
         formatted_entry = f"[{timestamp_str}] {log_line}"
 
         with self._batch_log_lock:
             history = self.batch_log_history[batch_key]
-            history.append(formatted_entry)
-            if len(history) > 300:
-                history.pop(0)
+            if store:
+                history.append(formatted_entry)
+                if len(history) > 300:
+                    history.pop(0)
 
             public_status = {key: value for key, value in self.batch_status[batch_key].items()
                              if key != 'target_items'}
@@ -7630,7 +8219,8 @@ class ModuleMetaDb(PluginModuleBase):
                     'type': event_type,
                     'message': formatted_entry,
                     'status': public_status,
-                    'is_updated': is_updated
+                    'is_updated': is_updated,
+                    **({'logs': history_snapshot} if event_type == 'sync' else {})
                 }, ensure_ascii=False)
                 sub_queue.put(f"data: {payload}\n\n")
             except Exception:
@@ -7677,6 +8267,8 @@ class ModuleMetaDb(PluginModuleBase):
                 if isinstance(data, dict):
                     status = data.get('status_data', {})
                     logs = data.get('logs', [])
+                    status['delay'], status['batch_options'] = self._batch_refresh_settings(
+                        status.get('mode'), batch_key, status.get('delay'), status.get('batch_options'))
 
                     if status.get('is_running'):
                         status['is_running'] = False
@@ -7761,6 +8353,10 @@ class ModuleMetaDb(PluginModuleBase):
 
         try:
             categories = ('JAV_CEN', 'JAV_UNCEN', 'WESTERN')
+            for category in (*categories, 'PERSON'):
+                allowed, message = self._schema_write_guard(category, '작품 배우 캐시 동기화')
+                if not allowed:
+                    raise RuntimeError(message)
             engines = {cat: self._engines.get('postgres' if self._is_postgres else DOMAIN_MAP[cat][0])
                        for cat in categories}
             if any(engine is None for engine in engines.values()):
@@ -7886,8 +8482,28 @@ class ModuleMetaDb(PluginModuleBase):
                         dom = self._person_domain_from_item_category(cat)
                         old_maps = maps_by_item.get(item.id, [])
                         valid_maps = [link for link in old_maps if link.person_id in people and people[link.person_id]['domain'] == dom]
-                        existing_ids = {link.person_id for link in valid_maps}
                         extra = item.extra_info if isinstance(item.extra_info, dict) else {}
+                        overrides = extra.get('_actor_manual_overrides') or {}
+                        included = overrides.get('included') or []
+                        excluded = overrides.get('excluded') or []
+
+                        excluded_links = []
+                        if excluded:
+                            for link in valid_maps:
+                                p_data = people.get(link.person_id) or {}
+                                actor_dict = {
+                                    'actor_idx': p_data.get('person_idx'),
+                                    'person_idx': p_data.get('person_idx'),
+                                    'name_org': p_data.get('name_org'),
+                                    'name_ko': p_data.get('name_ko'),
+                                    'name_en': p_data.get('name_en')
+                                }
+                                if any(self._actor_matches_override(actor_dict, exc, domain=dom) for exc in excluded):
+                                    excluded_links.append(link)
+                            if excluded_links:
+                                excluded_link_ids = {l.id for l in excluded_links}
+                                valid_maps = [l for l in valid_maps if l.id not in excluded_link_ids]
+                        existing_ids = {link.person_id for link in valid_maps}
                         snapshot = None
                         for source in (extra.get('_actors'), extra.get('actor_cache'), extra.get('actors'), item.original_actor):
                             if isinstance(source, list):
@@ -7910,6 +8526,10 @@ class ModuleMetaDb(PluginModuleBase):
                                     complete = False
                                     page_stats['unmatched'] += 1
                                     continue
+                                is_exc = any(self._actor_matches_override(actor, exc, domain=dom) for exc in excluded)
+                                is_inc = any(self._actor_matches_override(actor, inc, domain=dom) for inc in included)
+                                if is_exc and not is_inc:
+                                    continue
                                 pid, conflict = choose_actor(actor, dom, existing_ids)
                                 if pid is None:
                                     updated_actors.append(copy.deepcopy(raw))
@@ -7930,6 +8550,11 @@ class ModuleMetaDb(PluginModuleBase):
                             page_stats['unresolved'] += 1
                         final_ids = set(existing_ids)
                         with scan_sess.begin_nested():
+                            # 수동 제외된 관계는 clean_orphans 설정과 무관하게 실제 DB에서 삭제
+                            for ex_link in excluded_links:
+                                scan_sess.delete(ex_link)
+                                page_stats['removed'] += 1
+
                             for pid, (order, role) in resolved.items():
                                 links = [link for link in valid_maps if link.person_id == pid]
                                 if links:
@@ -7954,7 +8579,8 @@ class ModuleMetaDb(PluginModuleBase):
                                 new_extra = copy.deepcopy(extra)
                                 new_extra['_actors'] = updated_actors
                                 scan_sess.query(MetaItem).filter(MetaItem.id == item.id, MetaItem.category == cat).update(
-                                    {'extra_info': new_extra}, synchronize_session=False)
+                                    {'extra_info': new_extra, 'actor_search_text': MetaItem.build_actor_search_text(
+                                        new_extra, {'actor': item.original_actor})}, synchronize_session=False)
                                 page_stats['cached'] += 1
                         year = str(item.year) if item.year and item.year != 1900 else (str(item.premiered)[:4] if item.premiered else '')
                         ui_code = item.ui_code or item.originaltitle or item.code
@@ -8050,7 +8676,7 @@ class ModuleMetaDb(PluginModuleBase):
                 return self._run_batch_refresh_worker(target_scope, target_codes, search_params,
                     refresh_mode, delay, action, batch_type, batch_options)
         except Exception as exc:
-            batch_key = 'person' if (str(batch_type).lower() == 'person' or refresh_mode in ('person_image_sync', 'works_sync')) else 'item'
+            batch_key = 'person' if (str(batch_type).lower() == 'person' or action != 'resume' and refresh_mode in ('person_image_sync', 'works_sync')) else 'item'
             status = self.batch_status[batch_key]
             status.update(is_running=False, status=f'오류: {exc}',
                           can_resume=bool(status.get('target_items')))
@@ -8067,27 +8693,35 @@ class ModuleMetaDb(PluginModuleBase):
         if not self.is_effectively_enabled():
             return
         from .util_runtime import cooperate
-        batch_key = 'person' if (str(batch_type).lower() == 'person' or refresh_mode in ['person_image_sync', 'works_sync']) else 'item'
+        batch_key = 'person' if (str(batch_type).lower() == 'person' or action != 'resume' and refresh_mode in ['person_image_sync', 'works_sync']) else 'item'
         job_status = self.batch_status[batch_key]
-        batch_opts = dict(batch_options or {})
-        if refresh_mode == 'local_sync' or (action == 'resume' and job_status.get('mode') == 'local_sync'):
-            job_status.update(is_running=False, status='제거된 배치 모드입니다. 작업 모드를 다시 선택하거나 패널을 초기화하세요.')
+        is_resume = action == 'resume'
+        if is_resume:
+            saved_status = self._get_resume_batch_state(batch_key)
+            if saved_status is None:
+                self._broadcast_batch_log('재개 가능한 저장 작업과 대상 큐가 없습니다. 상태를 확인하거나 새 작업을 시작하세요.',
+                                          event_type='warning', batch_type=batch_key)
+                return
+            refresh_mode = saved_status['mode']
+            delay = saved_status.get('delay')
+            batch_options = saved_status.get('batch_options')
+        if refresh_mode == 'local_sync':
+            job_status.update(is_running=False, status='제거된 배치 모드입니다. 작업 모드를 다시 선택하거나 작업을 초기화하세요.')
             self._broadcast_batch_log(job_status['status'], event_type='warning', batch_type=batch_key)
             return
-        if refresh_mode in ('missing', 'media_sync'):
-            delay = 0
-        batch_opts.pop('missing_include_media', None)
-        if refresh_mode in ('media_sync', 'media_reprocess'):
-            # FF reconciliation/reprocessing differs from the external URL-cache-fill API.
-            batch_opts = {key: value for key, value in batch_opts.items() if not key.startswith('media_sync_')}
+        delay, batch_opts = self._batch_refresh_settings(refresh_mode, batch_key, delay, batch_options)
+        if is_resume:
+            job_status.update(saved_status)
+        job_status.update(mode=refresh_mode, delay=delay, batch_options=batch_opts)
+        if not is_resume and batch_key == 'item':
+            job_status['search_field'] = str((search_params or {}).get('search_field') or 'all')
 
         option_labels = {
-            'person_skip_existing': '기존 인물 이미지 처리 생략',
+            'person_skip_existing': '기존 파일 덮어쓰기 금지 (새 버전은 별도 저장·DB 갱신)',
             'western_protect_manual': '수동 편집 데이터 보호',
             'western_skip_existing': '기존 Western 이미지 처리 생략',
             'works_sync_clean_orphan': '오매칭 출연작 자동 정제',
-            'in_place_skip_media': '레거시 갱신 경로 (공통 이미지 정책 적용)',
-            'auto_search_under_95': '95점 미만 항목만 대상'
+            'reuse_existing_media': '기존 미디어(이미지/트레일러/프리뷰) 재사용'
         }
         configured_options = [
             f"{label}: {'ON' if bool(batch_opts.get(key)) else 'OFF'}"
@@ -8107,6 +8741,7 @@ class ModuleMetaDb(PluginModuleBase):
 
         # works_sync 모드는 전용 단일 패스 스캔 엔진으로 즉시 분기 실행
         if refresh_mode == 'works_sync':
+            broadcast_start_config()
             self._run_works_sync_batch(job_status, batch_opts, batch_key)
             return
 
@@ -8121,8 +8756,6 @@ class ModuleMetaDb(PluginModuleBase):
         from .util_preview import MetaPreviewUtil
 
         search_params = search_params or {}
-        is_resume = (action == 'resume' and job_status.get('can_resume') and job_status.get('target_items'))
-
         if is_resume:
             target_items = job_status['target_items']
             start_idx = job_status.get('resume_index', 0)
@@ -8321,22 +8954,34 @@ class ModuleMetaDb(PluginModuleBase):
                     else:
                         categories = ['JAV_CEN', 'JAV_UNCEN', 'WESTERN'] if search_cat == 'AV_ALL' else [search_cat]
 
+                    for cat in categories:
+                        allowed, message = self._schema_write_guard(cat, '배치 대상 검색')
+                        if not allowed:
+                            job_status.update(is_running=False, status=message)
+                            self._broadcast_batch_log(message, event_type='warning', batch_type=batch_key)
+                            return
+
                     s_site = str(search_params.get('search_site') or 'all').strip()
                     s_status = str(search_params.get('search_status') or 'all').strip()
                     s_word = str(search_params.get('search_word') or '').strip()
+                    s_field = search_params.get('search_field', 'all')
                     s_order = str(search_params.get('search_order') or 'desc').strip()
 
-                    self._broadcast_batch_log(f"하단 검색 조건 대조 수집 시작 ➔ 카테고리: {search_cat}, 상태: {s_status}, 사이트: {s_site}, 검색어: '{s_word}'", batch_type=batch_key)
+                    self._broadcast_batch_log(f"하단 검색 조건 대조 수집 시작 ➔ 카테고리: {search_cat}, 상태: {s_status}, 사이트: {s_site}, 검색 대상: {s_field}, 검색어: '{s_word}'", batch_type=batch_key)
 
                     # 검색 및 상태 필터 조건 조립 헬퍼
+                    duplicate_condition = self._duplicate_meta_condition(categories) if s_status == 'duplicate_meta' else None
                     def build_filter_conditions(cat_condition):
                         cond_list = [cat_condition]
                         if s_site and s_site.lower() not in ['all', '']:
-                            cond_list.append(func.lower(MetaItem.site) == s_site.lower())
+                            site_column = func.trim(MetaItem.site) if s_status == 'duplicate_meta' else MetaItem.site
+                            cond_list.append(func.lower(site_column) == s_site.lower())
 
-                        if s_status == 'no_actor':
+                        if s_status == 'duplicate_meta':
+                            cond_list.append(duplicate_condition)
+                        elif s_status == 'no_actor':
                             from sqlalchemy import select
-                            if cls._is_postgres:
+                            if self._is_postgres:
                                 from sqlalchemy.dialects.postgresql import JSONB
                                 actors_json = cast(MetaItem.extra_info, JSONB)['_actors']
                                 actors_array = case((func.jsonb_typeof(actors_json) == 'array', actors_json), else_=func.jsonb_build_array())
@@ -8377,15 +9022,9 @@ class ModuleMetaDb(PluginModuleBase):
                                 MetaItem.plot != None
                             ))
 
-                        if s_word:
-                            s_like = f"%{s_word.replace('-', '%')}%"
-                            cond_list.append(or_(
-                                MetaItem.originaltitle.ilike(s_like),
-                                MetaItem.ui_code.ilike(s_like),
-                                MetaItem.code.ilike(s_like),
-                                MetaItem.title.ilike(f'%{s_word}%'),
-                                MetaItem.studio.ilike(f'%{s_word}%')
-                            ))
+                        search_condition = self._item_search_condition(s_word, s_field)
+                        if search_condition is not None:
+                            cond_list.append(search_condition)
                         return cond_list
 
                     if self._is_postgres:
@@ -8664,25 +9303,20 @@ class ModuleMetaDb(PluginModuleBase):
                         res = MetaUtil.refresh_image_only(
                             target_mod, code, cat, site_activity=site_activity, storage_action='replace'
                         )
-                        if res and res.get('media_warning'):
+                        if res and res.get('media_summary'):
+                            res['detail_msg'] = res['media_summary']
+                        elif res and res.get('media_warning'):
                             res['detail_msg'] = '일부 미디어 실패: ' + str(res['media_warning'])
 
                     elif refresh_mode == 'in_place':
-                        skip_media = batch_opts.get('in_place_skip_media', False)
-                        if skip_media:
-                            res = MetaUtil.heal_metadata(target_mod, code, cat, site_activity=site_activity)
-                        else:
-                            res = MetaUtil.refresh_in_place(target_mod, code, cat, site_activity=site_activity)
+                        res = MetaUtil.refresh_in_place(target_mod, code, cat, site_activity=site_activity,
+                            reuse_existing_media=batch_opts['reuse_existing_media'])
 
                     elif refresh_mode == 'auto_search':
-                        cached_item = self.get_metadata(code, category=cat) or {}
-                        under_95_only = batch_opts.get('auto_search_under_95', True)
-                        current_rating = cached_item.get('rating') or 0
-
-                        if under_95_only and cached_item.get('site') in ['dmm', 'mgstage'] and current_rating >= 4.5:
-                            res = {'ret': 'success', 'is_updated': False, 'title_log': ui_code, 'detail_msg': '고득점 유지'}
-                        else:
-                            res = MetaUtil.refresh_auto_search(target_mod, code, cat, site_activity=site_activity)
+                        # Use the exact same search/save pipeline as the single-item action.
+                        # Site ratings (0..5) are not search match scores (0..100).
+                        res = MetaUtil.refresh_auto_search(target_mod, code, cat, site_activity=site_activity,
+                            reuse_existing_media=batch_opts['reuse_existing_media'])
 
                     if res:
                         data = res.get('data')
@@ -8695,7 +9329,12 @@ class ModuleMetaDb(PluginModuleBase):
                         detail_str = res.get('detail_msg', '')
                         is_updated = res.get('is_updated', False)
 
-                        if res.get('ret') == 'success' or (res.get('ret') == 'warning' and not res.get('uncertain') and
+                        if refresh_mode == 'media_reprocess' and (res.get('media_status') in ('partial', 'failed') or res.get('media_warning')):
+                            job_status['fail'] += 1
+                            label = '부분 완료' if res.get('media_status') == 'partial' else '미디어 실패·기존 자산 유지'
+                            self._broadcast_batch_log(f"[{idx + 1}/{total_len}] [{cat}] '{title_display}': {label} ({detail_str or res.get('msg', '')})",
+                                is_updated=is_updated, event_type='warning', batch_type=batch_key)
+                        elif res.get('ret') == 'success' or (res.get('ret') == 'warning' and not res.get('uncertain') and
                                 (refresh_mode == 'media_sync' or res.get('site_updated') is False)):
                             if refresh_mode != 'media_sync' and (res.get('changes') or res.get('warnings')):
                                 detail_str='; '.join(res.get('changes',[])+res.get('warnings',[]))
@@ -8937,7 +9576,8 @@ class ModuleMetaDb(PluginModuleBase):
                         connect_args = {"host": target_host, "connect_timeout": 8}
 
                     init_engine = create_engine(init_db_url, poolclass=NullPool, connect_args=connect_args)
-                    Base.metadata.create_all(bind=init_engine)
+                    from .migrations import MigrationOrchestrator
+                    MigrationOrchestrator.prepare_engine_schema(init_engine, target_db, Base.metadata)
                     init_engine.dispose()
                     logger.info(f"[MetaDB Admin] 신규 DB '{target_db}' 내 메타 테이블 자동 생성 완료")
                 except Exception as e_init_tbl:
@@ -9300,8 +9940,9 @@ class ModuleMetaDb(PluginModuleBase):
                 versions = []
                 for check_file in sorted(set(value[1] for value in DOMAIN_MAP.values())):
                     full_p = os.path.join(db_dir, check_file)
-                    if not os.path.exists(full_p):
-                        continue
+                    if not os.path.isfile(full_p):
+                        logger.warning(f"[MetaDB Transfer] 필수 SQLite DB 파일 누락: {full_p}")
+                        return 0
                     temp_eng = create_engine(f"sqlite:///{full_p}", poolclass=NullPool)
                     try:
                         with temp_eng.connect() as conn:
@@ -9342,8 +9983,24 @@ class ModuleMetaDb(PluginModuleBase):
 
     @classmethod
     def _stamp_copy_targets(cls, engines):
+        from .migrations.revisions.rev_002_v1_to_v2 import RevisionV1ToV2
         for engine in engines:
             with engine.begin() as connection:
+                RevisionV1ToV2.prepare_auxiliary_schema(connection)
+                RevisionV1ToV2.finalize_schema(connection)
+                # v2 필수 배우 검색 인덱스 검증 (clean/전송 후 인덱스 유실 방지)
+                if inspect(connection).has_table('meta_item'):
+                    if connection.dialect.name == 'sqlite':
+                        if not RevisionV1ToV2.is_sqlite_covering_index_valid(connection):
+                            raise RuntimeError(f"SQLite 배우 검색 커버링 인덱스({RevisionV1ToV2.INDEX_NAME_SQLITE}) 생성 또는 유효성 검증 실패")
+                    elif connection.dialect.name == 'postgresql':
+                        valid = connection.execute(text(
+                            "SELECT i.indisvalid AND i.indisready "
+                            "FROM pg_index i JOIN pg_class idx ON idx.oid=i.indexrelid "
+                            "WHERE idx.oid=to_regclass('ix_meta_item_actor_search_trgm')"
+                        )).scalar()
+                        if not valid:
+                            raise RuntimeError("PostgreSQL 배우 검색 GIN 인덱스(ix_meta_item_actor_search_trgm) 생성 또는 유효성 검증 실패")
                 table = MetaSchemaVersion.__table__
                 row = connection.execute(table.select().where(table.c.schema_name == cls.META_DB_SCHEMA_NAME)).first()
                 values = dict(schema_version=cls.META_DB_SCHEMA_VERSION, migration_state='complete',
@@ -9372,7 +10029,8 @@ class ModuleMetaDb(PluginModuleBase):
         t_start = time.time()
         logger.info(f"[MetaDB Transfer] DB 데이터 복제 시작: {source_type.upper()} ➔ {target_type.upper()} (정책: {mode})")
 
-        if source_type == target_type or mode not in ('clean', 'merge', 'missing'):
+        if (source_type not in ('sqlite', 'postgres') or target_type not in ('sqlite', 'postgres')
+                or source_type == target_type or mode not in ('clean', 'merge', 'missing')):
             return False, '유효하지 않은 복제 방향 또는 정책입니다.'
         allowed, msg = cls.check_transfer_version_compatibility(source_type, target_type, mode)
         if not allowed:
@@ -9385,16 +10043,22 @@ class ModuleMetaDb(PluginModuleBase):
         pg_tgt_engine = None
         pg_tgt_session = None
 
+        CORE_METADATA_TABLES = {
+            'meta_item_person_map', 'meta_item_tag_map', 'meta_media',
+            'meta_fingerprint', 'meta_item', 'meta_person', 'meta_tag'
+        }
+
         try:
             # 소스 엔진 및 세션 준비
             if source_type == "sqlite":
                 db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
-                for db_file in set(v[1] for v in DOMAIN_MAP.values()):
+                for db_file in sorted(set(v[1] for v in DOMAIN_MAP.values())):
                     full_p = os.path.join(db_dir, db_file)
-                    if os.path.exists(full_p):
-                        eng = create_engine(f"sqlite:///{full_p}", poolclass=NullPool)
-                        src_engines.append(eng)
-                        src_sessions.append(sessionmaker(bind=eng)())
+                    if not os.path.isfile(full_p):
+                        raise FileNotFoundError(f"필수 소스 SQLite DB 파일이 없습니다: {full_p}")
+                    eng = create_engine(f"sqlite:///{full_p}", poolclass=NullPool)
+                    src_engines.append(eng)
+                    src_sessions.append(sessionmaker(bind=eng)())
             else:
                 pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
                 pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
@@ -9431,13 +10095,29 @@ class ModuleMetaDb(PluginModuleBase):
                     pg_tgt_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool)
 
                 if mode == "clean":
-                    logger.info("[MetaDB Transfer] 타겟 PostgreSQL 데이터베이스 전체 테이블 삭제(DROP) 시작...")
+                    logger.info("[MetaDB Transfer] clean 실행 전 타겟 PostgreSQL 백업 시작...")
+                    backup_root = os.path.join(path_data, 'db', 'meta_db_backups',
+                                               datetime.now().strftime('meta_db_clean_%Y%m%d_%H%M%S'))
+                    os.makedirs(backup_root, exist_ok=True)
+                    pg_backup_path = os.path.join(backup_root, 'meta_db_postgres.sqlite3')
+                    try:
+                        backup_postgres_database(pg_tgt_engine, pg_backup_path)
+                        if not os.path.exists(pg_backup_path) or os.path.getsize(pg_backup_path) == 0:
+                            raise RuntimeError(f"PostgreSQL 백업 파일이 생성되지 않았거나 크기가 0입니다: {pg_backup_path}")
+                        logger.info(f"[MetaDB Transfer] clean 실행 전 타겟 PostgreSQL 백업 성공: {pg_backup_path}")
+                    except Exception as bkp_err:
+                        err_msg = f"clean 모드 실행 전 타겟 PostgreSQL 백업 실패: {bkp_err} (DROP 작업 취소됨)"
+                        logger.error(f"[MetaDB Transfer] {err_msg}")
+                        return False, err_msg
+
+                    logger.info("[MetaDB Transfer] 타겟 PostgreSQL 핵심 메타 테이블 삭제(DROP) 시작 (보조 감사 테이블 보존)...")
                     with pg_tgt_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                         tables = conn.execute(text(
                             "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"
                         )).fetchall()
                         for (t_name,) in tables:
-                            conn.execute(text(f'DROP TABLE IF EXISTS "{t_name}" CASCADE;'))
+                            if t_name in CORE_METADATA_TABLES:
+                                conn.execute(text(f'DROP TABLE IF EXISTS "{t_name}" CASCADE;'))
 
                 if mode != 'clean':
                     cls._validate_copy_source(pg_tgt_engine)
@@ -9455,6 +10135,26 @@ class ModuleMetaDb(PluginModuleBase):
             else:
                 db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
                 os.makedirs(db_dir, exist_ok=True)
+                if mode == "clean":
+                    logger.info("[MetaDB Transfer] clean 실행 전 타겟 SQLite 백업 시작...")
+                    backup_root = os.path.join(path_data, 'db', 'meta_db_backups',
+                                               datetime.now().strftime('meta_db_clean_%Y%m%d_%H%M%S'))
+                    os.makedirs(backup_root, exist_ok=True)
+                    for dom in set(v[0] for v in DOMAIN_MAP.values()):
+                        db_filename = next(v[1] for v in DOMAIN_MAP.values() if v[0] == dom)
+                        full_target_db_path = os.path.join(db_dir, db_filename)
+                        if os.path.exists(full_target_db_path) and os.path.getsize(full_target_db_path) > 0:
+                            sqlite_backup_file = os.path.join(backup_root, db_filename)
+                            try:
+                                backup_sqlite_database(full_target_db_path, sqlite_backup_file)
+                                if not os.path.exists(sqlite_backup_file) or os.path.getsize(sqlite_backup_file) == 0:
+                                    raise RuntimeError(f"SQLite 백업 파일이 생성되지 않았거나 크기가 0입니다: {sqlite_backup_file}")
+                                logger.info(f"[MetaDB Transfer] clean 실행 전 타겟 SQLite ({dom}) 백업 및 무결성 검증 성공: {sqlite_backup_file}")
+                            except Exception as bkp_err:
+                                err_msg = f"clean 모드 실행 전 타겟 SQLite ({dom}) 백업 실패: {bkp_err} (DROP 작업 취소됨)"
+                                logger.error(f"[MetaDB Transfer] {err_msg}")
+                                return False, err_msg
+
                 for dom in set(v[0] for v in DOMAIN_MAP.values()):
                     db_filename = next(v[1] for v in DOMAIN_MAP.values() if v[0] == dom)
                     full_target_db_path = os.path.join(db_dir, db_filename)
@@ -9462,14 +10162,15 @@ class ModuleMetaDb(PluginModuleBase):
                     eng = create_engine(f"sqlite:///{full_target_db_path}", poolclass=NullPool, json_serializer=json_dump_utf8)
 
                     if mode == "clean":
-                        logger.info(f"[MetaDB Transfer] 타겟 SQLite ({dom}) 전체 테이블 삭제(DROP) 시작...")
+                        logger.info(f"[MetaDB Transfer] 타겟 SQLite ({dom}) 핵심 메타 테이블 삭제(DROP) 시작 (보조 감사 테이블 보존)...")
                         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                             conn.execute(text("PRAGMA foreign_keys = OFF;"))
                             tables = conn.execute(text(
                                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
                             )).fetchall()
                             for (t_name,) in tables:
-                                conn.execute(text(f'DROP TABLE IF EXISTS "{t_name}";'))
+                                if t_name in CORE_METADATA_TABLES:
+                                    conn.execute(text(f'DROP TABLE IF EXISTS "{t_name}";'))
 
                     if mode != 'clean' and os.path.exists(full_target_db_path) and os.path.getsize(full_target_db_path):
                         cls._validate_copy_source(eng)
@@ -9488,19 +10189,28 @@ class ModuleMetaDb(PluginModuleBase):
             from .util_migration import MetadataCopier
             status = progress_status if progress_status is not None else {}
             def target_for_category(category):
+                # Never route an unknown item category into JAV_CEN by default.
+                mapping = DOMAIN_MAP.get(category)
+                if mapping is None or category == 'PERSON':
+                    raise ValueError(f"지원하지 않는 작품 카테고리: {category}")
                 if target_type == 'postgres':
                     return pg_tgt_session
-                domain = DOMAIN_MAP.get(category, DOMAIN_MAP['JAV_CEN'])[0]
-                return tgt_sessions.get(domain)
+                return tgt_sessions.get(mapping[0])
             person_target = pg_tgt_session if target_type == 'postgres' else tgt_sessions['person']
             copier = MetadataCopier(src_sessions, target_for_category, person_target,
-                mode=mode, status=status, log=lambda message: logger.info(f'[MetaDB Transfer] {message}'))
+                mode=mode, status=status, log=lambda message: logger.info(f'[MetaDB Transfer] {message}'),
+                should_stop=lambda: bool(status and status.get('stop_flag')))
             try:
                 copied = copier.run()
             finally:
                 copier.close()
             if not copied:
-                return False, f"복제 중단 또는 일부 항목 실패 (실패: {status['fail']}, 제외: {status['skipped']})"
+                is_part = bool(status.get('is_partial') or status.get('inserted', 0) > 0 or status.get('updated', 0) > 0)
+                status['is_partial'] = is_part
+                fail_msg = f"복제 {'부분 중단' if is_part else '실패'} (실패: {status.get('fail', 0)}, 신규: {status.get('inserted', 0)}, 갱신: {status.get('updated', 0)}, 건너뜀: {status.get('skipped', 0)})"
+                if is_part:
+                    fail_msg += " — 일부 변경사항이 목적지에 커밋된 상태입니다. 재실행 전 사전 점검 또는 백업 복원을 검토하세요."
+                return False, fail_msg
             cls._stamp_copy_targets([pg_tgt_engine] if target_type == 'postgres' else list(tgt_engines.values()))
             total_count = status['total']
             inserted_count, updated_count = status['inserted'], status['updated']
@@ -9527,7 +10237,9 @@ class ModuleMetaDb(PluginModuleBase):
             if mode == "missing":
                 final_msg = f"복제 완료! (총 {total_count:,}건 중 신규: {inserted_count:,}건, 건너뜀: {skipped_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
             elif mode == "merge":
-                final_msg = f"병합 완료! (총 {total_count:,}건 중 신규: {inserted_count:,}건, 갱신: {updated_count:,}건, 건너뜀: {skipped_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
+                conflicts = status.get('conflicts', 0)
+                t_newer = status.get('target_newer_skipped', 0)
+                final_msg = f"병합 완료! (총 {total_count:,}건 중 신규: {inserted_count:,}건, 갱신: {updated_count:,}건, 건너뜀: {skipped_count:,}건 [목적지 최신 보존: {t_newer}건, 충돌 보류: {conflicts}건], 실패: {fail_count}건, {elapsed:.2f}초)"
             else:
                 final_msg = f"전체 복제 완료! (총 {total_count:,}건 중 성공: {inserted_count:,}건, 실패: {fail_count}건, {elapsed:.2f}초)"
 
@@ -9555,6 +10267,347 @@ class ModuleMetaDb(PluginModuleBase):
                 except Exception: pass
             for te in tgt_engines.values():
                 try: te.dispose()
+                except Exception: pass
+
+
+    @classmethod
+    def preflight_transfer(cls, source_type, target_type, mode="merge"):
+        """읽기 전용으로 양방향 전송 사전 점검(preflight)을 수행하여 충돌 및 차이를 보고."""
+        result = {
+            'ret': 'success',
+            'direction': f"{source_type.upper()} ➔ {target_type.upper()}",
+            'source_type': source_type,
+            'target_type': target_type,
+            'mode': mode,
+            'warnings': [],
+            'errors': [],
+            'recommendation': '이번 운영 복구 권장: SQLite ➔ PostgreSQL (mode=merge)',
+            'stored_config': {},
+            'person_stats': {},
+            'item_stats': {},
+            'auxiliary_stats': {}
+        }
+
+        # A new preflight attempt invalidates any previous approval immediately.
+        # Otherwise a failed check could leave a still-valid old transfer token.
+        cls._last_preflight = None
+        try:
+            if not hasattr(P.ModelSetting, 'set'):
+                raise RuntimeError('사전 점검 기록 저장 기능이 없습니다')
+            P.ModelSetting.set('meta_db_last_preflight', '')
+        except Exception as pf_invalidate_error:
+            result['ret'] = 'error'
+            result['errors'].append(f"사전 점검 기록 공유 저장 실패: {pf_invalidate_error}")
+            return result
+
+        stored_dir = P.ModelSetting.get("meta_db_transfer_direction") or "sqlite_to_pg"
+        stored_mode = P.ModelSetting.get("meta_db_transfer_mode") or "merge"
+        result['stored_config'] = {'direction': stored_dir, 'mode': stored_mode}
+
+        if stored_dir == 'pg_to_sqlite' and source_type == 'sqlite':
+            result['warnings'].append(
+                "⚠️ 현재 UI 설정 저장값은 'PostgreSQL ➔ SQLite3'입니다. SQLite의 신규/변경분을 PostgreSQL로 이전하려면 'SQLite3 ➔ PostgreSQL' 방향을 명시적으로 선택해야 합니다."
+            )
+        if mode == 'clean':
+            result['warnings'].append(
+                "⚠️ 'clean' 모드는 목적지의 핵심 테이블을 완전 삭제(DROP) 후 복제합니다. 데이터 유실 위험이 있으므로 일반 복구에는 'merge' 모드를 권장합니다."
+            )
+
+        if (source_type not in ('sqlite', 'postgres') or target_type not in ('sqlite', 'postgres')
+                or source_type == target_type or mode not in ('clean', 'merge', 'missing')):
+            result['ret'] = 'error'
+            result['errors'].append('유효하지 않은 복제 방향 또는 정책입니다.')
+            return result
+
+        allowed, msg = cls.check_transfer_version_compatibility(source_type, target_type, mode)
+        if not allowed:
+            result['ret'] = 'error'
+            result['errors'].append(f"스키마 호환성 확인 실패: {msg}")
+            return result
+
+        src_engines = []
+        tgt_engines = {}
+        pg_engine = None
+        try:
+            # Source engines
+            if source_type == "sqlite":
+                db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
+                for db_file in sorted(set(v[1] for v in DOMAIN_MAP.values())):
+                    full_p = os.path.join(db_dir, db_file)
+                    if not os.path.isfile(full_p):
+                        raise FileNotFoundError(f"필수 소스 SQLite DB 파일이 없습니다: {full_p}")
+                    src_engines.append(create_engine(f"sqlite:///{full_p}", poolclass=NullPool))
+            else:
+                pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
+                pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
+                pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
+                pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
+                if pg_conn_type == "socket":
+                    socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                    pg_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8", poolclass=NullPool, connect_args={"host": socket_dir})
+                else:
+                    pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                    pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                    pg_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool)
+                src_engines.append(pg_engine)
+
+            # Target engines
+            if target_type == "postgres":
+                if not pg_engine:
+                    pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
+                    pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
+                    pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
+                    pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
+                    if pg_conn_type == "socket":
+                        socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                        pg_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8", poolclass=NullPool, connect_args={"host": socket_dir})
+                    else:
+                        pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                        pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                        pg_engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool)
+                tgt_engines['postgres'] = pg_engine
+            else:
+                db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
+                for dom in set(v[0] for v in DOMAIN_MAP.values()):
+                    db_filename = next(v[1] for v in DOMAIN_MAP.values() if v[0] == dom)
+                    full_p = os.path.join(db_dir, db_filename)
+                    if os.path.exists(full_p):
+                        tgt_engines[dom] = create_engine(f"sqlite:///{full_p}", poolclass=NullPool)
+
+            # 1. Auxiliary tables check in target
+            aux_stats = {
+                'target_delete_receipts': 0,
+                'target_migration_history': 0,
+                'protection_status': '보조 감사 테이블 보존 (merge 및 clean 보호 적용)'
+            }
+            primary_tgt = pg_engine if target_type == 'postgres' else tgt_engines.get('jav_cen') or next(iter(tgt_engines.values()), None)
+            if primary_tgt:
+                try:
+                    with primary_tgt.connect() as conn:
+                        insp = inspect(conn)
+                        if insp.has_table('meta_asset_delete_receipt'):
+                            aux_stats['target_delete_receipts'] = conn.execute(text("SELECT COUNT(*) FROM meta_asset_delete_receipt")).scalar() or 0
+                        if insp.has_table('meta_schema_migration_history'):
+                            aux_stats['target_migration_history'] = conn.execute(text("SELECT COUNT(*) FROM meta_schema_migration_history")).scalar() or 0
+                except Exception as aux_err:
+                    logger.debug(f"[Preflight] 보조 테이블 확인 예외: {aux_err}")
+            result['auxiliary_stats'] = aux_stats
+
+            # 2. Person stats & token matching
+            from .util_migration import MetadataCopier
+            p_stats = {
+                'source_total': 0, 'target_total': 0, 'matched': 0, 'new_people': 0,
+                'ambiguous_people': 0, 'custom_image_conflicts': 0, 'works_count_diff': 0,
+                'custom_image_conflict_examples': []
+            }
+            person_tgt_engine = pg_engine if target_type == 'postgres' else tgt_engines.get('person')
+            target_tokens = {}
+            if person_tgt_engine:
+                with person_tgt_engine.connect() as conn:
+                    if inspect(conn).has_table('meta_person'):
+                        p_stats['target_total'] = conn.execute(text("SELECT COUNT(*) FROM meta_person")).scalar() or 0
+                        rows = conn.execute(text("SELECT id, domain, person_idx, alt_indices, extra_info, custom_gdrive_fileid, custom_local_path, custom_remote_path, works_count, name_org FROM meta_person")).fetchall()
+                        for r in rows:
+                            p_dict = {
+                                'id': r[0], 'domain': r[1], 'person_idx': r[2],
+                                'alt_indices': json.loads(r[3]) if isinstance(r[3], str) else r[3],
+                                'extra_info': json.loads(r[4]) if isinstance(r[4], str) else r[4],
+                                'custom_gdrive_fileid': r[5], 'custom_local_path': r[6], 'custom_remote_path': r[7],
+                                'works_count': r[8], 'name_org': r[9]
+                            }
+                            for tok in MetadataCopier.tokens(p_dict):
+                                key = (p_dict['domain'], tok)
+                                if key not in target_tokens:
+                                    target_tokens[key] = []
+                                target_tokens[key].append(p_dict)
+
+            person_src_engine = None
+            if source_type == 'postgres':
+                person_src_engine = pg_engine
+            else:
+                db_dir = P.ModelSetting.get("meta_db_sqlite_dir") or os.path.join(path_data, 'db', 'meta_db')
+                full_p = os.path.join(db_dir, DOMAIN_MAP['PERSON'][1])
+                if os.path.exists(full_p):
+                    person_src_engine = create_engine(f"sqlite:///{full_p}", poolclass=NullPool)
+
+            if person_src_engine:
+                with person_src_engine.connect() as conn:
+                    if inspect(conn).has_table('meta_person'):
+                        p_stats['source_total'] = conn.execute(text("SELECT COUNT(*) FROM meta_person")).scalar() or 0
+                        src_rows = conn.execute(text("SELECT id, domain, person_idx, alt_indices, extra_info, custom_gdrive_fileid, custom_local_path, custom_remote_path, works_count, name_org FROM meta_person")).fetchall()
+                        for r in src_rows:
+                            sp = {
+                                'id': r[0], 'domain': r[1], 'person_idx': r[2],
+                                'alt_indices': json.loads(r[3]) if isinstance(r[3], str) else r[3],
+                                'extra_info': json.loads(r[4]) if isinstance(r[4], str) else r[4],
+                                'custom_gdrive_fileid': r[5], 'custom_local_path': r[6], 'custom_remote_path': r[7],
+                                'works_count': r[8], 'name_org': r[9]
+                            }
+                            s_tokens = MetadataCopier.tokens(sp)
+                            if not s_tokens:
+                                p_stats['ambiguous_people'] += 1
+                                continue
+                            matches = set()
+                            for tok in s_tokens:
+                                for tp in target_tokens.get((sp['domain'], tok), []):
+                                    matches.add(tp['id'])
+                            if len(matches) == 1:
+                                p_stats['matched'] += 1
+                                matched_id = next(iter(matches))
+                                tp = next((t for sub in target_tokens.values() for t in sub if t['id'] == matched_id), None)
+                                if tp:
+                                    custom_cols = ('custom_gdrive_fileid', 'custom_local_path', 'custom_remote_path')
+                                    s_has = any(bool(sp.get(k)) for k in custom_cols)
+                                    t_has = any(bool(tp.get(k)) for k in custom_cols)
+                                    if s_has and t_has and any(sp.get(k) != tp.get(k) for k in custom_cols):
+                                        p_stats['custom_image_conflicts'] += 1
+                                        if len(p_stats['custom_image_conflict_examples']) < 5:
+                                            p_stats['custom_image_conflict_examples'].append({
+                                                'name': sp['name_org'],
+                                                'source_custom': sp.get('custom_gdrive_fileid') or sp.get('custom_local_path'),
+                                                'target_custom': tp.get('custom_gdrive_fileid') or tp.get('custom_local_path')
+                                            })
+                                    if (sp.get('works_count') or 0) != (tp.get('works_count') or 0):
+                                        p_stats['works_count_diff'] += 1
+                            elif len(matches) > 1:
+                                p_stats['ambiguous_people'] += 1
+                            else:
+                                p_stats['new_people'] += 1
+                if person_src_engine != pg_engine:
+                    person_src_engine.dispose()
+            result['person_stats'] = p_stats
+
+            # 3. Item stats & conflicts
+            i_stats = {
+                'source_total': 0, 'target_total': 0, 'new_items': 0, 'common_items': 0,
+                'source_newer': 0, 'target_newer': 0, 'identical_time': 0,
+                'actor_override_conflicts': 0,
+                'missing_relation_count': 0, 'missing_relation_examples': []
+            }
+            target_by_code = {}
+            target_pm_counts = {}
+            for dom, eng in tgt_engines.items():
+                if dom == 'person':
+                    continue
+                with eng.connect() as conn:
+                    if inspect(conn).has_table('meta_item'):
+                        count = conn.execute(text("SELECT COUNT(*) FROM meta_item")).scalar() or 0
+                        i_stats['target_total'] += count
+                        rows = conn.execute(text("SELECT id, category, code, ui_code, updated_time, extra_info FROM meta_item")).fetchall()
+                        for r in rows:
+                            target_by_code[r[2]] = {
+                                'id': r[0], 'category': r[1], 'code': r[2], 'ui_code': r[3],
+                                'updated_time': r[4],
+                                'dom': dom,
+                                'extra_info': json.loads(r[5]) if isinstance(r[5], str) else (r[5] or {})
+                            }
+                        if inspect(conn).has_table('meta_item_person_map'):
+                            for pm_r in conn.execute(text("SELECT item_id, COUNT(*) FROM meta_item_person_map GROUP BY item_id")).fetchall():
+                                target_pm_counts[(dom, pm_r[0])] = pm_r[1]
+
+            seen_source_codes = {}
+            for eng in src_engines:
+                with eng.connect() as conn:
+                    if not inspect(conn).has_table('meta_item'):
+                        continue
+                    count = conn.execute(text("SELECT COUNT(*) FROM meta_item")).scalar() or 0
+                    i_stats['source_total'] += count
+                    src_pm_counts = {}
+                    if inspect(conn).has_table('meta_item_person_map'):
+                        for pm_r in conn.execute(text("SELECT item_id, COUNT(*) FROM meta_item_person_map GROUP BY item_id")).fetchall():
+                            src_pm_counts[pm_r[0]] = pm_r[1]
+
+                    s_rows = conn.execute(text("SELECT id, category, code, ui_code, updated_time, extra_info FROM meta_item")).fetchall()
+                    for r in s_rows:
+                        s_id, s_cat, s_code, s_ui, s_up, s_ex_raw = r[0], r[1], r[2], r[3], r[4], r[5]
+                        if s_cat not in DOMAIN_MAP or s_cat == 'PERSON':
+                            result['errors'].append(f"지원하지 않는 소스 작품 카테고리: {s_cat} (code={s_code})")
+                            continue
+                        if s_code in seen_source_codes:
+                            result['errors'].append(
+                                f"소스 DB 간 작품 code 중복: {s_code} (category={seen_source_codes[s_code]}, {s_cat})")
+                            continue
+                        seen_source_codes[s_code] = s_cat
+                        s_ex = json.loads(s_ex_raw) if isinstance(s_ex_raw, str) else (s_ex_raw or {})
+                        t_item = target_by_code.get(s_code)
+                        if t_item:
+                            if t_item['category'] != s_cat:
+                                result['errors'].append(
+                                    f"동일 code의 카테고리 불일치: {s_code} (소스={s_cat}, 대상={t_item['category']})")
+                                continue
+                            i_stats['common_items'] += 1
+                            try:
+                                s_dt = s_up if isinstance(s_up, datetime) else datetime.fromisoformat(str(s_up)) if s_up else None
+                                t_dt = t_item['updated_time'] if isinstance(t_item['updated_time'], datetime) else datetime.fromisoformat(str(t_item['updated_time'])) if t_item['updated_time'] else None
+                                if s_dt and t_dt:
+                                    if s_dt > t_dt:
+                                        i_stats['source_newer'] += 1
+                                    elif t_dt > s_dt:
+                                        i_stats['target_newer'] += 1
+                                    else:
+                                        i_stats['identical_time'] += 1
+                                else:
+                                    i_stats['identical_time'] += 1
+                            except Exception:
+                                i_stats['identical_time'] += 1
+
+                            s_ovr = s_ex.get('_actor_manual_overrides') or {}
+                            t_ovr = t_item['extra_info'].get('_actor_manual_overrides') or {}
+                            if s_ovr and t_ovr and s_ovr != t_ovr:
+                                i_stats['actor_override_conflicts'] += 1
+
+                            s_rel = src_pm_counts.get(s_id, 0)
+                            t_rel = target_pm_counts.get((t_item['dom'], t_item['id']), 0)
+                            if s_rel == 0 and t_rel > 0:
+                                i_stats['missing_relation_count'] += 1
+                                if len(i_stats['missing_relation_examples']) < 5:
+                                    i_stats['missing_relation_examples'].append({
+                                        'code': s_code, 'ui_code': s_ui, 'source_relations': s_rel, 'target_relations': t_rel
+                                    })
+                        else:
+                            # ui_code is display-only; only an exact code match is common.
+                            i_stats['new_items'] += 1
+            result['item_stats'] = i_stats
+            if result['errors']:
+                result['ret'] = 'error'
+                return result
+
+            ts = int(time.time())
+            token = f"preflight_{ts}_{source_type}_{target_type}_{mode}"
+            pf_record = {
+                'token': token,
+                'source_type': source_type,
+                'target_type': target_type,
+                'mode': mode,
+                'timestamp': ts,
+                'time': ts,
+                'has_errors': bool(result['errors']),
+            }
+            if hasattr(P.ModelSetting, 'set'):
+                try:
+                    P.ModelSetting.set('meta_db_last_preflight', json.dumps(pf_record))
+                except Exception as pf_save_err:
+                    logger.error(f"[Preflight] 공유 설정 저장 실패 (fail-closed): {pf_save_err}")
+                    cls._last_preflight = None
+                    result['ret'] = 'error'
+                    result['errors'].append(f'사전 점검 기록 공유 저장 실패: {pf_save_err}')
+                    return result
+
+            cls._last_preflight = pf_record
+            result['preflight_token'] = token
+
+            return result
+        except Exception as e:
+            logger.error(f"[Preflight] 오류: {e}", exc_info=True)
+            result['ret'] = 'error'
+            result['errors'].append(str(e))
+            return result
+        finally:
+            for s_eng in src_engines:
+                try: s_eng.dispose()
+                except Exception: pass
+            for t_eng in tgt_engines.values():
+                try: t_eng.dispose()
                 except Exception: pass
 
 
@@ -9682,10 +10735,10 @@ class ModuleMetaDb(PluginModuleBase):
             normalized_cat, req_sub, req_command = self.resolve_category_context(req, sub, command)
 
             if req_command == 'db_transfer_status' or command == 'db_transfer_status':
-                return jsonify({'ret': 'success', 'data': self.transfer_status})
+                return jsonify({'ret': 'success', 'data': dict(self.transfer_status)})
 
             if req_command == 'db_import_status' or command == 'db_import_status':
-                return jsonify({'ret': 'success', 'data': self.import_status})
+                return jsonify({'ret': 'success', 'data': dict(self.import_status)})
 
             if req_command == 'db_batch_refresh_status' or command == 'db_batch_refresh_status':
                 return self.process_command('db_batch_refresh_status', req.form.get('batch_type') or 'item', '', '', req)
@@ -10223,6 +11276,28 @@ class ModuleMetaDb(PluginModuleBase):
                     new_json = json.loads(raw_json_str)
                     target_cat = new_json.get('category') or self.find_item_category(code, hint_category=req.form.get('category'))
                     MetaUtil.preserve_user_images_in_edit(code, target_cat, new_json)
+
+                    # 기존 아이템의 수동 오버라이드 확인 및 사용자 delta 반영
+                    existing_meta = self.get_metadata(code, target_cat)
+                    existing_extra = (existing_meta.get('extra_info') or {}) if existing_meta else {}
+                    current_overrides = copy.deepcopy(existing_extra.get('_actor_manual_overrides') or {})
+
+                    if not isinstance(new_json.get('extra_info'), dict):
+                        new_json['extra_info'] = {}
+
+                    actor_delta = new_json.pop('_actor_edit_delta', None)
+                    if actor_delta and isinstance(actor_delta, dict):
+                        current_overrides = self._apply_actor_edit_delta(current_overrides, actor_delta)
+                        if current_overrides and (current_overrides.get('included') or current_overrides.get('excluded')):
+                            new_json['extra_info']['_actor_manual_overrides'] = current_overrides
+                        else:
+                            new_json['extra_info']['_actor_manual_overrides'] = {}
+                    else:
+                        if current_overrides and (current_overrides.get('included') or current_overrides.get('excluded')):
+                            new_json['extra_info']['_actor_manual_overrides'] = current_overrides
+                        else:
+                            new_json['extra_info'].pop('_actor_manual_overrides', None)
+
                     success = self.save_metadata(target_cat, new_json)
                     return jsonify({'ret': 'success' if success else 'error', 'msg': 'DB에 성공적으로 저장되었습니다.' if success else '저장 실패'})
                 except Exception as e:
@@ -10248,8 +11323,10 @@ class ModuleMetaDb(PluginModuleBase):
                     except Exception:
                         pass
 
+                action = post_params.get('action') or req.form.get('action') or arg1 or 'restart'
                 refresh_mode = post_params.get('mode') or req.form.get('mode') or arg2 or 'media_sync'
-                batch_type = post_params.get('batch_type') or req.form.get('batch_type') or ('person' if refresh_mode == 'person_image_sync' else 'item')
+                batch_type = post_params.get('batch_type') or req.form.get('batch_type') or (
+                    'person' if action != 'resume' and refresh_mode in ('person_image_sync', 'works_sync') else 'item')
                 batch_key = 'person' if str(batch_type).lower() == 'person' else 'item'
 
                 current_status, _ = self._get_batch_snapshot(batch_key)
@@ -10257,24 +11334,33 @@ class ModuleMetaDb(PluginModuleBase):
                     target_label = "인물" if batch_key == 'person' else "영상 메타"
                     return jsonify({'ret': 'warning', 'msg': f'이미 진행 중인 {target_label} 배치 작업이 있습니다.'})
 
-                action = post_params.get('action') or req.form.get('action') or arg1 or 'restart'
-                if refresh_mode == 'local_sync' or (action == 'resume' and current_status.get('mode') == 'local_sync'):
-                    return jsonify({'ret':'warning','msg':'제거된 배치 모드입니다. 작업 모드를 다시 선택하거나 패널을 초기화하세요.'})
                 target_scope = post_params.get('target_scope') or req.form.get('target_scope') or 'auto'
-                delay_val = float(post_params.get('delay') or req.form.get('delay') or (0.5 if batch_key == 'person' else 2.0))
                 target_codes_raw = post_params.get('codes') or req.form.get('codes')
-                batch_options = post_params.get('batch_options') or req.form.get('batch_options') or {}
-                if isinstance(batch_options, str):
-                    try:
-                        batch_options = json.loads(batch_options)
-                    except Exception:
-                        batch_options = {}
+                if action == 'resume':
+                    saved_status = self._get_resume_batch_state(batch_key)
+                    if saved_status is None:
+                        return jsonify({'ret': 'warning', 'msg': '재개 가능한 저장 작업과 대상 큐가 없습니다. 상태를 확인하거나 새 작업을 시작하세요.'})
+                    refresh_mode = saved_status['mode']
+                    delay_val, batch_options = self._batch_refresh_settings(
+                        refresh_mode, batch_key, saved_status.get('delay'), saved_status.get('batch_options'))
+                else:
+                    raw_delay = post_params.get('delay', req.form.get('delay'))
+                    delay_val = float(raw_delay) if raw_delay not in (None, '') else (0.5 if batch_key == 'person' else 2.0)
+                    batch_options = post_params.get('batch_options') or req.form.get('batch_options') or {}
+                    if isinstance(batch_options, str):
+                        try:
+                            batch_options = json.loads(batch_options)
+                        except Exception:
+                            batch_options = {}
+                if refresh_mode == 'local_sync':
+                    return jsonify({'ret':'warning','msg':'제거된 배치 모드입니다. 작업 모드를 다시 선택하거나 작업을 초기화하세요.'})
 
                 search_params = {
                     'search_category': post_params.get('search_category') or req.form.get('search_category') or 'AV_ALL',
                     'search_domain': post_params.get('search_domain') or req.form.get('search_domain') or 'ALL',
                     'search_site': post_params.get('search_site') or req.form.get('search_site') or 'all',
                     'search_status': post_params.get('search_status') or req.form.get('search_status') or 'all',
+                    'search_field': post_params.get('search_field') or req.form.get('search_field') or 'all',
                     'search_word': post_params.get('search_word') or req.form.get('search_word') or '',
                     'search_order': post_params.get('search_order') or req.form.get('search_order') or 'desc'
                 }
@@ -10335,14 +11421,44 @@ class ModuleMetaDb(PluginModuleBase):
                 batch_type = req.form.get('batch_type') or arg1 or 'item'
                 batch_key = 'person' if str(batch_type).lower() == 'person' else 'item'
 
-                default_mode = 'person_image_sync' if batch_key == 'person' else 'media_sync'
-                default_category = 'PERSON' if batch_key == 'person' else 'AV_ALL'
+                # Check web-process state AND the worker's shared state. An
+                # active Celery worker must never be disguised as a reset job.
+                snapshot, _ = self._get_batch_snapshot(batch_key)
+                if self.batch_status[batch_key].get('is_running') or snapshot.get('is_running'):
+                    return jsonify({'ret': 'warning', 'msg': '배치 작업이 실행 중이므로 초기화할 수 없습니다. 작업 중단 완료 후 다시 시도하세요.'})
+                state_file = self.batch_state_files.get(batch_key)
+                if state_file and os.path.exists(state_file):
+                    try:
+                        with open(state_file, 'r', encoding='utf-8') as f:
+                            persisted = json.load(f).get('status_data') or {}
+                        if persisted.get('is_running'):
+                            return jsonify({'ret': 'warning', 'msg': '실행 중인 배치 상태가 저장되어 있어 초기화를 차단했습니다. 작업 상태를 확인하세요.'})
+                    except (OSError, ValueError, TypeError) as exc:
+                        logger.warning('[MetaDB Batch] 초기화 전 상태 파일 검사 실패 (%s): %s', batch_key, exc)
+                        return jsonify({'ret': 'warning', 'msg': '작업 상태를 확인하지 못해 초기화를 차단했습니다.'})
 
-                self.batch_status[batch_key].update({
+                # Fail closed before mutating in-memory state: an undeletable
+                # resume file could otherwise revive the cleared job on restart.
+                try:
+                    if state_file and os.path.exists(state_file):
+                        os.remove(state_file)
+                except OSError as exc:
+                    logger.warning('[MetaDB Batch] 초기화 상태 파일 삭제 실패 (%s): %s', batch_key, exc)
+                    return jsonify({'ret': 'warning', 'msg': '저장된 작업 상태를 삭제하지 못해 초기화하지 않았습니다.'})
+
+                # Only reset the work queue, progress and log. Keep mode,
+                # delay, options, category, search filters and the UI selection.
+                status = self.batch_status[batch_key]
+                mode = status.get('mode') or snapshot.get('mode') or ('person_image_sync' if batch_key == 'person' else 'media_sync')
+                delay, options = self._batch_refresh_settings(
+                    mode, batch_key, snapshot.get('delay', status.get('delay')),
+                    snapshot.get('batch_options', status.get('batch_options')))
+                status.update({
                     'is_running': False,
                     'status': '대기 중',
-                    'mode': default_mode,
-                    'category': default_category,
+                    'mode': mode,
+                    'delay': delay,
+                    'batch_options': options,
                     'total': 0,
                     'current': 0,
                     'success': 0,
@@ -10352,21 +11468,21 @@ class ModuleMetaDb(PluginModuleBase):
                     'stop_flag': False,
                     'can_resume': False,
                     'resume_index': 0,
-                    'target_items': []
+                    'target_items': [],
+                    'elapsed_str': '00:00',
+                    'eta_str': '00:00'
                 })
                 with self._batch_log_lock:
                     self.batch_log_history[batch_key].clear()
-
+                # This event updates polling cache and live SSE subscribers,
+                # but is not itself a new history entry after clearing logs.
+                self._broadcast_batch_log('배치 상태 초기화', event_type='sync', batch_type=batch_key, store=False)
                 try:
-                    target_file = self.batch_state_files[batch_key]
-                    if os.path.exists(target_file):
-                        os.remove(target_file)
+                    F.get_cache(f"{P.package_name}_batch_job_{batch_key}").set('stop_flag', 'false')
                 except Exception:
                     pass
-
-                target_label = "인물" if batch_key == 'person' else "영상 메타"
-                self._broadcast_batch_log(f"{target_label} 배치 작업 상태 및 큐가 초기화되었습니다.", batch_type=batch_key)
-                return jsonify({'ret': 'success', 'msg': f'{target_label} 배치 작업 상태가 초기화되었습니다.'})
+                target_label = '인물' if batch_key == 'person' else '영상 메타'
+                return jsonify({'ret': 'success', 'msg': f'{target_label} 작업 상태·로그가 초기화되었습니다. 설정은 유지됩니다.'})
 
             elif command in ['info_batch', 'batch_info']:
                 try:
@@ -10485,6 +11601,10 @@ class ModuleMetaDb(PluginModuleBase):
                 success, msg = self.orchestrator.start_upgrade()
                 return jsonify({'ret': 'success' if success else 'warning', 'msg': msg})
 
+            elif command == 'meta_db_schema_repair_indexes':
+                success, msg = self.orchestrator.repair_indexes()
+                return jsonify({'ret': 'success' if success else 'warning', 'msg': msg})
+
             elif command == 'meta_db_schema_migrate_stop':
                 success, msg = self.orchestrator.request_stop()
                 return jsonify({'ret': 'success' if success else 'warning', 'msg': msg})
@@ -10521,10 +11641,10 @@ class ModuleMetaDb(PluginModuleBase):
                 return jsonify({'ret': 'success' if success else 'warning', 'msg': msg, 'data': self._get_maintenance_status()})
 
             elif command == 'db_transfer_status':
-                return jsonify({'ret': 'success', 'data': self.transfer_status})
+                return jsonify({'ret': 'success', 'data': dict(self.transfer_status)})
 
             elif command == 'db_import_status':
-                return jsonify({'ret': 'success', 'data': self.import_status})
+                return jsonify({'ret': 'success', 'data': dict(self.import_status)})
 
             elif command == 'db_import_stop':
                 self.import_status['stop_flag'] = True
@@ -10684,7 +11804,10 @@ class ModuleMetaDb(PluginModuleBase):
                 else:
                     msg = f"프리뷰 클립 생성 실패 ({code}): {result}"
                     logger.error(f"[MetaPreview] {msg}")
-                    return jsonify({'ret': 'error', 'error_code': 'preview_failed', 'error_origin': 'unknown', 'msg': '프리뷰 클립 생성에 실패했습니다. FF 로그를 확인하세요.'})
+                    safe_reason = result if result in (
+                        'FFmpeg 프리뷰 구간 추출 시간 초과(15초)', 'FFmpeg 프리뷰 병합 시간 초과(40초)'
+                    ) else '프리뷰 클립 생성에 실패했습니다. FF 로그를 확인하세요.'
+                    return jsonify({'ret': 'error', 'error_code': 'preview_failed', 'error_origin': 'unknown', 'msg': safe_reason})
 
             elif command == "delete_preview_clip":
                 result = self._delete_preview_result(arg1, arg2 or self.category,
@@ -10735,9 +11858,7 @@ class ModuleMetaDb(PluginModuleBase):
                 )
                 return jsonify({'ret': 'success' if success else 'error', 'msg': msg})
 
-            elif command == "db_transfer_start":
-                if self.transfer_status['is_running']:
-                    return jsonify({'ret': 'warning', 'msg': '이미 DB 전송 작업이 진행 중입니다.'})
+            elif command == "db_transfer_preflight":
                 src_type, tgt_type = arg1, arg2
                 mode = 'merge'
                 if arg3:
@@ -10746,15 +11867,259 @@ class ModuleMetaDb(PluginModuleBase):
                         mode = p_data.get('mode', 'merge')
                     except Exception:
                         pass
+                result = self.preflight_transfer(src_type, tgt_type, mode=mode)
+                return jsonify(result)
 
-                is_compat, v_msg = self.check_transfer_version_compatibility(src_type, tgt_type, mode)
-                if not is_compat:
-                    return jsonify({'ret': 'warning', 'msg': v_msg})
+            elif command == "db_transfer_start":
+                src_type, tgt_type = arg1, arg2
+                mode = 'merge'
+                confirm_clean = False
+                confirm_destructive_reverse = False
+                preflight_token = None
+                if arg3:
+                    try:
+                        p_data = json.loads(arg3) if isinstance(arg3, str) else arg3
+                        mode = p_data.get('mode', 'merge')
+                        confirm_clean = bool(p_data.get('confirm_clean'))
+                        confirm_destructive_reverse = bool(p_data.get('confirm_destructive_reverse'))
+                        preflight_token = p_data.get('preflight_token')
+                    except Exception:
+                        pass
 
-                t = threading.Thread(target=self._run_transfer_worker, args=(src_type, tgt_type, mode))
-                t.daemon = True
-                t.start()
-                return jsonify({'ret': 'success', 'msg': f'[{src_type.upper()} ➔ {tgt_type.upper()}] 데이터 복제를 시작했습니다.'})
+                # 1. 서버 측 preflight_token 필수 검증 (모든 모드 공통)
+                if not preflight_token or not str(preflight_token).strip():
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': '사전 점검 토큰(preflight_token)이 누락되었습니다. 데이터 전송 전에 반드시 [사전 점검(Preflight)]을 먼저 실행해야 합니다.'
+                    })
+
+                token_str = str(preflight_token).strip()
+
+                # 2. 다중 워커 최신 공유 기록(P.ModelSetting) 우선 검증 (로컬 캐시보다 공유 저장소가 최종 기준)
+                shared_pf = None
+                if hasattr(P.ModelSetting, 'get'):
+                    try:
+                        raw_pf = P.ModelSetting.get('meta_db_last_preflight')
+                        if raw_pf:
+                            parsed = json.loads(raw_pf)
+                            if isinstance(parsed, dict) and parsed.get('token'):
+                                shared_pf = parsed
+                    except Exception as pf_err:
+                        logger.error(f"[Transfer] 공유 사전 점검 설정 읽기 오류: {pf_err}")
+                        shared_pf = None
+
+                if shared_pf is not None:
+                    last_pf = shared_pf
+                    self.__class__._last_preflight = shared_pf
+                elif hasattr(P.ModelSetting, 'set'):
+                    # 정상 운영 환경에서 공유 저장소 기록이 없으면 fail-closed
+                    last_pf = None
+                else:
+                    # set이 없는 단순 모의 환경 fallback
+                    last_pf = getattr(self.__class__, '_last_preflight', None) or getattr(self, '_last_preflight', None)
+
+                if not last_pf:
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': '서버에 유효한 사전 점검(preflight) 기록이 없습니다. 먼저 [사전 점검]을 실행하여 안전성을 확인한 후 진행하세요.'
+                    })
+
+                if token_str != str(last_pf.get('token', '')).strip():
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': '사전 점검 토큰이 일치하지 않거나 유효하지 않습니다. 다시 [사전 점검]을 실행하세요.'
+                    })
+
+                token_parts = token_str.split('_')
+                if token_parts[0] == 'preflight' and len(token_parts) >= 2 and token_parts[1].isdigit():
+                    if (time.time() - float(token_parts[1]) > 900):
+                        return jsonify({
+                            'ret': 'warning',
+                            'msg': '사전 점검 유효 시간(15분)이 만료되었습니다. 안전한 전송을 위해 [사전 점검]을 다시 실행하세요.'
+                        })
+
+                if last_pf.get('has_errors'):
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': '직전 사전 점검에서 오류가 발견되었습니다. 오류를 해결하고 사전 점검을 다시 통과한 후 전송할 수 있습니다.'
+                    })
+
+                token_time = float(last_pf.get('timestamp') or last_pf.get('time') or 0)
+                now_time = time.time()
+                if not token_time or (now_time - token_time > 900):
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': '사전 점검 유효 시간(15분)이 만료되었습니다. 안전한 전송을 위해 [사전 점검]을 다시 실행하세요.'
+                    })
+
+                if (last_pf.get('source_type') != src_type or
+                    last_pf.get('target_type') != tgt_type or
+                    last_pf.get('mode') != mode):
+                    return jsonify({
+                        'ret': 'warning',
+                        'msg': f"사전 점검 설정(방향: {last_pf.get('source_type')}➔{last_pf.get('target_type')}, 모드: {last_pf.get('mode')})과 현재 전송 요청 설정(방향: {src_type}➔{tgt_type}, 모드: {mode})이 일치하지 않습니다. 다시 [사전 점검]을 실행하세요."
+                    })
+
+                # 3. 서버 측 clean 및 역방향 clean 명시적 승인 검증
+                if mode == 'clean':
+                    if not confirm_clean:
+                        return jsonify({
+                            'ret': 'warning',
+                            'msg': 'clean 모드는 대상 데이터베이스의 핵심 메타 데이터를 삭제(DROP)하므로 명시적인 승인(confirm_clean)이 필요합니다.'
+                        })
+                    if src_type == 'postgres' and tgt_type == 'sqlite':
+                        if not confirm_destructive_reverse:
+                            return jsonify({
+                                'ret': 'warning',
+                                'msg': 'PostgreSQL ➔ SQLite3 방향의 clean 모드는 로컬 SQLite 메타를 영구 삭제할 위험이 있습니다. 명시적인 확인(confirm_destructive_reverse)이 필요합니다.'
+                            })
+
+                # 4. 원자적 중복 실행 차단 (단일 프로세스 & 다중 워커 DB row lease 선점)
+                start_lock = getattr(self, '_transfer_start_lock', None) or getattr(self.__class__, '_transfer_start_lock', None)
+                if start_lock is None:
+                    try:
+                        import threading as _real_threading
+                        start_lock = _real_threading.Lock()
+                    except Exception:
+                        pass
+                    if start_lock is None:
+                        try:
+                            start_lock = threading.Lock()
+                        except Exception:
+                            class _DummyLock:
+                                def __enter__(self): return self
+                                def __exit__(self, *a): pass
+                            start_lock = _DummyLock()
+                    self._transfer_start_lock = start_lock
+
+                with start_lock:
+                    # 4-1. 동일 프로세스 내 실행 상태 즉시 차단
+                    if self.transfer_status.get('is_running'):
+                        return jsonify({'ret': 'warning', 'msg': '이미 DB 전송 작업이 진행 중입니다.'})
+
+                    # 4-2. 버전 호환성 검증
+                    is_compat, v_msg = self.check_transfer_version_compatibility(src_type, tgt_type, mode)
+                    if not is_compat:
+                        return jsonify({'ret': 'warning', 'msg': v_msg})
+
+                    # 4-3. Lock Manager 및 DB row lease 엔진 획득
+                    try:
+                        from .migrations.lock_manager import MetaDbLockManager
+                    except (ImportError, ValueError, SystemError):
+                        try:
+                            from migrations.lock_manager import MetaDbLockManager
+                        except Exception:
+                            MetaDbLockManager = None
+
+                    if MetaDbLockManager is not None and hasattr(MetaDbLockManager, 'worker_id'):
+                        current_worker_id = MetaDbLockManager.worker_id('transfer')
+                    else:
+                        import uuid, socket
+                        current_worker_id = f'{socket.gethostname()}|{os.getpid()}|unknown|transfer|{uuid.uuid4().hex}'
+
+                    now_ts = time.time()
+                    lock_engine, lock_dialect = self._get_transfer_lock_engine(src_type, tgt_type)
+                    acquired_db_lock = False
+
+                    # 4-4. 다중 워커 원자적 DB row lease 선점 (Atomic CAS)
+                    if lock_engine and MetaDbLockManager is not None:
+                        acquired_db_lock = MetaDbLockManager.acquire(
+                            lock_engine, lock_dialect, worker_id=current_worker_id, lock_name='transfer', now=now_ts
+                        )
+                        if not acquired_db_lock:
+                            return jsonify({'ret': 'warning', 'msg': '다른 작업자(worker)에서 DB 전송 작업이 이미 진행 중입니다 (락 획득 실패).'})
+                    else:
+                        # DB 엔진이 없는 단순 모의 환경 fallback
+                        try:
+                            raw_lock = P.ModelSetting.get('meta_db_transfer_lock') if hasattr(P.ModelSetting, 'get') else None
+                            if raw_lock:
+                                lock_info = json.loads(raw_lock)
+                                if isinstance(lock_info, dict) and lock_info.get('is_running'):
+                                    owner = lock_info.get('worker_id', '')
+                                    exp = float(lock_info.get('expires_at') or 0)
+                                    dead = False
+                                    if MetaDbLockManager is not None and hasattr(MetaDbLockManager, '_dead_local_owner'):
+                                        dead = MetaDbLockManager._dead_local_owner(owner)
+                                    if exp > now_ts and not dead:
+                                        return jsonify({'ret': 'warning', 'msg': '다른 작업자(worker)에서 DB 전송 작업이 이미 진행 중입니다.'})
+                        except Exception as lock_read_err:
+                            logger.error(f"[Transfer] 공유 잠금 조회 오류: {lock_read_err}")
+
+                    # 4-5. 장시간 작업 lease 갱신(heartbeat) 백그라운드 스레드 시작
+                    heartbeat_stop = None
+                    try:
+                        heartbeat_stop = threading.Event()
+                    except Exception:
+                        pass
+                    if heartbeat_stop is None:
+                        try:
+                            import threading as _real_threading
+                            heartbeat_stop = _real_threading.Event()
+                        except Exception:
+                            class _DummyEvent:
+                                def is_set(self): return False
+                                def set(self): pass
+                                def wait(self, t): return False
+                            heartbeat_stop = _DummyEvent()
+
+                    hb_thread = None
+                    if acquired_db_lock and lock_engine:
+                        hb_thread = self._start_transfer_lock_heartbeat(
+                            lock_engine, current_worker_id, heartbeat_stop, lock_name='transfer'
+                        )
+
+                    new_lock = {
+                        'worker_id': current_worker_id,
+                        'expires_at': now_ts + 1800,
+                        'source_type': src_type,
+                        'target_type': tgt_type,
+                        'mode': mode,
+                        'is_running': True,
+                        'started_at': now_ts,
+                    }
+                    if hasattr(P.ModelSetting, 'set'):
+                        try:
+                            P.ModelSetting.set('meta_db_transfer_lock', json.dumps(new_lock))
+                        except Exception as lock_write_err:
+                            logger.error(f"[Transfer] 공유 잠금 기록 실패: {lock_write_err}")
+
+                    self.transfer_status.update({
+                        'is_running': True,
+                        'status': '작업 시작 중...',
+                        'mode': mode,
+                        'total': 0,
+                        'current': 0,
+                        'inserted': 0,
+                        'updated': 0,
+                        'skipped': 0,
+                        'fail': 0,
+                        'current_code': '',
+                        'stop_flag': False,
+                        'worker_id': current_worker_id,
+                    })
+
+                    try:
+                        self._start_db_io_worker(
+                            self._run_transfer_worker, src_type, tgt_type, mode,
+                            current_worker_id, lock_engine, lock_dialect,
+                            heartbeat_stop, hb_thread, acquired_db_lock
+                        )
+                    except Exception as thread_err:
+                        self.transfer_status['is_running'] = False
+                        if heartbeat_stop is not None:
+                            heartbeat_stop.set()
+                        if acquired_db_lock and lock_engine and MetaDbLockManager is not None:
+                            try:
+                                MetaDbLockManager.release(lock_engine, lock_dialect, worker_id=current_worker_id, lock_name='transfer')
+                            except Exception:
+                                pass
+                        try:
+                            P.ModelSetting.set('meta_db_transfer_lock', '')
+                        except Exception:
+                            pass
+                        return jsonify({'ret': 'error', 'msg': f'전송 스레드 시작 실패: {thread_err}'})
+
+                    return jsonify({'ret': 'success', 'msg': f'[{src_type.upper()} ➔ {tgt_type.upper()}] 데이터 복제를 시작했습니다.'})
 
             elif command == "db_transfer_stop":
                 self.transfer_status['stop_flag'] = True
@@ -10762,9 +12127,18 @@ class ModuleMetaDb(PluginModuleBase):
 
             elif command == "db_import":
                 raw_paths, mode = arg1, arg2
-                t = threading.Thread(target=self._run_import_worker, args=(raw_paths, mode))
-                t.daemon = True
-                t.start()
+                if self.import_status.get('is_running'):
+                    return jsonify({'ret': 'warning', 'msg': '이미 DB 임포트가 진행 중입니다.'})
+                self.import_status.update({
+                    'is_running': True, 'status': '작업 시작 중...',
+                    'total': 0, 'current': 0, 'inserted': 0, 'updated': 0,
+                    'skipped': 0, 'fail': 0, 'current_code': '', 'stop_flag': False
+                })
+                try:
+                    self._start_db_io_worker(self._run_import_worker, raw_paths, mode)
+                except Exception as start_error:
+                    self.import_status.update(is_running=False, status=f'오류: {start_error}')
+                    return jsonify({'ret': 'error', 'msg': f'임포트 작업 시작 실패: {start_error}'})
                 return jsonify({'ret': 'success', 'msg': '백그라운드에서 임포트 작업을 시작했습니다.'})
 
             elif command == 'db_vacuum':
@@ -10789,10 +12163,33 @@ class ModuleMetaDb(PluginModuleBase):
 
             return jsonify({'ret': 'error', 'error_code': 'unsupported_command', 'error_origin': 'ff', 'msg': '지원하지 않는 명령입니다.'})
         except Exception as e:
-            logger.error(f"[{self.name}] process_command 에러: {e}")
+            mod_name = getattr(self, 'name', 'meta_db')
+            logger.error(f"[{mod_name}] process_command 에러: {e}")
             return jsonify({'ret': 'error', 'error_code': 'ff_internal_error', 'error_origin': 'ff', 'msg': 'FF 명령 처리에 실패했습니다. 로그를 확인하세요.'})
 
-    def _run_transfer_worker(self, src_type, tgt_type, mode='merge'):
+    @staticmethod
+    def _start_db_io_worker(callback, *args):
+        """Keep blocking sqlite/psycopg2 I/O outside the gevent HTTP hub.
+
+        FF monkey-patches threading.Thread into a greenlet. A real gevent
+        threadpool thread is therefore required for synchronous DB drivers.
+        Ordinary Python installations without gevent use native threads.
+        """
+        try:
+            from gevent import monkey, get_hub
+        except ImportError:
+            monkey = None
+        if monkey is not None and monkey.is_module_patched('threading'):
+            return get_hub().threadpool.spawn(callback, *args)
+        worker = threading.Thread(target=callback, args=args, daemon=True)
+        worker.start()
+        return worker
+
+    def _run_transfer_worker(self, src_type, tgt_type, mode='merge', worker_id=None,
+                             lock_engine=None, lock_dialect='sqlite',
+                             heartbeat_stop=None, heartbeat_thread=None, acquired_db_lock=False):
+        if not worker_id:
+            worker_id = self.transfer_status.get('worker_id')
         self.transfer_status.update({
             'is_running': True,
             'status': '작업 중',
@@ -10804,8 +12201,16 @@ class ModuleMetaDb(PluginModuleBase):
             'skipped': 0,
             'fail': 0,
             'current_code': '',
-            'stop_flag': False
+            'worker_id': worker_id
         })
+
+        try:
+            from .migrations.lock_manager import MetaDbLockManager
+        except Exception:
+            try:
+                from migrations.lock_manager import MetaDbLockManager
+            except Exception:
+                MetaDbLockManager = None
 
         try:
             success, msg = self.transfer_database(src_type, tgt_type, mode=mode, progress_status=self.transfer_status)
@@ -10813,10 +12218,124 @@ class ModuleMetaDb(PluginModuleBase):
         except Exception as e:
             self.transfer_status['status'] = f'오류: {e}'
         finally:
-            self.transfer_status['is_running'] = False
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                try:
+                    if hasattr(heartbeat_thread, 'get'):
+                        heartbeat_thread.get(timeout=15)
+                    else:
+                        heartbeat_thread.join(timeout=15)
+                except Exception as heartbeat_join_error:
+                    logger.warning(f"[Transfer Lock] heartbeat 종료 대기 실패: {heartbeat_join_error}")
+
+            if acquired_db_lock and lock_engine and MetaDbLockManager is not None:
+                try:
+                    MetaDbLockManager.release(lock_engine, lock_dialect, worker_id=worker_id, lock_name='transfer')
+                except Exception as rel_err:
+                    logger.error(f"[Transfer Lock] DB 잠금 해제 오류: {rel_err}")
+
+            start_lock = getattr(self, '_transfer_start_lock', None) or getattr(self.__class__, '_transfer_start_lock', None)
+            if start_lock:
+                with start_lock:
+                    self.transfer_status['is_running'] = False
+                    try:
+                        raw_lock = P.ModelSetting.get('meta_db_transfer_lock') if hasattr(P.ModelSetting, 'get') else None
+                        if raw_lock:
+                            lock_info = json.loads(raw_lock)
+                            if isinstance(lock_info, dict) and lock_info.get('worker_id') == worker_id:
+                                P.ModelSetting.set('meta_db_transfer_lock', '')
+                    except Exception:
+                        pass
+            else:
+                self.transfer_status['is_running'] = False
+
+    def _get_transfer_lock_engine(self, src_type=None, tgt_type=None):
+        """복제 작업 전용 DB row lease 락 엔진 및 방언(dialect) 획득."""
+        # 1. 테스트/명시적 주입 엔진 우선
+        injected = getattr(self, '_lock_engine', None) or getattr(self.__class__, '_lock_engine', None)
+        if injected:
+            dialect = getattr(self, '_lock_dialect', None) or getattr(self.__class__, '_lock_dialect', None) or getattr(getattr(injected, 'dialect', None), 'name', 'sqlite')
+            return injected, dialect
+
+        # 2. 초기화된 DB 엔진 레지스트리 확인
+        try:
+            self.ensure_db_ready()
+        except Exception:
+            pass
+        engines = getattr(self, '_engines', None) or getattr(self.__class__, '_engines', None)
+        is_pg = getattr(self, '_is_postgres', False) or getattr(self.__class__, '_is_postgres', False)
+        if engines:
+            if is_pg and engines.get('postgres'):
+                return engines.get('postgres'), 'postgresql'
+            for key in ('jav_cen', 'person', 'jav_uncen', 'western'):
+                eng = engines.get(key)
+                if eng:
+                    return eng, 'sqlite'
+            if hasattr(engines, 'values'):
+                first_eng = next(iter(engines.values()), None)
+                if first_eng:
+                    dialect = getattr(getattr(first_eng, 'dialect', None), 'name', 'sqlite')
+                    return first_eng, dialect
+
+        # 3. 미초기화 시 ModelSetting 설정 기반 엔진 생성
+        db_type = P.ModelSetting.get("meta_db_engine_type") if hasattr(P.ModelSetting, 'get') else "sqlite"
+        if (db_type == "postgres" or src_type == "postgres" or tgt_type == "postgres") and is_pg:
+            pg_user = P.ModelSetting.get("meta_db_pg_user") or "metadata"
+            pg_pass = P.ModelSetting.get("meta_db_pg_pass") or ""
+            pg_name = P.ModelSetting.get("meta_db_pg_name") or "metadata"
+            pg_conn_type = P.ModelSetting.get("meta_db_pg_conn_type") or "tcp"
+            if pg_conn_type == "socket":
+                socket_dir = (P.ModelSetting.get("meta_db_pg_socket_dir") or "/var/run/postgresql").strip()
+                return create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@/{pg_name}?client_encoding=utf8", poolclass=NullPool, connect_args={"host": socket_dir}), 'postgresql'
+            else:
+                pg_host = P.ModelSetting.get("meta_db_pg_host") or "postgres"
+                pg_port = P.ModelSetting.get("meta_db_pg_port") or "5432"
+                return create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_name}?client_encoding=utf8", poolclass=NullPool), 'postgresql'
+        else:
+            p_data = globals().get('path_data') or '/tmp'
+            db_dir = None
+            if hasattr(P.ModelSetting, 'get'):
+                db_dir = P.ModelSetting.get("meta_db_sqlite_dir")
+            if not db_dir:
+                db_dir = os.path.join(p_data, 'db', 'meta_db')
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except Exception:
+                pass
+            db_file = os.path.join(db_dir, 'meta_db_jav_cen.db')
+            return create_engine(f"sqlite:///{db_file}", poolclass=NullPool), 'sqlite'
+
+    def _start_transfer_lock_heartbeat(self, engine, worker_id, stop, lock_name='transfer'):
+        """복제 작업 중 DB row lease를 주기적으로 갱신(heartbeat)."""
+        def heartbeat():
+            try:
+                from .migrations.lock_manager import MetaDbLockManager
+            except Exception:
+                try:
+                    from migrations.lock_manager import MetaDbLockManager
+                except Exception:
+                    MetaDbLockManager = None
+            if not MetaDbLockManager:
+                return
+
+            while not stop.wait(MetaDbLockManager.HEARTBEAT_SECONDS):
+                try:
+                    now_ts = time.time()
+                    if not MetaDbLockManager.renew(engine, worker_id, lock_name=lock_name, now=now_ts):
+                        self.transfer_status['stop_flag'] = True
+                        self.transfer_status['last_error'] = 'Transfer lease ownership lost'
+                        logger.warning('[Transfer Lock] 복제 임대(lease) 소유권을 상실하여 작업을 중단합니다.')
+                        return
+                except Exception as exc:
+                    logger.error(f'[Transfer Lock] heartbeat failed: {exc}')
+                    self.transfer_status['stop_flag'] = True
+                    return
+
+        return self._start_db_io_worker(heartbeat)
 
     def _run_import_worker(self, raw_paths, mode):
-        self.import_status.update({'is_running': True, 'status': '작업 중', 'total': 0, 'current': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'fail': 0, 'current_code': '', 'stop_flag': False})
+        self.import_status.update({'is_running': True, 'status': '작업 중', 'total': 0, 'current': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'fail': 0, 'current_code': ''})
         try:
             success, msg = self.import_database(raw_paths, mode=mode, progress_status=self.import_status)
             self.import_status['status'] = '완료' if success else f'실패: {msg}'
