@@ -274,49 +274,53 @@ def backup_postgres_database(engine, backup_path, chunk_size=500, progress_callb
                 PRIMARY KEY (table_name, row_number)
             )
         """)
-        with engine.connect() as source:
-            for table_index, table_name in enumerate(tables, 1):
-                columns = inspector.get_columns(table_name)
-                columns_json = json.dumps([
-                    {
-                        "name": column["name"],
-                        "type": str(column["type"]),
-                        "nullable": bool(column.get("nullable", True)),
-                        "primary_key": bool(column.get("primary_key", False))
-                    }
-                    for column in columns
-                ], ensure_ascii=False)
-                backup.execute(
-                    "INSERT OR REPLACE INTO meta_db_backup_schema "
-                    "(table_name, columns_json) VALUES (?, ?)",
-                    (table_name, columns_json)
-                )
-                escaped_name = table_name.replace('"', '""')
-                result = source.execute(text(f'SELECT * FROM "{escaped_name}"'))
-                row_number = 0
-                while True:
-                    rows = result.fetchmany(chunk_size)
-                    if not rows:
-                        break
-                    payload = [
-                        (
-                            table_name,
-                            row_number + offset,
-                            json.dumps(dict(row._mapping), ensure_ascii=False, default=str)
+        conn_opts = {}
+        if getattr(getattr(engine, 'dialect', None), 'name', '') == 'postgresql':
+            conn_opts["isolation_level"] = "REPEATABLE READ"
+        with engine.connect().execution_options(**conn_opts) as source:
+            with source.begin():
+                for table_index, table_name in enumerate(tables, 1):
+                    columns = inspector.get_columns(table_name)
+                    columns_json = json.dumps([
+                        {
+                            "name": column["name"],
+                            "type": str(column["type"]),
+                            "nullable": bool(column.get("nullable", True)),
+                            "primary_key": bool(column.get("primary_key", False))
+                        }
+                        for column in columns
+                    ], ensure_ascii=False)
+                    backup.execute(
+                        "INSERT OR REPLACE INTO meta_db_backup_schema "
+                        "(table_name, columns_json) VALUES (?, ?)",
+                        (table_name, columns_json)
+                    )
+                    escaped_name = table_name.replace('"', '""')
+                    result = source.execute(text(f'SELECT * FROM "{escaped_name}"'))
+                    row_number = 0
+                    while True:
+                        rows = result.fetchmany(chunk_size)
+                        if not rows:
+                            break
+                        payload = [
+                            (
+                                table_name,
+                                row_number + offset,
+                                json.dumps(dict(row._mapping), ensure_ascii=False, default=str)
+                            )
+                            for offset, row in enumerate(rows)
+                        ]
+                        row_number += len(payload)
+                        backup.executemany(
+                            "INSERT OR REPLACE INTO meta_db_backup_rows "
+                            "(table_name, row_number, row_json) VALUES (?, ?, ?)",
+                            payload
                         )
-                        for offset, row in enumerate(rows)
-                    ]
-                    row_number += len(payload)
-                    backup.executemany(
-                        "INSERT OR REPLACE INTO meta_db_backup_rows "
-                        "(table_name, row_number, row_json) VALUES (?, ?, ?)",
-                        payload
-                    )
-                    backup.commit()
-                if progress_callback:
-                    progress_callback(
-                        table_index, len(tables), "PostgreSQL 논리 백업 중", table_name
-                    )
+                        backup.commit()
+                    if progress_callback:
+                        progress_callback(
+                            table_index, len(tables), "PostgreSQL 논리 백업 중", table_name
+                        )
         integrity = backup.execute("PRAGMA integrity_check").fetchone()
         if not integrity or integrity[0] != "ok":
             raise RuntimeError(f"PostgreSQL 논리 백업 무결성 검사 실패: {integrity}")
@@ -329,9 +333,15 @@ def restore_postgres_database(engine, backup_path, chunk_size=500, progress_call
     if not os.path.isfile(backup_path):
         raise FileNotFoundError(f"PostgreSQL 논리 백업을 찾을 수 없습니다: {backup_path}")
 
-    backup = sqlite3.connect(backup_path)
     try:
-        integrity = backup.execute("PRAGMA integrity_check").fetchone()
+        backup = sqlite3.connect(backup_path)
+    except Exception as exc:
+        raise RuntimeError(f"논리 백업 파일 열기 실패: {exc}")
+    try:
+        try:
+            integrity = backup.execute("PRAGMA integrity_check").fetchone()
+        except Exception as exc:
+            raise RuntimeError(f"논리 백업 무결성 검사 실패: {exc}")
         if not integrity or integrity[0] != "ok":
             raise RuntimeError(f"논리 백업 무결성 검사 실패: {integrity}")
         schema_rows = backup.execute(
@@ -402,6 +412,22 @@ def restore_postgres_database(engine, backup_path, chunk_size=500, progress_call
                         key: value for key, value in raw.items()
                         if key in column_names
                     }
+                    if table_name == 'meta_item' and 'actor_search_text' in column_names:
+                        from .mod_meta_db import MetaItem
+                        extra_val = values.get('extra_info')
+                        if isinstance(extra_val, str):
+                            try:
+                                extra_val = json.loads(extra_val)
+                            except Exception:
+                                extra_val = {}
+                        orig_val = values.get('original')
+                        if isinstance(orig_val, str):
+                            try:
+                                orig_val = json.loads(orig_val)
+                            except Exception:
+                                orig_val = {}
+                        values['actor_search_text'] = MetaItem.build_actor_search_text(
+                            extra_val, orig_val)
                     batch.append(values)
                     if len(batch) >= chunk_size:
                         connection.execute(table.insert(), batch)
@@ -442,6 +468,8 @@ def restore_postgres_database(engine, backup_path, chunk_size=500, progress_call
 
 class MetadataCopier:
     PAGE_SIZE = 500
+    # Bound relation memory independently of the 500-row commit/savepoint page.
+    RELATION_PREFETCH_SIZE = 96
 
     def __init__(self, sources, target_for_category, person_target, mode='merge',
                  status=None, log=None, categories=None, sanitized=False, should_stop=None):
@@ -466,7 +494,11 @@ class MetadataCopier:
         self.index.execute('CREATE TABLE token (domain TEXT, value TEXT, person_id INTEGER, UNIQUE(domain,value,person_id))')
         self.index.execute('CREATE INDEX token_lookup ON token(domain,value)')
         self.index.execute('CREATE TABLE parent (src INTEGER, old_id INTEGER, parent_id INTEGER, dest INTEGER, new_id INTEGER, PRIMARY KEY(src,old_id,dest))')
-        self.status.update(current=0, total=0, inserted=0, updated=0, skipped=0, fail=0, ambiguous=0)
+        # Reuse only mappings from committed tag pages; never cache a row that
+        # could be rolled back by an item-level savepoint.
+        self._committed_tag_ids = {}
+        self.status.update(current=0, total=0, inserted=0, updated=0, skipped=0, fail=0, ambiguous=0,
+                           conflicts=0, target_newer_skipped=0, is_partial=False)
 
     def close(self):
         self.index.close()
@@ -488,6 +520,82 @@ class MetadataCopier:
                 return
             last_id = rows[-1]['id']
             yield rows
+
+    @staticmethod
+    def _rows_by_item(session, table, item_ids):
+        """Read an item's actual relation rows without rebuilding metadata."""
+        if not item_ids:
+            return {}
+        result = {}
+        for row in session.execute(select(table).where(table.c.item_id.in_(item_ids))).mappings():
+            result.setdefault(row['item_id'], []).append(dict(row))
+        return result
+
+    def _prefetch_item_batch(self, origin, source, rows):
+        """Bounded read-only snapshot for a copy microbatch.
+
+        A single failed prefetch falls back to the existing per-item code path;
+        commits and error isolation remain on the original 500-item boundary.
+        """
+        groups = {}
+        for row in rows:
+            target = self.target(row['category'])
+            group = groups.setdefault(id(target), dict(session=target, codes=set(), rows=[]))
+            group['codes'].add(row['code'])
+            group['rows'].append(row)
+
+        eligible_source_ids = []
+        for group in groups.values():
+            target = group['session']
+            existing = target.execute(select(self.Item).where(
+                self.Item.c.code.in_(group['codes']))).mappings().all()
+            group['items'] = {row['code']: dict(row) for row in existing}
+            active_ids = set()
+            for row in group['rows']:
+                old = group['items'].get(row['code'])
+                if old and self.mode == 'missing':
+                    continue
+                src_dt = self._parse_dt(row.get('updated_time'))
+                dst_dt = self._parse_dt(old.get('updated_time')) if old else None
+                if old and src_dt and dst_dt and dst_dt > src_dt:
+                    continue
+                eligible_source_ids.append(row['id'])
+                if old:
+                    active_ids.add(old['id'])
+            group['children'] = {
+                table.name: self._rows_by_item(target, table, active_ids)
+                for table in (self.Media, self.Fingerprint, self.TagMap, self.PersonMap)
+            }
+
+        source_children = {
+            table.name: self._rows_by_item(source, table, eligible_source_ids)
+            for table in (self.Media, self.Fingerprint, self.TagMap, self.PersonMap)
+        }
+        person_ids = {
+            child['person_id'] for group in groups.values()
+            for children in group['children'][self.PersonMap.name].values()
+            for child in children
+        }
+        # The committed person mapping is authoritative. Never infer a person
+        # from a title or other metadata while copying relationships.
+        for children in source_children[self.PersonMap.name].values():
+            for child in children:
+                found, pid = self.mapped(origin, 'person', child['person_id'], self.person_target)
+                if not found:
+                    possible = {r[0] for r in self.index.execute(
+                        'SELECT DISTINCT new_id FROM mapping WHERE kind=? AND old_id=? AND dest=? AND new_id IS NOT NULL',
+                        ('person', child['person_id'], id(self.person_target)))}
+                    pid = next(iter(possible)) if len(possible) == 1 else None
+                if pid is not None:
+                    person_ids.add(pid)
+        people = {}
+        if person_ids:
+            columns = (self.Person.c.id, self.Person.c.domain, self.Person.c.person_idx,
+                       self.Person.c.name_org, self.Person.c.name_ko)
+            for row in self.person_target.execute(select(*columns).where(
+                    self.Person.c.id.in_(person_ids))).mappings():
+                people[row['id']] = dict(row)
+        return dict(source=source_children, targets=groups, people=people)
 
     def target(self, category):
         session = self.target_for_category(category)
@@ -513,6 +621,106 @@ class MetadataCopier:
 
     def remember(self, src, kind, old_id, target, new_id):
         self.index.execute('INSERT OR REPLACE INTO mapping VALUES (?,?,?,?,?)', (src, kind, old_id, id(target), new_id))
+
+    @staticmethod
+    def _has_changed_values(existing, incoming):
+        """Avoid redundant UPDATEs without skipping child relationship copying."""
+        return any(existing.get(key) != value for key, value in incoming.items())
+
+    @staticmethod
+    def _parse_dt(val):
+        if isinstance(val, datetime):
+            return val
+        if val:
+            try:
+                return datetime.fromisoformat(str(val))
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _actor_matches_override(actor, override_entry, domain=None):
+        if not actor or not override_entry:
+            return False
+        if isinstance(actor, str):
+            a_name_org = actor.strip()
+            a_idx = ''
+            a_name_ko = ''
+        elif isinstance(actor, dict):
+            a_name_org = (actor.get('name_org') or actor.get('name') or '').strip()
+            a_idx = str(actor.get('actor_idx') or actor.get('person_idx') or '').strip()
+            a_name_ko = (actor.get('name_ko') or '').strip()
+        else:
+            return False
+
+        o_idx = str(override_entry.get('actor_idx') or override_entry.get('person_idx') or '').strip()
+        o_name_org = str(override_entry.get('name_org') or override_entry.get('name') or '').strip()
+        o_name_ko = str(override_entry.get('name_ko') or '').strip()
+        o_domain = str(override_entry.get('domain') or '').strip().upper()
+
+        if domain and o_domain and str(domain).strip().upper() != o_domain:
+            return False
+
+        if a_idx and o_idx:
+            return a_idx.lower() == o_idx.lower()
+
+        if o_name_org and a_name_org:
+            if o_name_org == a_name_org:
+                return True
+
+        if not o_name_org and o_name_ko and a_name_ko and o_name_ko == a_name_ko:
+            return True
+
+        return False
+
+    @classmethod
+    def merge_actor_manual_overrides(cls, src_ovr, dst_ovr):
+        if not isinstance(src_ovr, dict):
+            src_ovr = {}
+        if not isinstance(dst_ovr, dict):
+            dst_ovr = {}
+
+        src_inc = list(src_ovr.get('included') or [])
+        src_exc = list(src_ovr.get('excluded') or [])
+        dst_inc = list(dst_ovr.get('included') or [])
+        dst_exc = list(dst_ovr.get('excluded') or [])
+
+        merged_exc = list(dst_exc)
+        for item in src_exc:
+            if not any(cls._actor_matches_override(item, e) for e in merged_exc):
+                merged_exc.append(copy.deepcopy(item))
+
+        merged_inc = []
+        for item in dst_inc:
+            if not any(cls._actor_matches_override(item, e) for e in merged_exc):
+                merged_inc.append(copy.deepcopy(item))
+        for item in src_inc:
+            if not any(cls._actor_matches_override(item, e) for e in merged_exc):
+                if not any(cls._actor_matches_override(item, inc) for inc in merged_inc):
+                    merged_inc.append(copy.deepcopy(item))
+
+        res = {}
+        if merged_inc:
+            res['included'] = merged_inc
+        if merged_exc:
+            res['excluded'] = merged_exc
+        return res
+
+    @classmethod
+    def _is_person_excluded(cls, person_row, excluded_list):
+        if not excluded_list or not person_row:
+            return False
+        p_dict = {
+            'actor_idx': person_row.get('person_idx'),
+            'person_idx': person_row.get('person_idx'),
+            'name_org': person_row.get('name_org'),
+            'name_ko': person_row.get('name_ko'),
+            'domain': person_row.get('domain'),
+        }
+        for exc in excluded_list:
+            if cls._actor_matches_override(p_dict, exc, domain=person_row.get('domain')):
+                return True
+        return False
 
     @staticmethod
     def values(row):
@@ -558,13 +766,38 @@ class MetadataCopier:
             if field in manual:
                 for column in derived:
                     values[column] = target.get(column)
+        # 4. Custom image protection and conflict resolution
         custom = ('custom_gdrive_fileid', 'custom_local_path', 'custom_remote_path')
-        if any(target.get(key) for key in custom):
-            for key in custom:
-                values[key] = target.get(key)
+        src_has_custom = any(bool(source.get(k)) for k in custom)
+        dst_has_custom = any(bool(target.get(k)) for k in custom)
+        if dst_has_custom and not src_has_custom:
+            for k in custom:
+                values[k] = target.get(k)
+        elif src_has_custom and not dst_has_custom:
+            for k in custom:
+                values[k] = source.get(k)
+        elif src_has_custom and dst_has_custom:
+            is_identical = all(source.get(k) == target.get(k) for k in custom)
+            if not is_identical:
+                # Both claim different valid custom images -> retain destination manual image, flag conflict
+                self.status['conflicts'] = self.status.get('conflicts', 0) + 1
+                self.log(f"인물 커스텀 이미지 상이 (충돌 보류): {source.get('name_org')} "
+                         f"(목적지={target.get('custom_gdrive_fileid') or target.get('custom_local_path')}, "
+                         f"소스={source.get('custom_gdrive_fileid') or source.get('custom_local_path')})")
+                for k in custom:
+                    values[k] = target.get(k)
+            else:
+                for k in custom:
+                    values[k] = target.get(k)
+
         for key in ('official_cached_gdrive_fileid', 'official_cached_local_path', 'official_remote_path'):
             if not values.get(key) and target.get(key):
                 values[key] = target[key]
+
+        # Consistently maintain works_count
+        src_wc = int(source.get('works_count') or 0)
+        dst_wc = int(target.get('works_count') or 0)
+        values['works_count'] = max(src_wc, dst_wc)
         media = copy.deepcopy(values.get('media_src') or {})
         media = self.mod.normalize_person_media(media, domain=values.get('domain'))
         for section, key, column in self.mod.PERSON_MEDIA_COLUMNS:
@@ -628,9 +861,17 @@ class MetadataCopier:
                                     action = 'skipped'
                                 else:
                                     old = self.person_target.execute(select(self.Person).where(self.Person.c.id == target_id)).mappings().one()
-                                    values = self.merge_person(values, old)
-                                    self.person_target.execute(self.Person.update().where(self.Person.c.id == target_id).values(**values))
-                                    action = 'updated'
+                                    src_dt = self._parse_dt(row.get('updated_time'))
+                                    dst_dt = self._parse_dt(old.get('updated_time'))
+                                    if src_dt and dst_dt and dst_dt > src_dt:
+                                        action = 'skipped'
+                                        self.status['target_newer_skipped'] = self.status.get('target_newer_skipped', 0) + 1
+                                        self.log(f"인물 목적지 최신 보존 (건너뜀): {row.get('name_ko') or row['name_org']} (소스={src_dt}, 목적지={dst_dt})")
+                                    else:
+                                        values = self.merge_person(values, old)
+                                        if self._has_changed_values(old, values):
+                                            self.person_target.execute(self.Person.update().where(self.Person.c.id == target_id).values(**values))
+                                        action = 'updated'
                             else:
                                 target_id = self.person_target.execute(self.Person.insert().values(**values)).inserted_primary_key[0]
                                 action = 'inserted'
@@ -648,6 +889,7 @@ class MetadataCopier:
     def copy_tags(self):
         for source in self.sources:
             for rows in self.pages(source, self.Tag):
+                committed_page = []
                 for row in rows:
                     if self.stopped():
                         break
@@ -657,12 +899,15 @@ class MetadataCopier:
                     target = self.target(category)
                     try:
                         with target.begin_nested():
-                            self.copy_tag(source, row['id'], target)
+                            mapped_id = self.copy_tag(source, row['id'], target)
+                        committed_page.append(((id(source), row['id'], id(target)), mapped_id))
                     except Exception as exc:
                         self.status['fail'] += 1
                         self.log(f"태그 복제 실패: {row['name_org']} ({exc})")
                 for target in self.targets.values():
                     target.commit()
+                # Only populate the fast lookup after all target commits succeed.
+                self._committed_tag_ids.update(committed_page)
 
     def copy_tag(self, source, old_id, target):
         row = source.execute(select(self.Tag).where(self.Tag.c.id == old_id)).mappings().one_or_none()
@@ -672,7 +917,9 @@ class MetadataCopier:
         old = target.execute(select(self.Tag).where(condition)).mappings().one_or_none()
         if old:
             if self.mode == 'merge':
-                target.execute(self.Tag.update().where(self.Tag.c.id == old['id']).values(**self.values(row)))
+                values = self.values(row)
+                if self._has_changed_values(old, values):
+                    target.execute(self.Tag.update().where(self.Tag.c.id == old['id']).values(**values))
             return old['id']
         return target.execute(self.Tag.insert().values(**self.values(row))).inserted_primary_key[0]
 
@@ -690,16 +937,50 @@ class MetadataCopier:
         values['original'] = original
         return values
 
-    def copy_item(self, origin, source, row):
+    def copy_item(self, origin, source, row, prefetched=None):
         target = self.target(row['category'])
-        old = target.execute(select(self.Item).where(self.Item.c.code == row['code'])).mappings().one_or_none()
+        group = prefetched['targets'][id(target)] if prefetched is not None else None
+        old = (group['items'].get(row['code']) if group is not None else
+               target.execute(select(self.Item).where(self.Item.c.code == row['code'])).mappings().one_or_none())
+
+        def source_children(table):
+            if prefetched is not None:
+                return prefetched['source'][table.name].get(row['id'], ())
+            return source.execute(select(table).where(table.c.item_id == row['id'])).mappings()
+
+        def destination_children(table, item_id):
+            if prefetched is not None:
+                return group['children'][table.name].get(item_id, ())
+            return target.execute(select(table).where(table.c.item_id == item_id)).mappings()
+
+        def person_row(person_id):
+            if prefetched is not None and person_id in prefetched['people']:
+                return prefetched['people'][person_id]
+            return self.person_target.execute(select(self.Person).where(
+                self.Person.c.id == person_id)).mappings().one_or_none()
         if old and old['category'] != row['category']:
             raise ValueError('동일 코드가 다른 카테고리에 존재합니다')
         if old and self.mode == 'clean':
             raise ValueError('소스에 중복 작품 코드가 있습니다')
+
+        # 'code' is the unique item identifier. Different codes may share the
+        # same display-only ui_code and must be copied as independent items.
+
         if old and self.mode == 'missing':
             self.remember(origin, 'item', row['id'], target, old['id'])
             return 'skipped'
+
+        # 1. Check if destination is newer than source
+        src_dt = self._parse_dt(row.get('updated_time'))
+        dst_dt = self._parse_dt(old.get('updated_time')) if old else None
+        target_is_newer = bool(old and src_dt and dst_dt and dst_dt > src_dt)
+        if target_is_newer:
+            self.remember(origin, 'item', row['id'], target, old['id'])
+            self.status['target_newer_skipped'] = self.status.get('target_newer_skipped', 0) + 1
+            # run() counts the returned 'skipped' action; never count twice.
+            self.log(f"작품 목적지 최신 보존 (건너뜀): {row['code']} (소스={src_dt}, 목적지={dst_dt})")
+            return 'skipped'
+
         values = self.clean_item(row) if self.sanitized else self.values(row)
         if row['category'] in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN'):
             values['extra_info'] = copy.deepcopy(values.get('extra_info') or {})
@@ -715,44 +996,85 @@ class MetadataCopier:
                     if field in old:
                         values[field] = copy.deepcopy(old[field])
                 if manual:
-                    extra['manual_data'] = copy.deepcopy(manual)
+                    extra['manual_data'] = {**(extra.get('manual_data') or {}), **copy.deepcopy(manual)}
+
+                # 2. Protect and merge _actor_manual_overrides
+                src_overrides = extra.get('_actor_manual_overrides') or {}
+                dst_overrides = old_extra.get('_actor_manual_overrides') or {}
+                if src_overrides or dst_overrides:
+                    extra['_actor_manual_overrides'] = self.merge_actor_manual_overrides(src_overrides, dst_overrides)
+
                 # A missing source cache must not erase a recorded destination video.
                 for key in ('preview_clip', 'trailer_video'):
                     if key not in extra and key in old_extra:
                         extra[key] = copy.deepcopy(old_extra[key])
                 values['extra_info'] = extra
-                target.execute(self.Item.update().where(self.Item.c.id == target_id).values(**values))
+                from .mod_meta_db import MetaItem
+                values['actor_search_text'] = MetaItem.build_actor_search_text(values.get('extra_info'), values.get('original'))
+                if self._has_changed_values(old, values):
+                    target.execute(self.Item.update().where(self.Item.c.id == target_id).values(**values))
             else:
+                from .mod_meta_db import MetaItem
+                values['actor_search_text'] = MetaItem.build_actor_search_text(values.get('extra_info'), values.get('original'))
                 target_id = target.execute(self.Item.insert().values(parent_id=None, **values)).inserted_primary_key[0]
             from .util_metadata import MetaUtil
             def user_asset(media):
                 return MetaUtil.is_user_media(media) if row.get('category') in ('JAV_CEN', 'JAV_UNCEN', 'WESTERN') else bool(media.get('is_user'))
-            source_media = [dict(m) for m in source.execute(select(self.Media).where(self.Media.c.item_id == row['id'])).mappings()]
-            existing_media = [dict(m) for m in target.execute(select(self.Media).where(self.Media.c.item_id == target_id)).mappings()] if old else []
+            source_media = [dict(m) for m in source_children(self.Media)]
+            existing_media = [dict(m) for m in destination_children(self.Media, target_id)] if old else []
             protected = [m for m in existing_media if user_asset(m)]
             for media in protected:
                 if not media.get('is_user'):
                     target.execute(self.Media.update().where(self.Media.c.id == media['id']).values(is_user=True, source='user'))
                     media.update(is_user=True, source='user')
+            # Compare only the recorded media slots. Repeated merges should not
+            # DELETE+INSERT an unchanged row (or allocate a new media ID).
+            def media_slot(media):
+                return (media['media_type'], bool(media.get('gdrive_fileid')),
+                        media.get('sort_order'))
+
+            source_slots = {media_slot(m) for m in source_media}
+            available_official = {}
             for media in existing_media:
                 if media not in protected:
-                    # Keep other storage's assets even if the source no longer exposes them.
-                    same_asset = any(m['media_type'] == media['media_type'] and bool(m.get('gdrive_fileid')) == bool(media.get('gdrive_fileid'))
-                                     and m.get('sort_order') == media.get('sort_order') for m in source_media)
-                    if same_asset:
-                        target.execute(self.Media.delete().where(self.Media.c.id == media['id']))
+                    available_official.setdefault(media_slot(media), []).append(media)
+            matched_official = set()
+            media_to_insert = []
             if not self.sanitized:
                 for media in source_media:
-                    if user_asset(media) and any(m['media_type'] == media['media_type'] and bool(m.get('gdrive_fileid')) == bool(media.get('gdrive_fileid'))
-                            and (media['media_type'] != 'fanart' or m.get('sort_order') == media.get('sort_order')) for m in protected):
+                    if user_asset(media) and any(
+                            m['media_type'] == media['media_type'] and
+                            bool(m.get('gdrive_fileid')) == bool(media.get('gdrive_fileid')) and
+                            (media['media_type'] != 'fanart' or m.get('sort_order') == media.get('sort_order'))
+                            for m in protected):
                         continue
                     candidate = self.values(media)
                     candidate['item_id'] = target_id
                     if user_asset(media):
                         candidate.update(is_user=True, source='user')
-                    duplicate = any(m['url'] == media['url'] and m['media_type'] == media['media_type'] for m in existing_media if m in protected)
-                    if not duplicate:
-                        target.execute(self.Media.insert().values(**candidate))
+                    if any(m['url'] == media['url'] and m['media_type'] == media['media_type']
+                           for m in protected):
+                        continue
+                    # An official slot may be updated in place; a user slot
+                    # must never overwrite a destination official row.
+                    available = available_official.get(media_slot(media), ())
+                    if not user_asset(media) and available:
+                        previous = available.pop(0)
+                        matched_official.add(previous['id'])
+                        if self._has_changed_values(previous, candidate):
+                            target.execute(self.Media.update().where(
+                                self.Media.c.id == previous['id']).values(**candidate))
+                    else:
+                        media_to_insert.append(candidate)
+            # Preserve different storage kinds and unmatched destination slots.
+            # Remove only obsolete officials in a source-supplied slot.
+            media_to_delete = [media['id'] for media in existing_media
+                if media not in protected and media_slot(media) in source_slots
+                and media['id'] not in matched_official]
+            if media_to_delete:
+                target.execute(self.Media.delete().where(self.Media.c.id.in_(media_to_delete)))
+            if media_to_insert:
+                target.execute(self.Media.insert(), media_to_insert)
             if protected:
                 poster = next((m for m in protected if m['media_type'] == 'poster' and m['url'] == old.get('poster_url')), None)
                 landscape = next((m for m in protected if m['media_type'] == 'landscape' and m['url'] == (old.get('extra_info') or {}).get('landscape_url')), None)
@@ -763,37 +1085,145 @@ class MetadataCopier:
                     extra = copy.deepcopy(values.get('extra_info') or {})
                     extra['landscape_url'] = landscape['url']
                     updates['extra_info'] = extra
-                if updates:
+                # The main row has already been reconciled to `values` above.
+                # A protected poster/landscape only needs a second UPDATE when
+                # that reconciliation would actually replace the protected URL.
+                if updates and self._has_changed_values(values, updates):
                     target.execute(self.Item.update().where(self.Item.c.id == target_id).values(**updates))
-            for table in (self.Fingerprint, self.TagMap, self.PersonMap):
-                if old:
-                    # Preserve user-generated fingerprints alongside incoming official data.
-                    condition = and_(table.c.item_id == target_id, table.c.source != 'user') if table is self.Fingerprint else table.c.item_id == target_id
-                    target.execute(table.delete().where(condition))
-                children = source.execute(select(table).where(table.c.item_id == row['id'])).mappings()
-                for child in children:
+
+            # Fingerprint & TagMap handling
+            source_fingerprints = list(source_children(self.Fingerprint))
+            source_tag_maps = list(source_children(self.TagMap))
+
+            # 1. Fingerprint handling
+            if old and not source_fingerprints:
+                self.log(f"지문 보존 (소스 0건, 목적지 유지): {row['code']}")
+            elif not old:
+                incoming_fingerprints = []
+                for child in source_fingerprints:
                     values_child = self.values(child)
                     values_child['item_id'] = target_id
-                    if table is self.TagMap:
-                        values_child['tag_id'] = self.copy_tag(source, child['tag_id'], target)
-                    elif table is self.PersonMap:
-                        found, person_id = self.mapped(origin, 'person', child['person_id'], self.person_target)
-                        if not found:
-                            # Split SQLite item databases reference the separate person master DB.
-                            candidates = {r[0] for r in self.index.execute(
-                                'SELECT DISTINCT new_id FROM mapping WHERE kind=? AND old_id=? AND dest=? AND new_id IS NOT NULL',
-                                ('person', child['person_id'], id(self.person_target)))}
-                            person_id = next(iter(candidates)) if len(candidates) == 1 else None
-                        if person_id is None:
-                            self.log(f"인물 연결 제외: {row['code']} / source person {child['person_id']}")
+                    incoming_fingerprints.append(values_child)
+                if incoming_fingerprints:
+                    target.execute(self.Fingerprint.insert(), incoming_fingerprints)
+            else:
+                existing_fps = list(destination_children(self.Fingerprint, target_id))
+                existing_by_algo_hash = {(fp['algorithm'], fp['hash_value']): fp for fp in existing_fps}
+                existing_official_by_algo = {fp['algorithm']: fp for fp in existing_fps if fp.get('source') != 'user'}
+
+                incoming_fingerprints = []
+                for child in source_fingerprints:
+                    algo = child['algorithm']
+                    hash_val = child['hash_value']
+                    is_user = (child.get('source') == 'user')
+
+                    if (algo, hash_val) in existing_by_algo_hash:
+                        # Identical algorithm and hash -> idempotent, already in destination
+                        continue
+
+                    if not is_user:
+                        if algo in existing_official_by_algo:
+                            # Conflict: destination already has a different official fingerprint for this algorithm!
+                            dst_fp = existing_official_by_algo[algo]
+                            self.status['conflicts'] = self.status.get('conflicts', 0) + 1
+                            self.log(f"공식 지문 상이 (충돌 보류): {row['code']} algo={algo} (목적지={dst_fp['hash_value']}, 소스={hash_val})")
+                            # Retain destination value, do NOT overwrite or unconditionally union
                             continue
-                        values_child['person_id'] = person_id
-                    elif old and child.get('source') == 'user':
-                        duplicate = target.execute(select(table.c.id).where(table.c.item_id == target_id,
-                            table.c.algorithm == child['algorithm'], table.c.hash_value == child['hash_value'])).first()
-                        if duplicate:
-                            continue
-                    target.execute(table.insert().values(**values_child))
+                        else:
+                            # Destination has no official fingerprint for this algorithm -> safe to add
+                            values_child = self.values(child)
+                            values_child['item_id'] = target_id
+                            incoming_fingerprints.append(values_child)
+                            existing_by_algo_hash[(algo, hash_val)] = values_child
+                            existing_official_by_algo[algo] = values_child
+                    else:
+                        # User fingerprint incoming -> add alongside if not duplicate
+                        values_child = self.values(child)
+                        values_child['item_id'] = target_id
+                        incoming_fingerprints.append(values_child)
+                        existing_by_algo_hash[(algo, hash_val)] = values_child
+                if incoming_fingerprints:
+                    target.execute(self.Fingerprint.insert(), incoming_fingerprints)
+
+            # 2. TagMap handling
+            if old and not source_tag_maps:
+                # This is an expected preservation case, not an item-level error.
+                # Summarize at page boundaries instead of flooding the log.
+                self.status['tag_relations_preserved'] = self.status.get('tag_relations_preserved', 0) + 1
+            else:
+                existing_tag_ids = {m['tag_id'] for m in destination_children(self.TagMap, target_id)} if old else set()
+                incoming_tags = []
+                for child in source_tag_maps:
+                    tag_key = (id(source), child['tag_id'], id(target))
+                    mapped_tag_id = self._committed_tag_ids.get(tag_key)
+                    if mapped_tag_id is None:
+                        mapped_tag_id = self.copy_tag(source, child['tag_id'], target)
+                    if mapped_tag_id not in existing_tag_ids:
+                        values_child = self.values(child)
+                        values_child['item_id'] = target_id
+                        values_child['tag_id'] = mapped_tag_id
+                        incoming_tags.append(values_child)
+                        existing_tag_ids.add(mapped_tag_id)
+                if incoming_tags:
+                    target.execute(self.TagMap.insert(), incoming_tags)
+
+            # 3. Person relationship protection
+            source_person_maps = list(source_children(self.PersonMap))
+            existing_person_maps = list(destination_children(self.PersonMap, target_id)) if old else []
+
+            overrides = (values.get('extra_info') or {}).get('_actor_manual_overrides') or {}
+            excluded_actors = list(overrides.get('excluded') or [])
+
+            if old and not source_person_maps and existing_person_maps:
+                # Source has 0 relations while destination has relations -> keep destination unless explicit tombstone
+                for e_map in existing_person_maps:
+                    p_row = person_row(e_map['person_id'])
+                    if p_row and self._is_person_excluded(p_row, excluded_actors):
+                        target.execute(self.PersonMap.delete().where(self.PersonMap.c.id == e_map['id']))
+                self.log(f"인물 관계 보존 (소스 0건, 목적지 {len(existing_person_maps)}건 유지): {row['code']}")
+            else:
+                mapped_incoming = []
+                for child in source_person_maps:
+                    found, person_id = self.mapped(origin, 'person', child['person_id'], self.person_target)
+                    if not found:
+                        candidates = {r[0] for r in self.index.execute(
+                            'SELECT DISTINCT new_id FROM mapping WHERE kind=? AND old_id=? AND dest=? AND new_id IS NOT NULL',
+                            ('person', child['person_id'], id(self.person_target)))}
+                        person_id = next(iter(candidates)) if len(candidates) == 1 else None
+                    if person_id is None:
+                        self.log(f"인물 연결 제외: {row['code']} / source person {child['person_id']}")
+                        continue
+                    mapped_incoming.append((person_id, child))
+
+                if old:
+                    # Remove relations that match explicit exclusion tombstones
+                    for e_map in existing_person_maps:
+                        p_row = person_row(e_map['person_id'])
+                        if p_row and self._is_person_excluded(p_row, excluded_actors):
+                            target.execute(self.PersonMap.delete().where(self.PersonMap.c.id == e_map['id']))
+
+                    if not mapped_incoming and existing_person_maps:
+                        self.log(f"인물 관계 보존 (소스 매핑 불가, 목적지 관계 유지): {row['code']}")
+
+                # The original rows were preloaded before this item's savepoint.
+                # Excluded tombstones must not block fresh authorized relations.
+                existing_pids = ({m['person_id'] for m in target.execute(
+                    select(self.PersonMap).where(self.PersonMap.c.item_id == target_id)).mappings()}
+                    if old and excluded_actors else {m['person_id'] for m in existing_person_maps})
+                incoming_people = []
+                for person_id, child in mapped_incoming:
+                    if person_id in existing_pids:
+                        continue
+                    p_row = person_row(person_id)
+                    if p_row and self._is_person_excluded(p_row, excluded_actors):
+                        continue
+                    values_child = self.values(child)
+                    values_child['item_id'] = target_id
+                    values_child['person_id'] = person_id
+                    incoming_people.append(values_child)
+                    existing_pids.add(person_id)
+                if incoming_people:
+                    target.execute(self.PersonMap.insert(), incoming_people)
         self.remember(origin, 'item', row['id'], target, target_id)
         if parent_id:
             self.index.execute('INSERT OR REPLACE INTO parent VALUES (?,?,?,?,?)', (origin, row['id'], parent_id, id(target), target_id))
@@ -809,21 +1239,34 @@ class MetadataCopier:
             self.copy_tags()
         for origin, source in enumerate(self.sources):
             for rows in self.pages(source, self.Item, conditions):
-                for row in rows:
+                for offset in range(0, len(rows), self.RELATION_PREFETCH_SIZE):
                     if self.stopped():
                         break
-                    self.status['current'] += 1
-                    self.status['current_code'] = row['code']
+                    batch = rows[offset:offset + self.RELATION_PREFETCH_SIZE]
                     try:
-                        action = self.copy_item(origin, source, row)
-                        self.status[action] += 1
+                        prefetched = self._prefetch_item_batch(origin, source, batch)
+                        self.status['prefetched_batches'] = self.status.get('prefetched_batches', 0) + 1
                     except Exception as exc:
-                        self.status['fail'] += 1
-                        self.log(f"작품 복제 실패: {row['code']} ({exc})")
+                        # Keep historical per-item failure isolation when read-ahead
+                        # is unavailable. Do not skip copying a whole batch.
+                        prefetched = None
+                        self.status['prefetch_fallbacks'] = self.status.get('prefetch_fallbacks', 0) + 1
+                        self.log(f"관계 일괄조회 실패, 개별 조회로 복귀: {type(exc).__name__}: {exc}")
+                    for row in batch:
+                        if self.stopped():
+                            break
+                        self.status['current'] += 1
+                        self.status['current_code'] = row['code']
+                        try:
+                            action = self.copy_item(origin, source, row, prefetched=prefetched)
+                            self.status[action] += 1
+                        except Exception as exc:
+                            self.status['fail'] += 1
+                            self.log(f"작품 복제 실패: {row['code']} ({exc})")
                 for target in self.targets.values():
                     target.commit()
                 self.index.commit()
-                self.log(f"DB 처리: {self.status['current']:,}/{self.status['total']:,} | 신규 {self.status['inserted']:,}, 갱신 {self.status['updated']:,}, 건너뜀 {self.status['skipped']:,}, 실패 {self.status['fail']:,}")
+                self.log(f"DB 처리: {self.status['current']:,}/{self.status['total']:,} | 신규 {self.status['inserted']:,}, 갱신 {self.status['updated']:,}, 건너뜀 {self.status['skipped']:,}, 실패 {self.status['fail']:,}, 태그관계유지 {self.status.get('tag_relations_preserved', 0):,}")
         for origin, old_id, parent_id, destination, new_id in self.index.execute('SELECT * FROM parent'):
             target = self.targets[destination]
             found, mapped_parent = self.mapped(origin, 'item', parent_id, target)
@@ -833,4 +1276,7 @@ class MetadataCopier:
                 self.log(f'부모 연결 제외: source item {old_id} / parent {parent_id}')
         for target in self.targets.values():
             target.commit()
-        return not self.stopped() and not self.status['fail']
+        is_success = not self.stopped() and not self.status['fail']
+        if not is_success and (self.status.get('inserted', 0) > 0 or self.status.get('updated', 0) > 0):
+            self.status['is_partial'] = True
+        return is_success

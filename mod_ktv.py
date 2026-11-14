@@ -8,6 +8,7 @@ from .setup import *
 class ModuleKtv(PluginModuleBase):
     db_default = {
         'ktv_use_tmdb' : 'True',
+        'ktv_tmdb_translate' : 'True',
         'ktv_use_kakaotv' : 'False',
         'ktv_use_kakaotv_episode' : 'False',
         'ktv_use_theme' : 'True',
@@ -158,7 +159,8 @@ class ModuleKtv(PluginModuleBase):
                     if tmdb_id is not None:
                         show['tmdb'] = {}
                         show['tmdb']['tmdb_id'] = tmdb_id
-                        SiteTmdbTv.apply(tmdb_id, show, apply_image=True, apply_actor_image=True)
+                        SiteTmdbTv.apply(tmdb_id, show, apply_image=True, apply_actor_image=True,
+                                         translate_actor=P.ModelSetting.get_bool('ktv_tmdb_translate'))
 
                 if 'tving_episode_id' in show['extra_info']:
                     SiteTvingTv.apply_tv_by_episode_code(show, show['extra_info']['tving_episode_id'], apply_plot=False, apply_image=True)

@@ -84,7 +84,7 @@
     {{ macros.m_hr() }}
 
     <!-- SQLite ↔ Postgres 실시간 데이터 복제 -->
-    {{ macros.setting_select_and_buttons('meta_db_transfer_direction', 'SQLite ↔ Postgres 전송 방향', [['sqlite_to_pg', 'SQLite3 ➔ PostgreSQL 전체 데이터 복제'], ['pg_to_sqlite', 'PostgreSQL ➔ SQLite3 전체 데이터 복제']], [['btn_transfer_start', '전송 시작'], ['btn_transfer_stop', '전송 중단']], value=arg['meta_db_transfer_direction'], desc=['양쪽 DB 간에 온전한 데이터(이미지/트레일러 URL 포함)를 100% 상호 복제하여 이중 백업합니다.']) }}
+    {{ macros.setting_select_and_buttons('meta_db_transfer_direction', 'SQLite ↔ Postgres 전송 방향', [['sqlite_to_pg', 'SQLite3 ➔ PostgreSQL 데이터 복제 (권장)'], ['pg_to_sqlite', 'PostgreSQL ➔ SQLite3 데이터 복제']], [['btn_transfer_preflight', '사전 점검(Preflight)'], ['btn_transfer_start', '전송 시작'], ['btn_transfer_stop', '전송 중단']], value=arg['meta_db_transfer_direction'], desc=['메타데이터 핵심 7개 테이블(작품/인물/태그/미디어/지문/관계)을 복제하며, 목적지의 보조 감사 기록(삭제 영수증, 마이그레이션 이력)은 안전하게 보존합니다. 전송 전 반드시 사전 점검을 실행하세요.']) }}
 
     {{ macros.setting_radio_with_value('meta_db_transfer_mode', '전송 및 복제 정책', [['merge', '스마트 병합 (기존 데이터 갱신 및 신규 추가)'], ['missing', '없는 것만 복제 (목적지에 이미 있는 데이터 보존)'], ['clean', '목적지 완전 초기화 후 전체 복제 (목적지 삭제 후 1:1 클론)']], value=(arg.get('meta_db_transfer_mode') or 'merge'), desc=['스마트 병합: 소스의 최신 데이터로 목적지 데이터를 덮어쓰고 신규 데이터를 추가합니다. (기본값)', '없는 것만: 목적지에 이미 등록된 작품/인물은 건너뛰고 신규 항목만 복제합니다.', '초기화 후 전체 복제: 목적지 DB의 기존 데이터를 완전히 비운 뒤 소스 데이터를 1:1로 깨끗하게 복제합니다.']) }}
 
@@ -336,9 +336,20 @@ function refreshMetaDbSchemaInfo(isInitialCheck) {
     var el = $('#meta_db_schema_info');
     if (el.is('input, textarea, select')) el.val(text); else el.text(text);
     var needsMigration = false;
+    var unsupportedSchema = false;
+    var onlyIndexRepair = true;
     $.each(ret.data || {}, function(name, s) {
-      if ((s.schema_version || 0) < ret.target_version || s.migration_state !== 'complete') {
+      if ((s.schema_version || 0) !== ret.target_version || s.migration_state !== 'complete' || s.needs_index_repair) {
         needsMigration = true;
+        if (s.schema_version === ret.target_version && s.migration_state === 'complete' && s.needs_index_repair) {
+          // v2 index repair needed
+        } else {
+          onlyIndexRepair = false;
+          if (s.schema_version !== 1 || (s.migration_state !== 'complete' &&
+              !(s.migration_state === 'backfilling' && s.migration_id === 'rev_002_v1_to_v2'))) {
+            unsupportedSchema = true;
+          }
+        }
       }
     });
     metaDbSchemaNeedsMigration = needsMigration;
@@ -348,30 +359,42 @@ function refreshMetaDbSchemaInfo(isInitialCheck) {
     var migrateDescription = $('#meta_db_schema_migrate_desc');
     if (m.is_running) {
       updateMetaDbSchemaProgress(m);
-    } else if (m.status === '완료' || m.status === '실패' || m.status === '중단됨') {
+    } else if (m.status === '완료' || m.status === '실패' || m.status === '중단됨' || m.status === '인덱스 정비 완료') {
       $('#meta_db_schema_progress').hide();
     }
     action.toggle(needsMigration || !!m.is_running);
-    migrateButton.toggle(needsMigration && !m.is_running);
+    migrateButton.toggle(needsMigration && !unsupportedSchema && !m.is_running);
     stopButton.toggle(!!m.is_running);
     stopButton.prop('disabled', !m.is_running);
     migrateDescription.toggle(needsMigration || !!m.is_running);
 
     var statusText = versions.join(' | ') || '상태 확인 불가';
-    if (needsMigration) {
-      statusText += ' | 업그레이드 필요 (v' + ret.target_version + ')';
-      migrateDescription.text(
-        '⚠️ 현재 ' + statusText +
-        ' 상태입니다. 백업 후 인물·영상 DB를 함께 변경하는 관리자 작업입니다.'
-      );
+    if (unsupportedSchema && !m.is_running) {
+      migrateDescription.text('지원하지 않는 스키마 상태입니다. v1/complete에서 v2로의 관리자 마이그레이션만 지원합니다.');
+      if (isInitialCheck) notify('메타 DB 스키마 상태를 확인하세요. v0/미확인 DB는 업그레이드할 수 없습니다.', 'warning');
+    } else if (needsMigration) {
+      if (onlyIndexRepair) {
+        statusText += ' | 커버링 인덱스 정비 필요';
+        migrateButton.text('⚠️ SQLite 배우 검색 커버링 인덱스 정비 실행');
+        migrateDescription.text('⚠️ SQLite 배우 검색 가속을 위한 커버링 인덱스 정비가 필요합니다. 사전 백업 후 안전하게 인덱스를 생성합니다.');
+      } else {
+        statusText += ' | 업그레이드 필요 (v' + ret.target_version + ')';
+        migrateButton.text('⚠️ 통합 스키마 업그레이드 실행');
+        migrateDescription.text(
+          '⚠️ 현재 ' + statusText +
+          ' 상태입니다. 백업 후 인물·영상 DB를 함께 변경하는 관리자 작업입니다.'
+        );
+      }
       if (isInitialCheck && !m.is_running) {
         notify(
-          '통합 메타 DB 스키마 업그레이드가 필요합니다. 설정 페이지에서 실행해주세요.',
+          onlyIndexRepair
+            ? 'SQLite 배우 검색 커버링 인덱스 정비가 필요합니다. 설정 페이지에서 실행해주세요.'
+            : '통합 메타 DB 스키마 업그레이드가 필요합니다. 설정 페이지에서 실행해주세요.',
           'warning'
         );
       }
     } else if (m.is_running) {
-      migrateDescription.text('통합 메타 DB 스키마 업그레이드가 실행 중입니다. 작업이 끝날 때까지 DB 작업이 제한됩니다.');
+      migrateDescription.text('통합 메타 DB 스키마 업그레이드 또는 인덱스 정비가 실행 중입니다. 작업이 끝날 때까지 DB 작업이 제한됩니다.');
     } else {
       migrateDescription.text('');
     }
@@ -498,7 +521,7 @@ $(document).ready(function(){
 
   $(document).on('click', '#btn_meta_db_schema_migrate', function(e){
       e.preventDefault();
-      if (!confirm('통합 메타 DB를 백업한 뒤 v1 구조로 변환합니다. 계속하시겠습니까?')) return;
+      if (!confirm('통합 메타 DB v1을 백업한 뒤 v2 구조로 변환합니다. 계속하시겠습니까?')) return;
 
       var $btn = $(this);
       $btn.prop('disabled', true);

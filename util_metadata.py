@@ -11,6 +11,7 @@ import tempfile
 import shutil
 
 from datetime import datetime
+from contextlib import contextmanager
 from io import BytesIO
 from PIL import Image
 from urllib.parse import urlparse
@@ -27,6 +28,38 @@ class MetaUtil:
     메타데이터 통합 유틸리티
     이미지 가공/서버 저장, 4대 갱신 파이프라인, 게이트웨이 필터, 워커 일원화
     """
+
+    @staticmethod
+    @contextmanager
+    def metadata_creation_lock(category, code):
+        """Hold one OS lock per normalized internal code, yielding while it is busy."""
+        import errno
+        import fcntl
+        import hashlib
+        from .util_runtime import _gevent_active
+        wait = time.sleep
+        if _gevent_active():
+            from gevent import sleep
+            wait = sleep
+        key = json.dumps([str(category).strip().casefold(), str(code).strip().casefold()])
+        folder = os.path.join(path_data, 'tmp')
+        os.makedirs(folder, exist_ok=True)
+        filename = 'metadata_info_' + hashlib.sha256(key.encode('utf-8')).hexdigest() + '.lock'
+        with open(os.path.join(folder, filename), 'a+b') as lock_file:
+            locked = False
+            try:
+                while not locked:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        locked = True
+                    except OSError as error:
+                        if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                            raise
+                        wait(0.05)
+                yield
+            finally:
+                if locked:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def media_in_storage(media, mode):
@@ -224,8 +257,11 @@ class MetaUtil:
         converted = None
         try:
             image = pil_img
-            if pil_img.mode not in ('RGB', 'L'):
-                converted = pil_img.convert('RGB')
+            if pil_img.mode not in ('RGB', 'L') or 'transparency' in pil_img.info:
+                rgba = pil_img.convert('RGBA')
+                converted = Image.new('RGB', rgba.size, (255, 255, 255))
+                converted.paste(rgba, mask=rgba.getchannel('A'))
+                rgba.close()
                 image = converted
             image.save(staging, 'JPEG', quality=95, optimize=True)
             if replacement is None:
@@ -401,106 +437,72 @@ class MetaUtil:
 
     @classmethod
     def prepare_image_replacements(cls, entity, decision):
-        from .util_preview import MediaReplacement
-        from .util_preview import MetaPreviewUtil
-        mode = decision.get('image_mode')
-        if mode not in ('gdrive', 'image_server'):
+        """Read-only setup. Each output prepares its receipt after encoding succeeds."""
+        if decision.get('image_mode') not in ('gdrive', 'image_server'):
             return []
-        entries = []
+        entries = decision['_media_replacements'] = []
         entity.extra_info['_media_replacements'] = entries
-        decision['_media_replacements'] = entries
-        category = 'WESTERN' if entity.code.startswith('W') else 'JAV_UNCEN' if entity.code.startswith('E') else 'JAV_CEN'
-        stem = str(entity.ui_code or '').lower()
-        pattern = re.compile(r'^' + re.escape(stem) + r'_(p|pl|art_(\d+))\.(jpg|jpeg|png|webp|gif)$', re.I)
-        remote = decision.get('gdrive_data') or {}
-        local = decision.get('image_server_paths') or {}
-        old_files = remote.get('remote_files', {}) if mode == 'gdrive' else {}
-        observations = {}
-        if mode == 'gdrive':
-            cls.image_initial_observation((remote.get('rel_dir', '') + '/_').strip('/'), category, observations, old_files)
-        actual_names = getattr(old_files, 'actual_names', {})
-        if mode == 'image_server' and local.get('target_folder') and os.path.isdir(local['target_folder']):
-            old_files = {name: '' for name in os.listdir(local['target_folder'])}
-        names = {name.casefold() if mode == 'gdrive' else name: fid for name, fid in old_files.items() if pattern.match(name)}
-        if mode == 'gdrive' and decision.get('rewrite_flag'):
-            for row in next(iter(observations.values()))['files']:
-                if pattern.match(row['Name']):
-                    names.setdefault(row['Name'].casefold(), '')
-        sources = decision.get('final_image_sources') or {}
-        planned = []
-        if sources.get('poster_source') and not sources.get('skip_poster_download'):
-            planned.append(stem + '_p.jpg')
-        if sources.get('landscape_source') and not sources.get('skip_landscape_download'):
-            planned.append(stem + '_pl.jpg')
-        planned.extend(stem + '_art_%s.jpg' % (i + 1) for i, _ in enumerate(sources.get('arts') or []))
-        for name in planned:
-            names.setdefault(name, '')
-        for name, old_id in names.items():
-            if mode == 'gdrive' and not decision.get('rewrite_flag') and name in getattr(old_files, 'ambiguous_names', set()):
-                continue
-            match = pattern.match(name)
-            exists = bool(old_id) if mode == 'gdrive' else os.path.isfile(os.path.join(local['target_folder'], name))
-            relative = ((remote.get('rel_dir', '') + '/' + name).strip('/') if mode == 'gdrive' else
-                        os.path.relpath(os.path.join(local['target_folder'], name),
-                            P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data, 'images')).replace(os.path.sep, '/'))
-            kind = 'poster' if match.group(1).lower() == 'p' else 'landscape' if match.group(1).lower() == 'pl' else 'fanart'
-            # Selecting a user asset does not request retirement of its system sibling.
-            if kind in ('poster','landscape'):
-                suffix = 'p' if kind == 'poster' else 'pl'
-                if mode == 'gdrive':
-                    selected_id = remote.get('user_' + suffix + '_fid') or (
-                        cls._item_drive_id(sources.get(kind + '_source')) if sources.get('skip_' + kind + '_download') else '')
-                    if selected_id and any(fid == selected_id and re.fullmatch(
-                            re.escape(stem + '_' + suffix + '_user') + r'\.(jpg|jpeg|png|webp|gif)', filename, re.I)
-                            for filename,fid in old_files.items()):
-                        continue
-                else:
-                    selected_name = (decision.get('user_files_exist') or {}).get(kind)
-                    prefix = str(local.get('url_prefix') or '').rstrip('/') + '/'
-                    source = str(sources.get(kind + '_source') or '')
-                    if not selected_name and sources.get('skip_' + kind + '_download') and source.startswith(prefix):
-                        selected_name = source[len(prefix):]
-                    if (selected_name in old_files and re.fullmatch(
-                            re.escape(stem + '_' + suffix + '_user') + r'\.(jpg|jpeg|png|webp|gif)', selected_name, re.I)
-                            and os.path.isfile(os.path.join(local['target_folder'], selected_name))):
-                        continue
-            elif 0 < int(match.group(2)) <= len(sources.get('arts') or []):
-                # Match the existing finalizer's per-index user extensions and selection.
-                user_base = stem + '_art_' + str(int(match.group(2))) + '_user.'
-                extensions = ('jpg','jpeg','png','webp') if mode == 'gdrive' else ('jpg','png','webp')
-                if mode == 'gdrive':
-                    if any((remote.get('remote_files') or {}).get(user_base + ext) and any(
-                            filename.casefold() == user_base + ext and fid == remote['remote_files'][user_base + ext]
-                            for filename,fid in old_files.items()) for ext in extensions):
-                        continue
-                elif any(user_base + ext in old_files and os.path.isfile(os.path.join(
-                        local['target_folder'], user_base + ext)) for ext in extensions):
-                    continue
-            spec = dict(storage='gdrive' if mode == 'gdrive' else 'local', relative_path=relative,
-                        media_type=kind, sort_order=int(match.group(2)) - 1 if match.group(2) else 0 if kind == 'poster' else 1,
-                        code=entity.code, category=category, old_id=old_id, owner_code=(decision.get('refresh_owner') or {}).get('code'))
-            if mode == 'gdrive':
-                spec.update(target=MetaPreviewUtil.build_rclone_target_remote_path(
-                    P.ModelSetting.get('jav_censored_image_gdrive_remote_path'), dest_rel_path=relative),
-                    rclone=MetaPreviewUtil.get_setting('rclone_path', category, default='rclone'),
-                    config=MetaPreviewUtil.get_setting('rclone_conf', category, default='/data/db/rclone.conf'))
-            else:
-                spec['target'] = os.path.join(local['target_folder'], name)
-            if (mode == 'image_server' and exists and kind in ('poster', 'landscape')
-                    and sources.get('skip_' + kind + '_download') and local.get('url_prefix')
-                    and sources.get(kind + '_source') == str(local['url_prefix']).rstrip('/') + '/' + name
-                    and os.path.getsize(spec['target']) > 0):
-                # This selected system asset is already reused by the finalizer.
-                MetaPreviewUtil.has_local_file(spec['target'], use_cache=False)
-                continue
-            if exists and not decision.get('rewrite_flag'):
-                if mode == 'image_server':
-                    MetaPreviewUtil.has_local_file(spec['target'], use_cache=False)
-                continue
-            entry = cls.prepare_image_replacement(spec, observations=observations)
-            entries.append(entry)
-            MediaReplacement.stage(entry)
+        decision['_image_observations'] = {}
+        if decision['image_mode'] == 'gdrive':
+            remote = decision.get('gdrive_data') or {}
+            cls.image_initial_observation((remote.get('rel_dir', '') + '/_').strip('/'),
+                'WESTERN' if entity.code.startswith('W') else 'JAV_UNCEN' if entity.code.startswith('E') else 'JAV_CEN',
+                decision['_image_observations'], remote.get('remote_files'))
         return entries
+
+    @staticmethod
+    def image_local_root():
+        return P.ModelSetting.get('jav_censored_image_server_local_path') or os.path.join(path_data, 'images')
+
+    @staticmethod
+    def image_slot_pattern(name):
+        stem = re.sub(r'\.(?:jpe?g|png|webp|gif)$', '', name, flags=re.I)
+        return re.compile(re.escape(stem) + r'\.(?:jpe?g|png|webp|gif)$', re.I)
+
+    @classmethod
+    def image_slot_candidates(cls, entity, decision, kind, index=0):
+        category = 'WESTERN' if entity.code.startswith('W') else 'JAV_UNCEN' if entity.code.startswith('E') else 'JAV_CEN'
+        suffix = 'p' if kind == 'poster' else 'pl' if kind == 'landscape' else 'art_' + str(index + 1)
+        pattern = cls.image_slot_pattern(str(entity.ui_code).lower() + '_' + suffix + '.jpg')
+        if decision['image_mode'] == 'gdrive':
+            remote = decision.get('gdrive_data') or {}
+            observation = cls.image_initial_observation((remote.get('rel_dir', '') + '/_').strip('/'), category,
+                decision.setdefault('_image_observations', {}), remote.get('remote_files'))
+            return [dict(row, relative_path='/'.join(filter(None, (observation['directory'], row['Name']))))
+                    for row in observation['files'] if pattern.fullmatch(row['Name'])]
+        folder = (decision.get('image_server_paths') or {}).get('target_folder')
+        if not folder or not os.path.isdir(folder):
+            decision.setdefault('_local_image_slots', {})[(kind, index)] = []
+            return []
+        rows = []
+        for name in os.listdir(folder):
+            if not pattern.fullmatch(name): continue
+            target = os.path.abspath(os.path.join(folder, name))
+            cls.validate_image_local_target(target, cls.image_local_root())
+            stat = cls._manual_file_stat(target)
+            if stat is None or stat[2] <= 0: raise ValueError('기존 이미지 파일이 비어 있거나 확인되지 않습니다.')
+            rows.append(dict(Name=name, target=target, stat=stat, relative_path=os.path.relpath(target, cls.image_local_root()).replace(os.sep, '/')))
+        decision.setdefault('_local_image_slots', {})[(kind, index)] = rows
+        return rows
+
+    @classmethod
+    def prepare_final_image_replacement(cls, entity, decision, relative, kind, index, stage=True):
+        from .util_preview import MediaReplacement
+        mode = decision['image_mode']
+        spec = dict(storage='gdrive' if mode == 'gdrive' else 'local', relative_path=relative,
+            code=entity.code, category='WESTERN' if entity.code.startswith('W') else 'JAV_UNCEN' if entity.code.startswith('E') else 'JAV_CEN',
+            media_type=kind, sort_order=index, owner_code=(decision.get('refresh_owner') or {}).get('code') or entity.code)
+        if mode == 'image_server' and (kind, index) in decision.get('_local_image_slots', {}):
+            spec['initial_local_candidates'] = decision['_local_image_slots'][(kind, index)]
+        entry = cls.prepare_image_replacement(spec, observations=decision.setdefault('_image_observations', {}))
+        if stage:
+            decision.setdefault('_media_replacements', []).append(entry)
+            try:
+                MediaReplacement.stage(entry)
+            except Exception:
+                cls.finish_media_replacements([entry], False)
+                raise
+        return entry
 
     @classmethod
     def prepare_storage_replacement(cls, code, category, mode, relative_path, media_type, sort_order=0, subject=None, observation=None):
@@ -619,7 +621,7 @@ class MetaUtil:
         if not manual_plan:
             # DB fields record the prior registration; the initial storage observation
             # below alone identifies the physical file replaced by automatic work.
-            plan['old'].update(fid='',relative_path='',automatic_image=True)
+            plan['old'].update(fid='', relative_path='', owner_code=spec.get('owner_code') or spec['code'])
         old=plan['old'];old_relative=old.get('relative_path') or ''
         old_slot_valid=True
         if old_relative:
@@ -637,15 +639,17 @@ class MetaUtil:
             plan['remote_dir']=spec['target'].rsplit('/',1)[0]
             observation = cls.image_initial_observation(relative, spec['category'], observations if observations is not None else {})
             spec['initial_observation'] = observation
-            rows = [row for row in observation['files'] if row['Name'].casefold() == name.casefold()]
-            if not manual_plan and re.search(r'_(?:p|pl|art_\d+)\.(?:jpe?g|png|webp|gif)$', name, re.I):
+            system = not manual_plan and bool(re.search(r'_(?:p|pl|art_\d+)\.(?:jpe?g|png|webp|gif)$', name, re.I))
+            pattern = cls.image_slot_pattern(name) if system else None
+            rows = [row for row in observation['files'] if (pattern.fullmatch(row['Name']) if system else row['Name'].casefold() == name.casefold())]
+            if len(rows) > 1:
+                raise StorageConflict('이미지 슬롯의 기존 파일 후보가 복수여서 교체를 보류합니다.')
+            if system:
                 plan['system_candidates'] = [dict(row) for row in rows]
             if rows:
-                system = not manual_plan and bool(re.search(r'_(?:p|pl|art_\d+)\.(?:jpe?g|png|webp|gif)$', name, re.I))
-                if len(rows)!=1 and not system:raise StorageConflict('정식 이미지 이름이 중복되어 교체를 보류합니다.')
-                chosen = cls.select_image_candidate(rows) or sorted(rows, key=lambda row: row['ID'])[0]
-                if system:
-                    plan['system_candidates'] = [dict(row) for row in rows]
+                chosen = rows[0]
+                if chosen.get('IsDir') is not False or not chosen.get('ID') or type(chosen.get('Size')) is not int or chosen['Size'] <= 0:
+                    raise StorageConflict('기존 이미지의 파일 ID/크기를 확인하지 못했습니다.')
                 old_relative='/'.join(filter(None,(observation['directory'],chosen['Name'])))
                 old.update(fid=chosen['ID'],relative_path=old_relative,url=cls.format_gdrive_thumbnail_url(chosen['ID']))
                 old.pop('legacy_gds',None)
@@ -662,6 +666,19 @@ class MetaUtil:
         else:
             spec['target']=os.path.abspath(os.path.join(plan['root'],relative.replace('/',os.sep)))
             cls.validate_image_local_target(spec['target'],plan['root'])
+            if not manual_plan:
+                pattern = cls.image_slot_pattern(name)
+                directory = os.path.dirname(spec['target'])
+                candidates = [filename for filename in os.listdir(directory) if pattern.fullmatch(filename)] if os.path.isdir(directory) else []
+                if len(candidates) > 1: raise StorageConflict('로컬 이미지 슬롯의 후보가 복수여서 보존합니다.')
+                if 'initial_local_candidates' in spec:
+                    expected = {row['Name']: row['stat'] for row in spec['initial_local_candidates']}
+                    current_files = {filename: cls._manual_file_stat(os.path.join(directory, filename)) for filename in candidates}
+                    if current_files != expected:
+                        raise StorageConflict('이미지 다운로드 중 기존 로컬 파일이 변경되어 교체를 보류합니다.')
+                if candidates:
+                    old_relative = '/'.join(filter(None, (os.path.dirname(relative), candidates[0])))
+                    old['relative_path'] = old_relative
             current=cls._manual_file_stat(spec['target'])
             if old_relative and not current:
                 if not old_slot_valid:
@@ -679,7 +696,10 @@ class MetaUtil:
                 old.update(target=spec['target'],stat=current,name=name,relative_path=relative,
                     url=(P.ModelSetting.get('jav_censored_image_server_url') or '').rstrip('/')+'/'+relative)
             exists=bool(old.get('stat'))
-        if exists and not plan.get('system_candidates'):
+            if exists:
+                old['relative_path'] = old_relative or relative
+                old['url'] = (P.ModelSetting.get('jav_censored_image_server_url') or '').rstrip('/') + '/' + old['relative_path']
+        if exists:
             reference=dict(category=spec['category'],old=old)
             if cls._manual_image_references(reference):raise StorageConflict('공유된 기존 이미지의 교체를 보류합니다.')
         spec.update(image_contract=1,image_plan=plan,old_id=old.get('fid') or '',original_target=old.get('target') if exists else spec['target'])
@@ -1021,8 +1041,7 @@ class MetaUtil:
                 elif not entry.get('image_verified'):
                     MediaReplacement.generated(entry, observed.get('gdrive_fileid'))
                 if entry.get('new_checksum'):observed['checksum']=entry['new_checksum']
-            elif state.get('status') == 'complete' or any(
-                    a['media_type'] == entry['media_type'] and a.get('sort_order', 0) == entry['sort_order'] for a in observations):
+            elif entry.get('explicit_remove') and state.get('status') == 'complete':
                 MediaReplacement.removed(entry)
             else:
                 MediaReplacement.finish(entry, False)
@@ -1032,7 +1051,11 @@ class MetaUtil:
         from .util_preview import MediaReplacement
         warnings = []
         for entry in entries or []:
-            if not entry or entry.get('_finished'):
+            if not entry:
+                continue
+            if entry.get('_finished'):
+                if entry.get('cleanup_pending'):
+                    warnings.append('commit_outcome_unknown' if entry.get('commit_unknown') else 'media_cleanup_pending')
                 continue
             try:
                 if commit is None:
@@ -1437,9 +1460,7 @@ class MetaUtil:
         from sqlalchemy import or_
         old = plan.get('old') or {}
         if not old: return False
-        # Automatic system files are identified by the initial storage observation,
-        # not by DB reference ownership (including the new registration at this URL).
-        if exclude_owner and old.get('automatic_image'):return False
+        # Initial observations identify files; other records still veto mutation.
         seen = set()
         owner = cls.delete_reference_registry(plan['category']).get_bind()
         for cat in ('JAV_CEN','JAV_UNCEN','WESTERN','PERSON'):
@@ -1449,7 +1470,12 @@ class MetaUtil:
             with sessionmaker(bind=engine)() as session:
                 predicates = [MetaMedia.url == old['url']]
                 if old.get('fid'): predicates.append(MetaMedia.gdrive_fileid == old['fid'])
-                elif old.get('relative_path'): predicates.append(MetaMedia.relative_path == old['relative_path'])
+                elif old.get('relative_path'):
+                    relative_match = MetaMedia.relative_path == old['relative_path']
+                    if plan.get('automatic_reuse'):
+                        relative_match = relative_match & MetaMedia.source.in_(('local', 'image_server')) & or_(
+                            MetaMedia.url == old['url'], MetaMedia.url == '', MetaMedia.url.is_(None))
+                    predicates.append(relative_match)
                 query = session.query(MetaMedia.id).filter(or_(*predicates))
                 if exclude_owner and engine is owner and not old.get('person_id'):
                     if old.get('owner_code'):
@@ -1459,6 +1485,22 @@ class MetaUtil:
                         excluded = [mid for mid in (old.get('equivalent_ids') or [old.get('id')]) if mid is not None]
                         if excluded:query=query.filter(MetaMedia.id.notin_(excluded))
                 if query.first(): return True
+                item_fields = [MetaItem.poster_url, MetaItem.extra_info['poster_url'].as_string(),
+                               MetaItem.extra_info['landscape_url'].as_string()]
+                item_checks = [field == old['url'] for field in item_fields]
+                if old.get('fid'):
+                    item_checks += [field.contains(old['fid'], autoescape=True) for field in item_fields]
+                exact_drive_reference = plan.get('automatic_reuse') and bool(old.get('fid'))
+                item_query = session.query(*item_fields if exact_drive_reference else (MetaItem.id,)).filter(or_(*item_checks))
+                if exclude_owner and engine is owner and old.get('owner_code'):
+                    item_query = item_query.filter(~((MetaItem.category == plan['category']) & (MetaItem.code == old['owner_code'])))
+                elif exclude_owner and engine is owner and old.get('id'):
+                    item_query = item_query.filter(MetaItem.id != session.query(MetaMedia.item_id).filter(MetaMedia.id == old['id']).scalar_subquery())
+                if exact_drive_reference:
+                    if any(value == old['url'] or cls._item_drive_id(value) == old['fid']
+                           for values in item_query for value in values if value):
+                        return True
+                elif item_query.first(): return True
                 person_predicates=[MetaPerson.thumb_url==old['url'],MetaPerson.site_img_url==old['url']]
                 if old.get('person_id') and exclude_owner:
                     person_predicates[0]=(MetaPerson.thumb_url==old['url']) & (MetaPerson.id!=old['person_id'])
@@ -1468,7 +1510,9 @@ class MetaUtil:
                         if old.get('person_id') and exclude_owner and key=='custom_gdrive_fileid':predicate=predicate & (MetaPerson.id!=old['person_id'])
                         person_predicates.append(predicate)
                 if old.get('relative_path') and not old.get('fid'):
-                    for key in ('local_path','custom_local_path','official_cached_local_path','official_remote_path','custom_remote_path'):
+                    path_fields = ('local_path','custom_local_path','official_cached_local_path') if plan.get('automatic_reuse') else (
+                        'local_path','custom_local_path','official_cached_local_path','official_remote_path','custom_remote_path')
+                    for key in path_fields:
                         predicate=getattr(MetaPerson,key)==old['relative_path']
                         if old.get('person_id') and exclude_owner and key=='custom_remote_path':predicate=predicate & (MetaPerson.id!=old['person_id'])
                         person_predicates.append(predicate)
@@ -3840,40 +3884,84 @@ class MetaUtil:
             cached_extra['_image_storage_state'] = copy.deepcopy(fresh_state)
         cached_json['extra_info'] = cached_extra
 
-        cached_json['thumb'] = fresh_media.get('thumb', [])
-        cached_json['fanart'] = fresh_media.get('fanart', [])
-
-        # fresh_media의 thumb 리스트에서 최신 포스터와 랜드스케이프를 직접 추출하여 확정 갱신
-        fresh_p = next((t['value'] for t in cached_json['thumb'] if isinstance(t, dict) and t.get('aspect') == 'poster' and t.get('value')), '')
-        fresh_pl = next((t['value'] for t in cached_json['thumb'] if isinstance(t, dict) and t.get('aspect') == 'landscape' and t.get('value')), '')
-
-        if not fresh_p and not media_warning:
-            cached_json['poster_url'] = ''
-            cached_json['extra_info'].pop('poster_url', None)
-
-        if fresh_p:
-            cached_json['poster_url'] = fresh_p
-            if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
-                cached_json['extra_info'] = {}
-            cached_json['extra_info']['poster_url'] = fresh_p
-
-        if fresh_pl:
-            cached_json['landscape_url'] = fresh_pl
-            if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
-                cached_json['extra_info'] = {}
-            cached_json['extra_info']['landscape_url'] = fresh_pl
-
-        if fresh_media.get('extra_info'):
-            if 'extra_info' not in cached_json or not isinstance(cached_json['extra_info'], dict):
-                cached_json['extra_info'] = {}
-            for k_ei in ['landscape_url', 'poster_url', 'trailer_video', 'preview_clip',
-                         '_storage_media', '_media_replacements']:
-                if fresh_media['extra_info'].get(k_ei):
-                    cached_json['extra_info'][k_ei] = fresh_media['extra_info'][k_ei]
-
-        if isinstance(fresh_media.get('media'), list):
-            cached_json['media'] = copy.deepcopy(fresh_media['media'])
-
+        fresh_extra = fresh_media.get('extra_info') or {}
+        results = copy.deepcopy(fresh_extra.get('_image_results') or [])
+        old_thumbs = cached_json.get('thumb') or []
+        old_arts = cached_json.get('fanart') or []
+        old_media = cached_json.get('media')
+        old_media = copy.deepcopy(old_media) if isinstance(old_media, list) else None
+        removed = {(e.get('media_type'), e.get('sort_order', 0)) for e in fresh_extra.get('_media_replacements') or []
+                   if e.get('status') == 'removed'}
+        cached_json['thumb'] = copy.deepcopy(fresh_media.get('thumb') or [])
+        cached_json['fanart'] = copy.deepcopy(fresh_media.get('fanart') or [])
+        for key in ('_storage_media', '_media_replacements', 'trailer_video', 'preview_clip'):
+            if key in fresh_extra: cached_extra[key] = copy.deepcopy(fresh_extra[key]) if key != '_media_replacements' else fresh_extra[key]
+        cached_json['media'] = copy.deepcopy(fresh_media.get('media') or [])
+        for kind, index, key in (('poster', 0, 'poster_url'), ('landscape', 1, 'landscape_url')):
+            value = next((t.get('value') for t in cached_json['thumb'] if isinstance(t, dict) and t.get('aspect') == kind and t.get('value')), '')
+            if not value and (kind, index) not in removed:
+                assets = [m for m in old_media or [] if m.get('media_type') == kind]
+                # Registered slots take precedence over display-only PL -> P fallback.
+                previous = cached_json.get(key) or cached_extra.get(key)
+                preferred = next((m for m in assets if m.get('url') == previous), None) or next((m for m in assets if cls.is_user_media(m)), None)
+                value = preferred.get('url') if preferred else next((m['url'] for m in assets if m.get('url')), '')
+                legacy_preserved = False
+                if not value and not assets:
+                    stored = cached_json.get('stored_images')
+                    original_thumbs = (cached_json.get('original') or {}).get('thumb') or {}
+                    original_thumbs = original_thumbs if isinstance(original_thumbs, dict) else {}
+                    covers = {t.get('value') for t in old_thumbs if isinstance(t, dict) and t.get('aspect') == 'landscape'}
+                    covers.update((cached_json.get('landscape_url'), cached_extra.get('landscape_url'), original_thumbs.get('landscape')))
+                    covers.update(m.get('url') for m in old_media or [] if m.get('media_type') == 'landscape')
+                    if isinstance(stored, dict) and key in stored:
+                        # This field is the persisted column, unlike the presentation URL.
+                        registered = stored[key]
+                    else:
+                        registered = previous if kind != 'poster' or previous not in covers else None
+                    source = original_thumbs.get(kind)
+                    if kind == 'poster' and source in covers:
+                        source = None
+                    value = next((url for url in (registered, source)
+                                  if ModuleMetaDb._is_http_url(url)), '')
+                    legacy_preserved = bool(value)
+                result = next((r for r in results if r.get('media_type') == kind), None)
+                if result is None:
+                    result = dict(media_type=kind, sort_order=index, stage='source')
+                    results.append(result)
+                reason = result.get('reason') or ('포스터 원본/크롭 결과 미확보' if kind == 'poster' else '새 이미지 미확보')
+                if legacy_preserved:
+                    reason += '; 레거시 이미지 등록 보존(원본 상태 미확인)'
+                result.update(status='preserved' if value else 'source_missing', reason=reason, previous_preserved=bool(value))
+                if value:
+                    if result.get('format'): result['attempted_format'] = result.pop('format')
+                    if preferred and preferred.get('relative_path'): result['relative_path'] = preferred['relative_path']
+                    cached_json['thumb'].append(dict(aspect=kind, value=value))
+                    cached_json['media'].extend(assets)
+                    cached_extra.setdefault('_storage_media', []).extend(assets)
+            elif (kind, index) in removed:
+                value = ''
+                results.append(dict(media_type=kind, sort_order=index, status='removed', stage='complete'))
+            elif not any(r.get('media_type') == kind for r in results):
+                results.append(dict(media_type=kind, sort_order=index, status='saved', stage='complete'))
+            cached_json[key] = value
+            if value: cached_extra[key] = value
+            else: cached_extra.pop(key, None)
+        for index, url in enumerate(old_arts):
+            if (('fanart', index) in removed or (index < len(cached_json['fanart']) and cached_json['fanart'][index])):
+                continue
+            while len(cached_json['fanart']) <= index: cached_json['fanart'].append('')
+            cached_json['fanart'][index] = url
+            assets = [m for m in old_media or [] if m.get('media_type') == 'fanart' and m.get('sort_order', 0) == index]
+            cached_json['media'].extend(assets)
+            cached_extra.setdefault('_storage_media', []).extend(assets)
+            result = next((r for r in results if r.get('media_type') == 'fanart' and r.get('sort_order') == index), None)
+            if result is None:
+                result = dict(media_type='fanart', sort_order=index)
+                results.append(result)
+            result.update(status='preserved', previous_preserved=True, reason=result.get('reason') or '새 팬아트 미확보')
+        missing = [r for r in results if r.get('status') in ('source_missing', 'failed', 'preserved')]
+        if missing:
+            media_warning = '; '.join(filter(None, (media_warning, cls.image_result_summary(missing))))
         if fresh_media.get('original'):
             fresh_orig = fresh_media['original']
             if 'original' not in cached_json or not isinstance(cached_json['original'], dict):
@@ -3899,7 +3987,9 @@ class MetaUtil:
 
         completion = {}
         if not ModuleMetaDb.save_metadata(category, cached_json, _completion_receipt=completion):
-            return {'ret': 'error', 'msg': '이미지 및 미디어 정보를 DB에 저장하지 못했습니다.', 'is_updated': False}
+            return {'ret': 'error', 'msg': '이미지 및 미디어 정보를 DB에 저장하지 못했습니다.', 'is_updated': False,
+                    'media_status': 'failed', 'media_results': results, 'media_warning': media_warning,
+                    'commit_state': completion.get('commit_state'), 'uncertain': completion.get('commit_state') == 'unknown'}
         if completion.get('cleanup_pending'):
             media_warning = '; '.join(filter(None, (media_warning, 'DB 저장 완료; 이전 미디어 파일 정리 보류')))
         # Return the persisted assets, including paths and inactive storage rows.
@@ -3907,7 +3997,28 @@ class MetaUtil:
         (cached_json.get('extra_info') or {}).pop('media_errors', None)
         logger.info('[%s] [%s] 메타 DB의 이미지/미디어 정보 저장 완료%s', module.name, code,
                     ' (일부 미디어 실패)' if media_warning else '')
-        return {'ret': 'success', 'msg': f"[{ui_code}] 이미지 및 미디어 {operation_label} 완료" + (' (일부 미디어 실패)' if media_warning else ''), 'media_warning': media_warning, 'cleanup_pending': bool(completion.get('cleanup_pending')), 'title_log': title_log, 'is_updated': True, 'data': cached_json}
+        media_status = ('partial' if any(r.get('status') in ('saved', 'reused', 'removed') for r in results) else 'failed') if media_warning else 'complete'
+        summary = cls.image_result_summary(results)
+        return dict(ret='success', msg=f'[{ui_code}] 이미지 및 미디어 {operation_label}: ' +
+                    ('완료' if media_status == 'complete' else '부분 완료' if media_status == 'partial' else '미디어 처리 실패·기존 자산 유지'),
+                    media_status=media_status, media_results=results, detail_msg=summary, media_summary=summary,
+                    media_warning=media_warning, cleanup_pending=bool(completion.get('cleanup_pending')),
+                    title_log=title_log, is_updated=True, data=cached_json)
+
+    @staticmethod
+    def image_result_summary(results):
+        names = {'poster': '포스터', 'landscape': '가로 커버', 'fanart': '팬아트'}
+        statuses = {'saved': '저장 성공', 'reused': '기존 재사용', 'preserved': '기존 유지',
+                    'source_missing': '미확보', 'failed': '실패', 'removed': '명시적 제거'}
+        parts = []
+        for result in results:
+            label = names.get(result.get('media_type'), result.get('media_type', '이미지'))
+            if result.get('media_type') == 'fanart': label += ' ' + str(result.get('sort_order', 0) + 1)
+            label += ': ' + ((result.get('format') + ' ') if result.get('format') else '') + statuses.get(result.get('status'), '확인 필요')
+            if result.get('reason'): label += ' (' + result['reason'] + ')'
+            parts.append(label)
+        return ' / '.join(parts)
+
 
     @classmethod
     def _site_refresh_failure(cls, code, category, reason='사이트 정보 없음'):
@@ -3919,11 +4030,11 @@ class MetaUtil:
         return result
 
     @classmethod
-    def _explicit_site_refresh(cls, module, code, category, cached, site_activity=None, selected_code=None):
+    def _explicit_site_refresh(cls, module, code, category, cached, site_activity=None, selected_code=None, reuse_existing_media=False):
         from .mod_meta_db import ModuleMetaDb
         from support_site import SiteAvBase
         selected_code=selected_code or code
-        opts={'skip_trans':False,'for_db':True,'reuse_existing_media':False,'preserve_preview':True,
+        opts={'skip_trans':False,'for_db':True,'reuse_existing_media':reuse_existing_media,'preserve_preview':True,
               '_explicit_site_refresh':True,'_refresh_owner':{'code':code,'category':category}}
         opts['_existing_media_item']={'code':code,'category':category,
             'extra_info':{key:copy.deepcopy(value) for key,value in (cached.get('extra_info') or {}).items()
@@ -3962,7 +4073,7 @@ class MetaUtil:
                         ('; 소유 미확인 GDS 등록 '+str(completion['unresolved_gds'])+'개 원행 보존' if completion.get('unresolved_gds') else ''),data=fresh)
 
     @classmethod
-    def refresh_in_place(cls, module, code, category, site_activity=None):
+    def refresh_in_place(cls, module, code, category, site_activity=None, reuse_existing_media=False):
         """현재 출처 사이트 정보 제자리 갱신 단일 공용 로직"""
         from .mod_meta_db import ModuleMetaDb
 
@@ -3970,10 +4081,10 @@ class MetaUtil:
         if not cached_json:
             return {'ret': 'error', 'msg': 'DB에서 해당 항목을 찾을 수 없습니다.', 'is_updated': False}
 
-        return cls._explicit_site_refresh(module,code,category,cached_json,site_activity)
+        return cls._explicit_site_refresh(module,code,category,cached_json,site_activity,reuse_existing_media=reuse_existing_media)
 
     @classmethod
-    def refresh_auto_search(cls, module, code, category, site_activity=None):
+    def refresh_auto_search(cls, module, code, category, site_activity=None, reuse_existing_media=False):
         """전체 우선순위 자동 재검색 갱신 단일 공용 로직"""
         from .mod_meta_db import ModuleMetaDb
 
@@ -4017,7 +4128,7 @@ class MetaUtil:
         new_code = best_item['code']
         logger.info(f"[{module.name}] 자동 재검색 채택: [{best_item.get('site_key', '').upper()}] Code: {new_code} (기존: {code})")
 
-        return cls._explicit_site_refresh(module,code,category,cached_json,site_activity,new_code)
+        return cls._explicit_site_refresh(module,code,category,cached_json,site_activity,new_code,reuse_existing_media=reuse_existing_media)
 
     @classmethod
     def heal_metadata(cls, module, code, category, site_activity=None):
@@ -4109,6 +4220,7 @@ class MetaUtil:
                 if actor_data_changed:
                     extra_info['_actors'] = actors_list
                     item.extra_info = extra_info
+                    item.actor_search_text = MetaItem.build_actor_search_text(extra_info, item.original)
                     flag_modified(item, 'extra_info')
                     is_modified = True
 
@@ -4767,11 +4879,6 @@ class MetaUtil:
                         changes.append('트레일러 GDrive' if target_storage == 'gdrive' else '트레일러 저장')
                     else:
                         failures.append('trailer')
-                    if not t_succ and trailer_item.get('original') != orig_data:
-                        MetaPreviewUtil.remove_official_trailer(item, raw_tr_url)
-                        extra_info = dict(item.extra_info or {})
-                        is_modified = True
-                        changes.append('다운로드 실패 공식 트레일러 URL 제거')
 
             if any(op.get('staged') and op.get('status') not in ('generated', 'removed') for op in file_operations):
                 raise ValueError('현재 작품의 미디어 교체 실패로 부분 저장을 중단합니다.')

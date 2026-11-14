@@ -421,7 +421,7 @@ class ModuleWestern(PluginModuleBase):
         use_db_flag = use_db
 
         # 0순위: 비디오 지문(OSHash) 로컬 B-Tree 인덱스 즉시 조회
-        if use_db_flag and target_video_file and os.path.exists(target_video_file) and not manual:
+        if not manual and use_db_flag and target_video_file and os.path.exists(target_video_file):
             local_oshash = SiteAvBase.calculate_oshash(target_video_file)
             if local_oshash:
                 local_db_items = ModuleMetaDb.search_by_fingerprint(self.category, 'OSHASH', local_oshash)
@@ -511,6 +511,11 @@ class ModuleWestern(PluginModuleBase):
                     logger.error(f"[{self.name}] {site_key} 작품 검색 실패: {e_site}")
 
         # 3. 우선순위 정렬 및 동점자 분리
+        if manual:
+            unique_results = {}
+            for item in all_results:
+                unique_results.setdefault(item.get('code'), item)
+            all_results = list(unique_results.values())
         if all_results:
             priority_map = {site: idx for idx, site in enumerate(site_order_list)}
             default_prio = len(site_order_list)
@@ -606,6 +611,7 @@ class ModuleWestern(PluginModuleBase):
         return None
 
     def info(self, code, keyword=None, extra_opts=None, **kwargs):
+        creation_locked = kwargs.pop('_metadata_creation_locked', False)
         opts = dict(extra_opts or {})
         opts.update(kwargs)
         opts['_parallel_media'] = True
@@ -667,6 +673,12 @@ class ModuleWestern(PluginModuleBase):
                     if completed.get('data'):
                         cached_json.update({key: completed['data'][key] for key in ('extra_info', 'extras', 'original') if key in completed['data']})
                 return MetaUtil.finalize_info_return(cached_json, extra_opts=opts, category=self.category)
+
+        if (use_db and save_db and not bypass_cache and not creation_locked and not skip_trans
+                and not opts.get('for_db') and not opts.get('_explicit_site_refresh')
+                and ModuleMetaDb._ensure_meta_db_writable(self.category)):
+            with MetaUtil.metadata_creation_lock(self.category, code):
+                return self.info(code, keyword=keyword, extra_opts=opts, _metadata_creation_locked=True)
 
         if use_db and not ModuleMetaDb._ensure_meta_db_writable(self.category):
             logger.warning(f"[{self.name}] DB 스키마 업그레이드 필요 상태(v0) ➔ 신규 메타데이터 생성(스크래핑/번역) 원천 차단: {code}")
@@ -996,7 +1008,36 @@ class ModuleWestern(PluginModuleBase):
                 if not isinstance(code, str) or not code.strip():
                     return jsonify(ret='error', error_code='invalid_request', error_origin='ff', msg='code 파라미터가 필요합니다.'), 400
                 media_path = values.get("media_path") or values.get("path")
-                data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
+                plex_media_paths = call == "plex" and "media_paths" in values
+                if plex_media_paths:
+                    data = self.info(code)
+                else:
+                    data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
+                if plex_media_paths and isinstance(data, dict) and data.get('code') == code:
+                    try:
+                        paths = values.get('media_paths')
+                        if isinstance(paths, str):
+                            try:
+                                paths = json.loads(paths)
+                            except (TypeError, ValueError):
+                                paths = None
+                        if (isinstance(paths, list) and paths and all(isinstance(path, str) for path in paths)
+                                and ModuleMetaDb._ensure_meta_db_writable(self.category)
+                                and ModuleMetaDb.get_metadata(code, category=self.category)):
+                            seen_hashes = set()
+                            for path in paths:
+                                try:
+                                    if not path.strip() or not os.path.isfile(path):
+                                        continue
+                                    oshash = SiteAvBase.calculate_oshash(path)
+                                    if not oshash or oshash in seen_hashes:
+                                        continue
+                                    seen_hashes.add(oshash)
+                                    ModuleMetaDb.rebind_user_oshash(code, oshash)
+                                except Exception as exc:
+                                    logger.warning('[Western Plex 지문] 파일 지문 정정 실패: %s', exc)
+                    except Exception as exc:
+                        logger.warning('[Western Plex 지문] 최종 작품 지문 정정 보류: %s', exc)
                 if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)
