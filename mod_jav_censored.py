@@ -1322,6 +1322,10 @@ class ModuleJavCensored(PluginModuleBase):
         is_invalid_image = False
         SiteClass = self.site_map.get(site)
 
+        def poster_result(data):
+            return next((result for result in (data.get('extra_info') or {}).get('_image_results') or []
+                         if result.get('media_type') == 'poster'), {})
+
         # 저장소(GDrive/이미지서버) 업로드 또는 통신 장애가 감지된 경우 구출을 타지 않고 즉시 중단
         has_storage_error = bool(ret and (ret.get('extra_info') or {}).get('storage_error'))
         current_image_mode = P.ModelSetting.get(f"{self.name}_image_mode") or "ff_proxy"
@@ -1329,6 +1333,8 @@ class ModuleJavCensored(PluginModuleBase):
         # 유저 커스텀 포스터(_user) 적용 여부 확인
         target_poster_url = next((t['value'] for t in ret.get('thumb', []) if t.get('aspect') == 'poster'), None) if has_valid_thumb else None
         is_user_custom = bool(target_poster_url and ('_user.' in target_poster_url or '_p_user' in target_poster_url))
+        result = poster_result(ret)
+        is_user_custom = is_user_custom or bool(result.get('user'))
 
         if has_storage_error:
             is_invalid_image = False
@@ -1337,6 +1343,11 @@ class ModuleJavCensored(PluginModuleBase):
             # 유저 커스텀 이미지가 적용된 항목은 외부 사이트 구출을 타지 않음
             is_invalid_image = False
             logger.debug(f"[{self.name}] [{site}] 유저 커스텀 이미지(_user) 감지 ➔ 타 사이트 구출 건너뜀: {target_poster_url}")
+        elif result.get('placeholder'):
+            is_invalid_image = True
+        elif result.get('status') == 'reused' or result.get('placeholder') is False:
+            # A reused asset is exempt; a new poster was checked before storage.
+            is_invalid_image = False
         elif not has_valid_thumb:
             # 저장소 처리 실패로 인한 누락인 경우는 외부 구출을 타지 않고 중단
             if current_image_mode in ['gdrive', 'image_server']:
@@ -1405,6 +1416,7 @@ class ModuleJavCensored(PluginModuleBase):
 
             backup_sites = [s for s in candidate_sites if s in self.site_map]
             logger.debug(f"[{self.name}] 구출 대상 후순위 백업 사이트 목록: {backup_sites}")
+            rescue_storage_error = False
 
             for b_site in backup_sites:
                 b_SiteClass = self.site_map.get(b_site)
@@ -1420,11 +1432,32 @@ class ModuleJavCensored(PluginModuleBase):
 
                             _, c_label, c_num = SiteAvBase._parse_ui_code(cand_ui)
                             if cand_score >= 99 and target_label == c_label and target_num == c_num and cand_code:
-                                b_info = self.info2(cand_code, b_site, keyword=rescue_search_kw, skip_trans=True)
+                                backup_opts = {'skip_trans': True}
+                                for key in ('reuse_existing_media', '_existing_media_item', '_refresh_owner'):
+                                    if key in opts: backup_opts[key] = opts[key]
+                                b_info = self.info2(cand_code, b_site, keyword=rescue_search_kw, extra_opts=backup_opts)
+                                b_extra = (b_info or {}).get('extra_info') or {}
+                                if b_extra.get('storage_error'):
+                                    MetaUtil.finish_media_replacements(b_extra.get('_media_replacements') or [], False)
+                                    ret_extra = ret.setdefault('extra_info', {})
+                                    ret_extra['storage_error'] = True
+                                    ret_extra['_image_storage_state'] = copy.deepcopy(b_extra.get('_image_storage_state') or
+                                        dict(status='failed', mode=current_image_mode, reason='백업 이미지 저장소 처리 실패'))
+                                    ret_extra.setdefault('_media_replacements', []).extend(b_extra.get('_media_replacements') or [])
+                                    rescue_storage_error = True
+                                    logger.warning('[%s] [%s] 백업 저장소 오류로 이미지 구출 중단: %s', self.name, b_site, code)
+                                    break
                                 if b_info and b_info.get('thumb'):
                                     b_target_url = next((t['value'] for t in b_info['thumb'] if t.get('aspect') == 'poster'), None)
-                                    b_im_obj = b_SiteClass.imopen(b_target_url) if b_target_url else None
+                                    b_result = poster_result(b_info)
+                                    b_is_reused = bool(b_result.get('status') == 'reused' or b_result.get('user') or
+                                        (b_target_url and ('_user.' in b_target_url or '_p_user' in b_target_url)))
+                                    b_is_checked = b_result.get('placeholder') is False
+                                    b_is_stored = bool(b_target_url and (b_target_url.startswith(('https://drive.google.com/', 'https://googleusercontent.com/')) or ModuleMetaDb.is_local_server_url(b_target_url)))
+                                    b_im_obj = b_SiteClass.imopen(b_target_url) if b_target_url and not (b_is_reused or b_is_checked or b_is_stored or b_result.get('placeholder')) else None
                                     b_is_valid = False
+                                    if b_target_url and not b_result.get('placeholder') and (b_is_reused or b_is_checked or b_is_stored):
+                                        b_is_valid = True
                                     if b_im_obj is not None:
                                         try:
                                             if not b_SiteClass.is_placeholder_image(b_im_obj):
@@ -1436,12 +1469,34 @@ class ModuleJavCensored(PluginModuleBase):
                                         logger.info(f"[{self.name}] '{b_site}'에서 유효한 백업 이미지 획득/교체 성공 ({pure_code})")
                                         ret['thumb'] = b_info['thumb']
                                         ret['fanart'] = b_info.get('fanart', [])
+                                        original = ret.setdefault('original', {})
+                                        for key in ('thumb', 'fanart'):
+                                            if key in (b_info.get('original') or {}):
+                                                original[key] = copy.deepcopy(b_info['original'][key])
+                                            else:
+                                                original.pop(key, None)
+                                        ret_extra = ret.setdefault('extra_info', {})
+                                        for key in ('_storage_media', '_image_results', '_image_storage_state', 'poster_url', 'landscape_url'):
+                                            if key in b_extra: ret_extra[key] = copy.deepcopy(b_extra[key])
+                                            else: ret_extra.pop(key, None)
+                                        ret_extra.setdefault('_media_replacements', []).extend(b_extra.get('_media_replacements') or [])
+                                        ret_extra.pop('storage_error', None)
                                         is_invalid_image = False
                                         break
-                        if not is_invalid_image:
+                        if not is_invalid_image or rescue_storage_error:
                             break
                 except Exception as e_rescue:
                     logger.debug(f"[{self.name}] '{b_site}' 구출 시도 중 예외: {e_rescue}")
+
+        if is_invalid_image:
+            # Do not register a rejected site URL or let the raw-source fallback revive it.
+            ret['thumb'] = [thumb for thumb in ret.get('thumb') or [] if thumb.get('aspect') != 'poster']
+            ret['poster_url'] = ''
+            extra = ret.setdefault('extra_info', {})
+            extra.pop('poster_url', None)
+            results = extra.setdefault('_image_results', [])
+            if not poster_result(ret):
+                results.append(dict(media_type='poster', sort_order=0, status='source_missing', stage='source'))
 
         ret["plex_is_proxy_preview"] = True
         ret["plex_is_landscape_to_art"] = True

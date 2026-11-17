@@ -87,8 +87,8 @@ class DeleteReceipts:
         """
         if not enabled:
             return False
-        with engine.connect() as conn:
-            try:
+        try:
+            with engine.begin() as conn:
                 dialect = conn.dialect.name
                 if dialect == 'sqlite':
                     conn.exec_driver_sql('BEGIN IMMEDIATE')
@@ -118,13 +118,11 @@ class DeleteReceipts:
                 if not inspect(conn).has_table(cls.table.name):
                     raise DeleteReceiptError('D02_SCHEMA_UNAVAILABLE')
                 cls._validate(conn)
-                conn.commit()
-            except Exception as exc:
-                conn.rollback()
-                if isinstance(exc, DeleteReceiptError):
-                    raise
-                # Driver messages can contain connection details or SQL values.
-                raise DeleteReceiptError('D02_SCHEMA_UNAVAILABLE') from None
+        except Exception as exc:
+            if isinstance(exc, DeleteReceiptError):
+                raise
+            # Driver messages can contain connection details or SQL values.
+            raise DeleteReceiptError('D02_SCHEMA_UNAVAILABLE') from None
         return True
 
     @classmethod

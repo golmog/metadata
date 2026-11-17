@@ -2971,6 +2971,7 @@ class ModuleMetaDb(PluginModuleBase):
             # - '승격': 유저 지문이 추후 사이트 정식 지문으로 등록되면 'site'로 자동 승격
             incoming_site_fps = {}
             incoming_user_fps = {}
+            existing_user_keys = {(fp.algorithm, fp.hash_value) for fp in item.fingerprints if fp.source != 'site'}
 
             # 사이트 원본 공식 지문 수집 (StashDB, TPDB 원격 응답)
             if isinstance(entity_dict.get('original'), dict):
@@ -2998,30 +2999,30 @@ class ModuleMetaDb(PluginModuleBase):
                 key = f"{algo}_{h_val}"
                 if src == 'site':
                     incoming_site_fps[key] = (algo, h_val)
-                else:
-                    incoming_user_fps[key] = (algo, h_val)
+                elif std_cat != 'WESTERN' or (algo, h_val) in existing_user_keys:
+                    incoming_user_fps[key] = (algo, h_val, src if std_cat == 'WESTERN' else 'user')
 
             # 기존 DB에 저장되어 있던 유저 지문 보존 (사이트 갱신으로 인한 유실 방지)
             for existing_fp in item.fingerprints:
-                if existing_fp.source == 'user':
+                if existing_fp.source == 'user' or (std_cat == 'WESTERN' and existing_fp.source != 'site'):
                     key = f"{existing_fp.algorithm}_{existing_fp.hash_value}"
                     if key not in incoming_site_fps:
-                        incoming_user_fps[key] = (existing_fp.algorithm, existing_fp.hash_value)
+                        incoming_user_fps[key] = (existing_fp.algorithm, existing_fp.hash_value, existing_fp.source)
 
             # 최종 동기화 목록 조립 (사이트 지문 최우선, 중복 유저 지문은 사이트로 승격)
             final_fps_to_save = []
             for k, (algo, h_val) in incoming_site_fps.items():
                 final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'site'})
 
-            for k, (algo, h_val) in incoming_user_fps.items():
+            for k, (algo, h_val, src) in incoming_user_fps.items():
                 if k not in incoming_site_fps:
-                    final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': 'user'})
+                    final_fps_to_save.append({'algorithm': algo, 'hash_value': h_val, 'source': src})
 
             # Normalize order only after the existing merge/promotion policy.
             final_fps_to_save = cls._ordered_fingerprints(final_fps_to_save)
 
             # 테이블 및 extra_info 일괄 반영
-            if final_fps_to_save or item.fingerprints:
+            if final_fps_to_save or item.fingerprints or std_cat == 'WESTERN':
                 item.fingerprints.clear()
                 sync_json_list = []
                 for fp_data in final_fps_to_save:
@@ -6546,16 +6547,23 @@ class ModuleMetaDb(PluginModuleBase):
                     return 99
 
             # 우선순위 순으로 정렬
-            sorted_fps = sorted(fp_matches, key=lambda x: get_site_rank(x.code, items_by_id[x.item_id].site if x.item_id in items_by_id else None))
+            sorted_fps = sorted(fp_matches, key=lambda x: (
+                {'site': 0, 'user_verified': 1}.get(x.source, 2) if std_cat == 'WESTERN' else 0,
+                get_site_rank(x.code, items_by_id[x.item_id].site if x.item_id in items_by_id else None)))
 
             results = []
             for fp in sorted_fps:
+                source = fp.source
+                provenance = {'source': source,
+                    'match_type': 'fingerprint' if source in ('site', 'user_verified') else 'unknown',
+                    'fingerprint_source': 'legacy_user' if source == 'user' else source if source in ('site', 'user_verified') else 'none'}
                 item = items_by_id.get(fp.item_id)
                 if item is not None:
                     ui_code = item.ui_code
                     if item.category == 'WESTERN' and (not ui_code or ui_code == item.code):
                         ui_code = item.originaltitle or ui_code or item.code
                     results.append({
+                        **provenance,
                         'code': item.code,
                         'site': item.site,
                         'originaltitle': item.originaltitle,
@@ -6570,6 +6578,7 @@ class ModuleMetaDb(PluginModuleBase):
                     # 지문은 있으나 MetaItem이 없는 고아 지문인 경우 (새로 사이트에서 다운로드 유도)
                     infer_site = 'stashdb' if ('_S' in fp.code or fp.code.startswith('WS')) else 'tpdb'
                     results.append({
+                        **provenance,
                         'code': fp.code,
                         'site': infer_site,
                         'originaltitle': fp.code,
@@ -6706,6 +6715,118 @@ class ModuleMetaDb(PluginModuleBase):
             sess.rollback()
             logger.debug(f"[MetaDB] append_fingerprint 예외: {e}")
             return False
+        finally:
+            sess.remove()
+
+    @classmethod
+    def manage_western_fingerprints(cls, action, code='', payload=None):
+        """Explicit, authenticated UI actions; never called by search/info."""
+        payload = payload or {}
+        if action not in ('list', 'add', 'remove', 'rebind', 'reset_preview', 'reset'):
+            return {'ret': 'error', 'msg': '지원하지 않는 지문 명령입니다.'}
+        if not cls._ensure_meta_db_writable('WESTERN'):
+            return {'ret': 'error', 'msg': '메타 DB 사용/스키마 상태를 확인하세요.'}
+        sess, _, std_cat = cls.get_session_and_domain('WESTERN')
+        if sess is None:
+            return {'ret': 'error', 'msg': '메타 DB를 열 수 없습니다.'}
+        users = ('user', 'user_verified')
+        def key(fp):
+            return (str(fp.get('algorithm') or 'OSHASH').strip().upper(),
+                    str(fp.get('hash') or fp.get('hash_value') or '').strip().lower(), fp.get('source'))
+        def value(fp):
+            return {'algorithm': fp.algorithm, 'hash': fp.hash_value, 'source': fp.source}
+        try:
+            if action in ('reset_preview', 'reset'):
+                if action == 'reset' and payload.get('confirm') is not True:
+                    return {'ret': 'error', 'msg': '사용자 지문 초기화 확인이 필요합니다.'}
+                rows = sess.query(MetaFingerprint).filter(
+                    MetaFingerprint.category == std_cat, MetaFingerprint.source.in_(users)).all()
+                targets = {(fp.item_id, *key(value(fp))) for fp in rows}
+                item_ids = {fp.item_id for fp in rows}
+                for item in sess.query(MetaItem).options(lazyload('*')).filter_by(category=std_cat).yield_per(100):
+                    extra = dict(item.extra_info or {})
+                    fps = list(extra.get('fingerprints') or [])
+                    removing = [fp for fp in fps if isinstance(fp, dict) and fp.get('source') in users]
+                    if removing:
+                        item_ids.add(item.id)
+                        targets.update((item.id, *key(fp)) for fp in removing)
+                        if action == 'reset':
+                            extra['fingerprints'] = [fp for fp in fps if not (isinstance(fp, dict) and fp.get('source') in users)]
+                            item.extra_info = extra
+                data = {'count': len(targets), 'items': len(item_ids), 'rows': len(rows)}
+                if action == 'reset':
+                    for fp in rows:
+                        sess.delete(fp)
+                    sess.commit()
+                    logger.info('[Western 지문] 사용자 지문 초기화: %s건 / %s작품', data['count'], data['items'])
+                return {'ret': 'success', 'data': data}
+
+            item = sess.query(MetaItem).options(lazyload('*')).filter_by(category=std_cat, code=code).first()
+            if item is None:
+                return {'ret': 'error', 'msg': '대상 WESTERN 작품을 찾을 수 없습니다.'}
+            if action == 'list':
+                fps = [value(fp) for fp in sess.query(MetaFingerprint).filter_by(category=std_cat, item_id=item.id).all()]
+                known = {key(fp) for fp in fps}
+                for fp in (item.extra_info or {}).get('fingerprints') or []:
+                    if isinstance(fp, dict) and key(fp) not in known:
+                        fps.append(fp)
+                        known.add(key(fp))
+                return {'ret': 'success', 'data': {'code': code, 'fingerprints': cls._ordered_fingerprints(fps)}}
+
+            algo = str(payload.get('algorithm') or 'OSHASH').strip().upper()
+            hash_value = str(payload.get('hash') or payload.get('hash_value') or '').strip().lower()
+            if algo not in ('OSHASH', 'PHASH') or not re.fullmatch(r'[0-9a-f]{16}', hash_value):
+                return {'ret': 'error', 'msg': '올바른 OSHash/pHash(16자리 hex)가 필요합니다.'}
+            if action == 'add' and algo != 'OSHASH':
+                return {'ret': 'error', 'msg': '신규 등록은 계산한 OSHash만 지원합니다.'}
+            matches = sess.query(MetaFingerprint).filter_by(category=std_cat, algorithm=algo, hash_value=hash_value).all()
+            if action == 'rebind' and algo == 'PHASH' and not any(fp.source in users for fp in matches):
+                return {'ret': 'error', 'msg': '정정할 기존 사용자 pHash가 없습니다.'}
+            affected = {item.id}
+            if action == 'remove':
+                source = payload.get('source')
+                if source not in users:
+                    return {'ret': 'error', 'msg': '공식/출처 미상 지문은 삭제할 수 없습니다.'}
+                for fp in matches:
+                    if fp.item_id == item.id and fp.source == source:
+                        sess.delete(fp)
+            else:
+                if any(fp.source == 'site' and fp.code != code for fp in matches):
+                    return {'ret': 'error', 'msg': '다른 작품의 공식 지문과 충돌합니다. 공식 지문은 정정하지 않습니다.'}
+                conflicts = sorted({fp.code for fp in matches if fp.source in users and fp.code != code})
+                if conflicts and (action != 'rebind' or payload.get('confirm') is not True):
+                    return {'ret': 'confirm', 'msg': '다른 작품의 사용자 지문을 현재 작품으로 정정하시겠습니까?', 'data': {'conflicts': conflicts}}
+                for fp in matches:
+                    if fp.source in users:
+                        affected.add(fp.item_id)
+                        sess.delete(fp)
+                if not any(fp.item_id == item.id and fp.source == 'site' for fp in matches):
+                    sess.add(MetaFingerprint(item_id=item.id, category=std_cat, code=code,
+                        algorithm=algo, hash_value=hash_value, source='user_verified'))
+            sess.flush()
+            remaining = sess.query(MetaFingerprint).filter(
+                MetaFingerprint.item_id.in_(affected), MetaFingerprint.category == std_cat,
+                MetaFingerprint.algorithm == algo, MetaFingerprint.hash_value == hash_value).all()
+            for target in sess.query(MetaItem).options(lazyload('*')).filter(MetaItem.id.in_(affected), MetaItem.category == std_cat).all():
+                extra = dict(target.extra_info or {})
+                fps = list(extra.get('fingerprints') or [])
+                synced = [fp for fp in fps if not (
+                    isinstance(fp, dict) and key(fp)[:2] == (algo, hash_value)
+                    and fp.get('source') in (users if action != 'remove' else (payload.get('source'),)))]
+                known = {key(fp) for fp in synced if isinstance(fp, dict)}
+                for fp in remaining:
+                    if fp.item_id == target.id and key(value(fp)) not in known:
+                        synced.append(value(fp))
+                        known.add(key(value(fp)))
+                extra['fingerprints'] = cls._ordered_fingerprints(synced)
+                target.extra_info = extra
+            sess.commit()
+            logger.info('[Western 지문] 명시적 %s 완료: %s (%s)', action, code, algo)
+            return {'ret': 'success', 'msg': '사용자 지문 변경을 저장했습니다.'}
+        except Exception as exc:
+            sess.rollback()
+            logger.error('[Western 지문] %s 실패: %s', action, exc)
+            return {'ret': 'error', 'msg': '지문 변경 실패: ' + str(exc)}
         finally:
             sess.remove()
 

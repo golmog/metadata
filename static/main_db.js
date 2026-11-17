@@ -755,6 +755,14 @@ function injectDbModals() {
                     </div>
                   </div>
                 </div>
+                <section class="western-fingerprint-section border rounded p-3 mt-3" style="display:none">
+                  <h6>사용자 지문 (별도 저장)</h6>
+                  <div class="western-fingerprint-list mb-2"></div>
+                  <input type="text" class="form-control western-fingerprint-path mb-2" placeholder="FF에서 읽을 수 있는 영상의 절대 경로 (저장하지 않음)">
+                  <button type="button" class="btn btn-sm btn-outline-info western-fingerprint-calculate">지문 획득/계산</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary western-fingerprint-add" disabled>사용자 지문 추가</button>
+                  <div class="western-fingerprint-status mt-2" role="status"></div>
+                </section>
               </div>
               <div class="modal-footer py-2 d-flex justify-content-between flex-wrap" style="flex-shrink: 0;">
                 <div class="d-flex align-items-center flex-wrap mb-1 mb-md-0">
@@ -3050,6 +3058,100 @@ function syncItemImageFields($modal, gallery) {
     });
 }
 
+function westernFingerprintCommand(action, code, payload, done) {
+    return $.ajax({url:'/metadata/ajax/western/command', type:'POST', dataType:'json',
+        data:{command:'db_fingerprint_' + action, arg1:code, arg2:JSON.stringify(payload || {})},
+        success:done, error:function(){ done({ret:'error', msg:'지문 요청 결과를 확인하지 못했습니다. 내역을 다시 확인하세요.'}); }});
+}
+
+function renderWesternFingerprints($modal, row, fps) {
+    var $section = $modal.find('.western-fingerprint-section');
+    $section.toggle(row.category === 'WESTERN');
+    if (row.category !== 'WESTERN') return;
+    var $list = $section.find('.western-fingerprint-list').empty();
+    (fps || []).forEach(function(fp) {
+        var $line = $('<div class="mb-1 text-break"></div>');
+        $('<span></span>').text(fp.algorithm + ' / ' + fp.source + ' / ' + (fp.hash || fp.hash_value || '')).appendTo($line);
+        if (fp.source === 'user' || fp.source === 'user_verified') {
+            $('<button type="button" class="btn btn-sm btn-outline-danger ml-2 western-fingerprint-remove">삭제</button>').data('fp',fp).appendTo($line);
+            $('<button type="button" class="btn btn-sm btn-outline-secondary ml-2 western-fingerprint-rebind">대상 정정</button>').data('fp',fp).appendTo($line);
+        }
+        $list.append($line);
+    });
+    if (!(fps || []).length) $list.text('등록된 지문이 없습니다.');
+}
+
+function refreshWesternFingerprints($modal, row) {
+    westernFingerprintCommand('list', row.code, {}, function(ret) {
+        if (!itemModalCurrent($modal,row) || ret.ret !== 'success') return;
+        var jd = row.json_data;
+        if (typeof jd === 'string') jd = JSON.parse(jd);
+        jd = jd || {}; jd.extra_info = jd.extra_info || {};
+        jd.fingerprints = ret.data.fingerprints;
+        jd.extra_info.fingerprints = ret.data.fingerprints;
+        row.json_data = jd;
+        renderWesternFingerprints($modal,row,ret.data.fingerprints);
+    });
+}
+
+function confirmWesternFingerprint(message, confirmAction) {
+    var $dialog = $('<div class="modal fade" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5>사용자 지문 정정 확인</h5></div><div class="modal-body"></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-dismiss="modal">취소</button><button type="button" class="btn btn-primary fingerprint-confirm">확인</button></div></div></div></div>');
+    $dialog.find('.modal-body').text(message);
+    $dialog.find('.fingerprint-confirm').one('click',function(){ $dialog.modal('hide'); confirmAction(); });
+    $dialog.on('hidden.bs.modal',function(){ $dialog.remove(); });
+    $('body').append($dialog); $dialog.modal('show');
+}
+
+$(document).on('input', '.western-fingerprint-path', function() {
+    var $section = $(this).closest('.western-fingerprint-section');
+    $section.removeData('computed').find('.western-fingerprint-add').prop('disabled',true);
+});
+
+$(document).on('click', '.western-fingerprint-calculate, .western-fingerprint-add, .western-fingerprint-remove, .western-fingerprint-rebind', function() {
+    var $button = $(this), $modal = $button.closest('.modal'), row = $modal.data('row_data');
+    if (!row || row.category !== 'WESTERN') return;
+    var $section = $modal.find('.western-fingerprint-section'), $status = $section.find('.western-fingerprint-status');
+    function submit(action, target, payload) {
+        if (!itemModalCurrent($modal,row)) return;
+        $button.prop('disabled',true);
+        westernFingerprintCommand(action,target,payload,function(ret) {
+            if (!itemModalCurrent($modal,row)) return;
+            $button.prop('disabled',false);
+            $status.text(ret.msg || '');
+            if (ret.ret === 'confirm') {
+                confirmWesternFingerprint(ret.msg + '\n기존 작품: ' + ret.data.conflicts.join(', ') + '\n새 작품: ' + target, function(){
+                    submit('rebind',target,Object.assign({},payload,{confirm:true}));
+                });
+            } else if (ret.ret === 'success' && action === 'calculate') {
+                if ($section.find('.western-fingerprint-path').val() !== payload.path) return;
+                $section.data('computed',ret.data);
+                $section.find('.western-fingerprint-add').prop('disabled',false);
+                $status.text('OSHASH: ' + ret.data.hash + '\n기존 연결: ' + ret.data.matches.map(function(m){ return m.code + ' (' + m.fingerprint_source + ')'; }).join(', '));
+            } else if (ret.ret === 'success') {
+                refreshWesternFingerprints($modal,row);
+            }
+        });
+    }
+    if ($button.hasClass('western-fingerprint-calculate')) {
+        $section.removeData('computed').find('.western-fingerprint-add').prop('disabled',true);
+        submit('calculate',row.code,{path:$section.find('.western-fingerprint-path').val()});
+    } else if ($button.hasClass('western-fingerprint-add')) {
+        var computed = $section.data('computed');
+        if (computed) submit('add',row.code,{algorithm:'OSHASH',hash:computed.hash});
+    } else if ($button.hasClass('western-fingerprint-remove')) {
+        submit('remove',row.code,$button.data('fp'));
+    } else {
+        var fp = $button.data('fp');
+        var $target = $('<input class="form-control mt-2" placeholder="정확한 WESTERN 내부 코드 (WSS_/WPS_/WPM_...)">');
+        $status.empty().append($target);
+        $('<button type="button" class="btn btn-sm btn-primary mt-2">정정 대상 확인</button>').appendTo($status).one('click',function(){
+            var code = $target.val().trim();
+            if (!code) return;
+            confirmWesternFingerprint(row.code + ' → ' + code + ' 사용자 지문을 정정하시겠습니까?',function(){ submit('rebind',code,Object.assign({},fp,{confirm:true})); });
+        });
+    }
+});
+
 function renderDbEditModalContent(row, $modal) {
     if (!row) return;
     $modal = $modal || $('#dbEditModal');
@@ -3126,6 +3228,10 @@ function renderDbEditModalContent(row, $modal) {
     update_modal_image_preview($modal);
 
     $modal.data('row_data', row).data('imageWriteBusy',false).data('imageWriteUncertain',!!uncertain).data('dbEditSaving',false).data('imageDetailLoading',false).data('imageDetailFailed',false);
+    $modal.find('.western-fingerprint-section').removeData('computed').find('.western-fingerprint-path').val('');
+    $modal.find('.western-fingerprint-add').prop('disabled',true);
+    $modal.find('.western-fingerprint-status').text('계산은 읽기 전용이며, 추가/정정/삭제는 일반 메타 저장과 별도로 즉시 반영됩니다.');
+    renderWesternFingerprints($modal,row,jd.fingerprints || (jd.extra_info || {}).fingerprints || []);
     resetItemImageToolInputs($modal);
     $modal.find('.user-image-tools').toggle(['JAV_CEN','JAV_UNCEN','WESTERN'].indexOf(row.category) !== -1);
     $modal.find('.user-image-tools').each(function() {
