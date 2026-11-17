@@ -68,6 +68,8 @@ class ModuleWestern(PluginModuleBase):
             f"{self.name}_search_regex_removal_2nd": r"(?:solo|vr)$",
 
             f"{self.name}_trust_single_result": "False",
+            f"{self.name}_filename_match": "True",
+            f"{self.name}_filename_min_score": "0",
             f"{self.name}_json_include_male": "False",
 
             f"{self.name}_use_proxy": "False",
@@ -246,6 +248,24 @@ class ModuleWestern(PluginModuleBase):
         try:
             ret = {'ret': 'success'}
 
+            if command.startswith('db_fingerprint_'):
+                action = command.removeprefix('db_fingerprint_')
+                payload = json.loads(arg2 or '{}')
+                if not isinstance(payload, dict):
+                    raise ValueError('지문 인자는 JSON 객체여야 합니다.')
+                if action == 'calculate':
+                    path = payload.get('path')
+                    if not isinstance(path, str) or not os.path.isabs(path) or not os.path.isfile(path) or not os.access(path, os.R_OK):
+                        raise ValueError('읽을 수 있는 로컬 영상의 절대 경로를 입력하세요.')
+                    if not ModuleMetaDb.get_metadata(arg1, category='WESTERN'):
+                        raise ValueError('대상 WESTERN 작품을 찾을 수 없습니다.')
+                    value = SiteAvBase.calculate_oshash(path)
+                    if not value:
+                        raise ValueError('OSHash 계산에 실패했습니다.')
+                    return jsonify(ret='success', data={'algorithm': 'OSHASH', 'hash': value,
+                        'matches': ModuleMetaDb.search_by_fingerprint('WESTERN', 'OSHASH', value)})
+                return jsonify(ModuleMetaDb.manage_western_fingerprints(action, arg1, payload))
+
             # --- 포스터 수동 크롭/업로드 저장 (MetaImageUtil 위임) ---
             if command in ["crop_save", "db_crop_save"]:
                 return MetaUtil.image_api_response(MetaUtil.user_image_command(command, arg1, arg2, arg3, category=self.category, request=req))
@@ -403,6 +423,8 @@ class ModuleWestern(PluginModuleBase):
 
     def search(self, keyword, manual=False, media_path=None, use_db=True):
         use_db = use_db and ModuleMetaDb.is_effectively_enabled()
+        filename_match = manual or P.ModelSetting.get('western_filename_match') != 'False'
+        min_filename_score = max(0, min(100, int(P.ModelSetting.get('western_filename_min_score') or 0)))
         target_video_file = media_path
         if not keyword and target_video_file:
             keyword = MetaUtil.extract_keyword_from_path(target_video_file, category=self.category)
@@ -444,15 +466,19 @@ class ModuleWestern(PluginModuleBase):
 
                         hit_dict = hit_item.as_dict()
                         hit_dict['site_key'] = site_key
+                        hit_dict['match_type'] = db_item.get('match_type', 'unknown')
+                        hit_dict['fingerprint_source'] = db_item.get('fingerprint_source', 'none')
                         hit_dict['is_db_cached'] = db_item.get('has_item', True)
                         hit_dict['is_priority_label_site'] = True
                         hit_results.append(hit_dict)
 
                     logger.info(f"[{self.name}] 기존 작품 지문과 일치: {len(hit_results)}건 중 {hit_results[0]['code']} 선택")
-                    return hit_results
+                    if any(item['match_type'] == 'fingerprint' for item in hit_results):
+                        return hit_results
+                    all_results.extend(hit_results)
 
         # 1. DB 텍스트 선행 검색
-        if use_db_flag and not manual:
+        if use_db_flag and not manual and filename_match:
             try:
                 valid_db_records = ModuleMetaDb.search_for_auto_match(self.category, cleaned_keyword)
                 if valid_db_records:
@@ -468,6 +494,8 @@ class ModuleWestern(PluginModuleBase):
                         item_dict['site_key'] = payload.get('site_key') or payload['site']
                         item_dict['original_score'] = 105
                         item_dict['is_db_cached'] = True
+                        item_dict['match_type'] = 'filename'
+                        item_dict['fingerprint_source'] = 'none'
                         all_results.append(item_dict)
 
                 if any(x.get('original_score', 0) >= 100 for x in all_results):
@@ -493,13 +521,16 @@ class ModuleWestern(PluginModuleBase):
                 if not SiteClass: continue
 
                 try:
-                    data = SiteClass.search(cleaned_keyword, manual=manual, media_path=target_video_file, filename=target_video_file)
+                    data = SiteClass.search(cleaned_keyword, manual=manual, media_path=target_video_file, filename=target_video_file,
+                                            fingerprint_only=not filename_match)
                     if data and data.get("ret") == "success" and data.get("data"):
                         results = data["data"]
                         for item in results:
                             if not item.get('ui_code') or item.get('ui_code') == item.get('code'):
                                 item['ui_code'] = item.get('originaltitle') or item.get('ui_code') or item.get('code')
                             item['site_key'] = site_key
+                            item.setdefault('match_type', 'filename' if filename_match else 'unknown')
+                            item.setdefault('fingerprint_source', 'none')
                             all_results.append(item)
                             
                             if not manual and item.get('score', 0) >= 100:
@@ -509,6 +540,9 @@ class ModuleWestern(PluginModuleBase):
 
                 except Exception as e_site:
                     logger.error(f"[{self.name}] {site_key} 작품 검색 실패: {e_site}")
+
+        all_results = [item for item in all_results if item.get('match_type') != 'filename'
+                       or (filename_match and min(100, item.get('score', 0)) >= min_filename_score)]
 
         # 3. 우선순위 정렬 및 동점자 분리
         if manual:
@@ -659,13 +693,6 @@ class ModuleWestern(PluginModuleBase):
                     females_only = [a for a in cached_json['actor'] if str(a.get('gender')).lower() == 'female']
                     if females_only:
                         cached_json['actor'] = females_only
-
-                # 기존 등록 코드에 새 로컬 파일의 지문이 누락되어 있다면 자동 학습 보강
-                media_path_opt = opts.get('media_path')
-                if media_path_opt and os.path.exists(media_path_opt):
-                    local_oshash = SiteAvBase.calculate_oshash(media_path_opt)
-                    if local_oshash:
-                        ModuleMetaDb.append_fingerprint(code, self.category, 'OSHASH', local_oshash, source='user')
 
                 if opts.get('media_path') and os.path.isfile(opts['media_path']):
                     completed = ModuleMetaDb.complete_item_media(cached_json.get('code') or code, self.category, opts['media_path'], metadata=cached_json)
@@ -1013,31 +1040,6 @@ class ModuleWestern(PluginModuleBase):
                     data = self.info(code)
                 else:
                     data = self.info(code, extra_opts={'media_path': media_path} if media_path else None)
-                if plex_media_paths and isinstance(data, dict) and data.get('code') == code:
-                    try:
-                        paths = values.get('media_paths')
-                        if isinstance(paths, str):
-                            try:
-                                paths = json.loads(paths)
-                            except (TypeError, ValueError):
-                                paths = None
-                        if (isinstance(paths, list) and paths and all(isinstance(path, str) for path in paths)
-                                and ModuleMetaDb._ensure_meta_db_writable(self.category)
-                                and ModuleMetaDb.get_metadata(code, category=self.category)):
-                            seen_hashes = set()
-                            for path in paths:
-                                try:
-                                    if not path.strip() or not os.path.isfile(path):
-                                        continue
-                                    oshash = SiteAvBase.calculate_oshash(path)
-                                    if not oshash or oshash in seen_hashes:
-                                        continue
-                                    seen_hashes.add(oshash)
-                                    ModuleMetaDb.rebind_user_oshash(code, oshash)
-                                except Exception as exc:
-                                    logger.warning('[Western Plex 지문] 파일 지문 정정 실패: %s', exc)
-                    except Exception as exc:
-                        logger.warning('[Western Plex 지문] 최종 작품 지문 정정 보류: %s', exc)
                 if call == "kodi" and data:
                     data = SiteUtil.info_to_kodi(data)
                 return jsonify(data)

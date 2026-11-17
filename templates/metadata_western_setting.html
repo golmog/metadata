@@ -9,6 +9,14 @@
 
 <form id='setting' name='setting'>
 <div class="tab-content" id="nav-tabContent">
+  {{ macros.setting_checkbox('western_filename_match', '파일명 매칭 사용', value=arg.get('western_filename_match', 'True'), desc=['OFF: 자동 파일명/텍스트 검색은 생략하고 지문 검색만 수행합니다. 수동 검색과 로컬 JSON은 유지합니다.']) }}
+  {{ macros.setting_input_text('western_filename_min_score', '파일명 매칭 최소 점수 (0~100)', value=arg.get('western_filename_min_score', '0'), desc=['텍스트 후보의 전역 수용 기준입니다. 단일 결과 100점 옵션은 점수만 변경하며 지문 증거가 아닙니다.', 'FP_AV의 작업별 메타매칭커트라인도 추가 적용됩니다. 기본 0.']) }}
+  <div class="border rounded p-3 mb-3">
+    <h5>사용자 지문 관리</h5>
+    <p>WESTERN의 레거시 사용자 지문과 수동 확인 지문만 초기화합니다. 공식 지문은 보존합니다.</p>
+    <button type="button" class="btn btn-outline-danger" id="western_fingerprint_reset">사용자 지문 일괄 초기화</button>
+    <div id="western_fingerprint_reset_result" class="mt-2" role="status"></div>
+  </div>
 
   {{ macros.setting_input_text('western_order', '메타 검색 우선순위', value=arg['western_order'], desc=['검색 시 사이트 조회 우선순위: stashdb, tpdb (쉼표로 구분)']) }}
   
@@ -96,6 +104,30 @@
 
 <script type="text/javascript">
 $(document).ready(function(){
+  $('#western_fingerprint_reset').on('click', function() {
+    var $button = $(this).prop('disabled', true);
+    function command(action, payload, done) {
+      $.ajax({url:'/metadata/ajax/western/command', type:'POST', dataType:'json',
+        data:{command:'db_fingerprint_' + action, arg1:'', arg2:JSON.stringify(payload)},
+        success:done, error:function(){ $('#western_fingerprint_reset_result').text('요청 결과를 확인하지 못했습니다.'); },
+        complete:function(){ $button.prop('disabled', false); }});
+    }
+    command('reset_preview', {}, function(ret) {
+      if (!ret || ret.ret !== 'success') { $('#western_fingerprint_reset_result').text(ret && ret.msg || '미리보기 실패'); return; }
+      var data = ret.data;
+      var $dialog = $('<div class="modal fade" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5>사용자 지문 초기화</h5></div><div class="modal-body"></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-dismiss="modal">취소</button><button type="button" class="btn btn-danger fingerprint-reset-confirm">초기화</button></div></div></div></div>');
+      $dialog.find('.modal-body').text('삭제 대상 ' + data.count + '건 / 영향 작품 ' + data.items + '개. 공식 지문은 보존합니다. 계속하시겠습니까?');
+      $dialog.on('hidden.bs.modal', function(){ $dialog.remove(); });
+      $dialog.find('.fingerprint-reset-confirm').one('click', function() {
+        $(this).prop('disabled', true); $button.prop('disabled', true);
+        command('reset', {confirm:true}, function(result) {
+          $('#western_fingerprint_reset_result').text(result.ret === 'success' ? '초기화 완료: ' + result.data.count + '건 / ' + result.data.items + '작품' : result.msg || '초기화 실패');
+          $dialog.modal('hide');
+        });
+      });
+      $('body').append($dialog); $dialog.modal('show');
+    });
+  });
   use_image_server("{{arg['western_image_mode']}}");
   use_western_actor_mode("{{arg['western_actor_image_mode']}}");
   use_collapse("western_use_movie_title_format");
